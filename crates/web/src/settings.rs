@@ -47,7 +47,6 @@ fn lines(v: &[String]) -> String {
 pub fn SettingsPage() -> impl IntoView {
     let s = RwSignal::new(Settings::default());
     let loaded = RwSignal::new(false);
-    let saving = RwSignal::new(false);
     let toast = toast();
     spawn_local(async move {
         match api::get::<Settings>("/api/settings").await {
@@ -58,17 +57,41 @@ pub fn SettingsPage() -> impl IntoView {
             Err(e) => toast.show(e.0),
         }
     });
-    let save = move |_| {
-        saving.set(true);
+
+    // Autosave: every change is saved shortly after the last edit (typing doesn't save per key).
+    let edits = RwSignal::new(0u64);
+    let saved = RwSignal::new(0u64);
+    let save_now = move || {
+        let n = edits.get_untracked();
+        if n == saved.get_untracked() {
+            return;
+        }
+        saved.set(n);
         let v = s.get_untracked();
         spawn_local(async move {
             match api::put::<_, Settings>("/api/settings", &v).await {
-                Ok(_) => toast.show("Settings saved"),
-                Err(e) => toast.show(e.0),
+                Ok(_) => toast.show("Saved"),
+                Err(e) => toast.show(format!("Couldn't save: {}", e.0)),
             }
-            saving.set(false);
         });
     };
+    Effect::new(move |seen: Option<bool>| {
+        s.track();
+        let ready = loaded.get();
+        // The first run after loading is the loaded settings themselves, not an edit.
+        if ready && seen == Some(true) {
+            let n = edits.get_untracked() + 1;
+            edits.set(n);
+            spawn_local(async move {
+                gloo_timers::future::TimeoutFuture::new(700).await;
+                if edits.get_untracked() == n {
+                    save_now();
+                }
+            });
+        }
+        ready
+    });
+    on_cleanup(save_now);
     let test_qbit = move |_| {
         let q = s.get_untracked().qbittorrent;
         spawn_local(async move {
@@ -94,9 +117,7 @@ pub fn SettingsPage() -> impl IntoView {
     view! {
         <header class="page-head">
             <h1>"Settings"</h1>
-            <button class="primary" on:click=save disabled=move || saving.get() || !loaded.get()>
-                {move || if saving.get() { "Saving…" } else { "Save" }}
-            </button>
+            <span class="hint">"Changes save automatically."</span>
         </header>
         <div class="settings">
             <VoicesSetup s/>
