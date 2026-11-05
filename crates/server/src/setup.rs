@@ -55,7 +55,7 @@ fn hf_cached(repo: &str) -> bool {
 }
 
 /// The biggest GPU, from sysfs: (description, VRAM in GB).
-fn gpu() -> Option<(String, u64)> {
+pub fn gpu() -> Option<(String, u64)> {
     let mut best: Option<(String, u64)> = None;
     for entry in std::fs::read_dir("/sys/class/drm").ok()?.flatten() {
         let dev = entry.path().join("device");

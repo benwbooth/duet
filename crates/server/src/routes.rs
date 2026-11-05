@@ -24,7 +24,7 @@ use tower_http::{
 };
 
 use crate::{
-    State, ai, book, db, downloads,
+    State, ai, ai_setup, book, db, downloads,
     error::{ApiError, ApiResult},
     free, jobs, library, setup, torznab,
 };
@@ -56,6 +56,9 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/search", get(search))
         .route("/downloads", get(list_downloads).post(new_download))
         .route("/ai/models", post(ai_models))
+        .route("/ai/setup", get(ai_detect))
+        .route("/ai/pull", post(ai_pull))
+        .route("/ai/test", post(ai_test))
         .route("/assistant/ask", post(ask))
         .route("/assistant/transcribe", post(transcribe))
         // Positions, sync maps and job status change under the browser; covers and book
@@ -345,4 +348,23 @@ struct ModelsQuery {
 
 async fn ai_models(AxState(s): AxState<State>, Json(q): Json<ModelsQuery>) -> ApiResult<Json<Vec<String>>> {
     Ok(Json(ai::list_models(&s.http, &q.url, &q.key).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?))
+}
+
+async fn ai_detect(AxState(s): AxState<State>) -> Json<duet_common::ChatSetup> {
+    Json(ai_setup::detect(&s).await)
+}
+
+#[derive(Deserialize)]
+struct PullReq {
+    url: String,
+    model: String,
+}
+
+async fn ai_pull(AxState(s): AxState<State>, Json(r): Json<PullReq>) -> ApiResult<Json<duet_common::ChatSetup>> {
+    ai_setup::pull(&s, &r.url, &r.model).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    Ok(Json(ai_setup::detect(&s).await))
+}
+
+async fn ai_test(AxState(s): AxState<State>) -> ApiResult<Json<duet_common::ChatTest>> {
+    Ok(Json(ai_setup::test(&s).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?))
 }

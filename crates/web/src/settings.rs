@@ -1,7 +1,7 @@
 //! The settings page: library folders, downloads (qBittorrent, indexers, free sources), AI
 //! services and reading preferences.
 
-use duet_common::{Indexer, Settings, VoiceSetup};
+use duet_common::{ChatSetup, ChatTest, DetectedServer, Indexer, Settings, VoiceSetup};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -315,12 +315,6 @@ fn VoicesSetup(s: RwSignal<Settings>) -> impl IntoView {
     }
 }
 
-const CHAT_PRESETS: [(&str, &str); 4] = [
-    ("Ollama", "http://127.0.0.1:11434/v1"),
-    ("LM Studio", "http://127.0.0.1:1234/v1"),
-    ("llama.cpp server", "http://127.0.0.1:8080/v1"),
-    ("vLLM", "http://127.0.0.1:8000/v1"),
-];
 
 const WHISPER_MODELS: [(&str, &str); 4] = [
     ("large-v3-turbo", "Large v3 Turbo: accurate and reasonably quick (recommended)"),
@@ -356,102 +350,12 @@ fn best_chat_model(models: &[String]) -> Option<String> {
 /// lives under Advanced.
 #[component]
 fn AiSection(s: RwSignal<Settings>) -> impl IntoView {
-    let models = RwSignal::new(Vec::<String>::new());
-    let check = RwSignal::new(None::<Result<usize, String>>);
-    let checking = RwSignal::new(false);
-    let probe = move || {
-        let (url, key) = s.with_untracked(|x| (x.ai.llm_url.clone(), x.ai.llm_api_key.clone()));
-        if url.trim().is_empty() {
-            return;
-        }
-        checking.set(true);
-        spawn_local(async move {
-            match api::post::<_, Vec<String>>("/api/ai/models", &serde_json::json!({ "url": url, "key": key })).await {
-                Ok(list) => {
-                    check.set(Some(Ok(list.len())));
-                    // Pick something sensible when the saved model isn't there.
-                    if !list.contains(&s.with_untracked(|x| x.ai.llm_model.clone())) {
-                        if let Some(best) = best_chat_model(&list) {
-                            s.update(|x| x.ai.llm_model = best);
-                        }
-                    }
-                    models.set(list);
-                }
-                Err(e) => {
-                    models.set(Vec::new());
-                    check.set(Some(Err(e.0)));
-                }
-            }
-            checking.set(false);
-        });
-    };
-    // Check once the saved settings have loaded, and whenever the address changes.
-    Effect::new(move |prev: Option<String>| {
-        let url = s.with(|x| x.ai.llm_url.clone());
-        if prev.as_deref() != Some(url.as_str()) {
-            probe();
-        }
-        url
-    });
-    let preset = move || {
-        let url = same_host(&s.with(|x| x.ai.llm_url.clone()));
-        CHAT_PRESETS.iter().find(|(_, u)| same_host(u) == url).map(|(n, _)| n.to_string()).unwrap_or_else(|| "other".into())
-    };
-
     view! {
         <section class="ai">
             <h2>"AI"</h2>
             <p class="hint">"Everything runs on this computer. A chat model answers your questions, directs the full-cast recordings and tidies up transcripts. Voices and speech recognition come from the Voices section above."</p>
 
-            <h3>"Chat model"</h3>
-            <label class="field">
-                <span>"Runs in"</span>
-                <select on:change=move |ev| {
-                    let v = event_target_value(&ev);
-                    if let Some((_, url)) = CHAT_PRESETS.iter().find(|(n, _)| *n == v) {
-                        s.update(|x| x.ai.llm_url = url.to_string());
-                    }
-                }>
-                    {CHAT_PRESETS.map(|(name, _)| view! { <option value=name selected=move || preset() == name>{name}</option> })}
-                    <option value="other" selected=move || preset() == "other">"Somewhere else"</option>
-                </select>
-            </label>
-            <label class="field">
-                <span>"Address"</span>
-                <input type="text" prop:value=move || s.with(|x| x.ai.llm_url.clone())
-                    on:change=move |ev| s.update(|x| x.ai.llm_url = event_target_value(&ev))/>
-            </label>
-            <div class="field">
-                <span>"Model"</span>
-                {move || {
-                    let list = models.get();
-                    if list.is_empty() {
-                        view! {
-                            <input type="text" placeholder="e.g. qwen3:14b" prop:value=move || s.with(|x| x.ai.llm_model.clone())
-                                on:input=move |ev| s.update(|x| x.ai.llm_model = event_target_value(&ev))/>
-                        }.into_any()
-                    } else {
-                        view! {
-                            <select on:change=move |ev| s.update(|x| x.ai.llm_model = event_target_value(&ev))>
-                                {list.into_iter().map(|m| {
-                                    let (value, label, current) = (m.clone(), m.clone(), m);
-                                    view! { <option value=value selected=move || s.with(|x| x.ai.llm_model == current)>{label}</option> }
-                                }).collect_view()}
-                            </select>
-                        }.into_any()
-                    }
-                }}
-                <div class="status-line">
-                    {move || match check.get() {
-                        _ if checking.get() => view! { <span class="muted">"Checking…"</span> }.into_any(),
-                        Some(Ok(n)) => view! { <span class="ok">{format!("✓ Connected, {n} model{} available", if n == 1 { "" } else { "s" })}</span> }.into_any(),
-                        Some(Err(e)) => view! { <span class="warn">{format!("Not reachable: {e}. Is it running?")}</span> }.into_any(),
-                        None => view! { <span></span> }.into_any(),
-                    }}
-                    <button class="small" on:click=move |_| probe()>"Check again"</button>
-                </div>
-                <small>"A model around 14B parameters is a good fit next to the voices on a 24 GB card."</small>
-            </div>
+            <ChatModelSetup s/>
 
             <h3>"Speech recognition"</h3>
             <label class="field">
@@ -475,6 +379,8 @@ fn AiSection(s: RwSignal<Settings>) -> impl IntoView {
 
             <details class="advanced">
                 <summary>"Advanced"</summary>
+                {text(s, "Chat model server address", "Filled in when you pick a server above.", |x| x.ai.llm_url.clone(), |x, v| x.ai.llm_url = v)}
+                {text(s, "Chat model name", "", |x| x.ai.llm_model.clone(), |x, v| x.ai.llm_model = v)}
                 {secret(s, "Chat model API key (only if your server needs one)", |x| x.ai.llm_api_key.clone(), |x, v| x.ai.llm_api_key = v)}
                 {text(s, "Speech recognition address", "", |x| x.ai.stt_url.clone(), |x, v| x.ai.stt_url = v)}
                 {text(s, "Voice server address", "", |x| x.ai.tts_url.clone(), |x, v| x.ai.tts_url = v)}
@@ -484,5 +390,235 @@ fn AiSection(s: RwSignal<Settings>) -> impl IntoView {
                 {text(s, "Device for jobs", "auto, cuda or cpu", |x| x.ai.device.clone(), |x, v| x.ai.device = v)}
             </details>
         </section>
+    }
+}
+
+/// Models worth suggesting, best first for a 24 GB card that also runs the voices.
+const SUGGESTED: [(&str, &str, f64, &str); 3] = [
+    ("qwen3.5:9b", "Recommended", 6.6, "Good, quick answers and a capable casting director. Leaves room on the graphics card for the voices."),
+    ("qwen3.5:27b", "Smartest", 17.0, "Noticeably better at characters and long books. Uses most of a 24 GB card, so it runs slower while the voice server is on."),
+    ("qwen3.5:4b", "Lightest", 3.4, "For slower computers. Fine for definitions and quick questions; weaker at casting."),
+];
+
+/// Walks through getting a chat model running: a model server, a model, and a test question.
+#[component]
+fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
+    let setup = RwSignal::new(None::<ChatSetup>);
+    let scanning = RwSignal::new(false);
+    let testing = RwSignal::new(false);
+    let test = RwSignal::new(None::<Result<ChatTest, String>>);
+    let toast = toast();
+
+    let scan = move || {
+        scanning.set(true);
+        spawn_local(async move {
+            if let Ok(v) = api::get::<ChatSetup>("/api/ai/setup").await {
+                // Pick a running server and a sensible model if nothing usable is chosen yet.
+                let url = s.with_untracked(|x| same_host(&x.ai.llm_url));
+                let current = v.servers.iter().find(|sv| sv.running && same_host(&sv.url) == url);
+                let chosen = current.or_else(|| v.servers.iter().find(|sv| sv.running)).cloned();
+                if let Some(sv) = chosen {
+                    let names: Vec<String> = sv.models.iter().map(|m| m.name.clone()).collect();
+                    let model = s.with_untracked(|x| x.ai.llm_model.clone());
+                    if same_host(&sv.url) != url || !names.contains(&model) {
+                        s.update(|x| {
+                            x.ai.llm_url = sv.url.clone();
+                            if !names.contains(&x.ai.llm_model) {
+                                if let Some(best) = best_chat_model(&names) {
+                                    x.ai.llm_model = best;
+                                }
+                            }
+                        });
+                    }
+                }
+                setup.set(Some(v));
+            }
+            scanning.set(false);
+        });
+    };
+    scan();
+    // Follow a model download until it finishes.
+    if let Ok(h) = set_interval_with_handle(
+        move || {
+            if setup.get_untracked().and_then(|v| v.pull).is_some_and(|p| !p.done) {
+                scan();
+            }
+        },
+        std::time::Duration::from_secs(2),
+    ) {
+        on_cleanup(move || h.clear());
+    }
+
+    let selected = move || -> Option<DetectedServer> {
+        let url = s.with(|x| same_host(&x.ai.llm_url));
+        setup.get()?.servers.into_iter().find(|sv| sv.running && same_host(&sv.url) == url)
+    };
+    let download = move |model: &'static str| {
+        let Some(sv) = selected() else { return };
+        spawn_local(async move {
+            match api::post::<_, ChatSetup>("/api/ai/pull", &serde_json::json!({ "url": sv.url, "model": model })).await {
+                Ok(v) => setup.set(Some(v)),
+                Err(e) => toast.show(e.0),
+            }
+        });
+    };
+    let run_test = move |_| {
+        testing.set(true);
+        test.set(None);
+        spawn_local(async move {
+            // Make sure the latest choice is saved before the server uses it.
+            let _ = api::put::<_, Settings>("/api/settings", &s.get_untracked()).await;
+            test.set(Some(api::post::<_, ChatTest>("/api/ai/test", &()).await.map_err(|e| e.0)));
+            testing.set(false);
+        });
+    };
+
+    view! {
+        <div class="wizard">
+            <h3>"Chat model"</h3>
+
+            <div class="wizard-step">
+                <div class="step-title"><span class="num">"1"</span>"A program that runs the model"</div>
+                {move || match setup.get() {
+                    None => view! { <p class="muted">"Looking for model servers on this computer…"</p> }.into_any(),
+                    Some(v) => {
+                        let running: Vec<DetectedServer> = v.servers.iter().filter(|sv| sv.running).cloned().collect();
+                        if running.is_empty() {
+                            let package = match v.gpu.as_deref() {
+                                Some(g) if g.starts_with("NVIDIA") => "pkgs.ollama-cuda",
+                                Some(g) if g.starts_with("AMD") => "pkgs.ollama-rocm",
+                                _ => "pkgs.ollama",
+                            };
+                            view! {
+                                <p>"duet needs a model server running on this computer. We recommend "<strong>"Ollama"</strong>": it's free, uses your graphics card, and duet can download models into it for you."</p>
+                                {if v.nixos {
+                                    view! {
+                                        <p>"On NixOS, add this to your configuration and run "<code>"sudo nixos-rebuild switch"</code>":"</p>
+                                        <pre class="code">{format!("services.ollama = {{\n  enable = true;\n  package = {package};\n}};")}</pre>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <p>"Install it from "<a href="https://ollama.com/download" target="_blank" rel="noopener">"ollama.com/download"</a>" and start it."</p>
+                                    }.into_any()
+                                }}
+                                <p class="hint">"Already use LM Studio, llama.cpp or vLLM? Start its server and press Check again; you can also enter its address under Advanced."</p>
+                            }.into_any()
+                        } else {
+                            view! {
+                                <div class="choices">
+                                    {running.into_iter().map(|sv| {
+                                        let url = sv.url.clone();
+                                        let key = same_host(&url);
+                                        let is_on = move || s.with(|x| same_host(&x.ai.llm_url) == key);
+                                        let is_on2 = is_on.clone();
+                                        view! {
+                                            <label class="choice" class:on=is_on>
+                                                <input type="radio" name="llm-server" prop:checked=is_on2
+                                                    on:change=move |_| s.update(|x| x.ai.llm_url = url.clone())/>
+                                                <span><strong>{sv.name.clone()}</strong>" is running"</span>
+                                                <span class="muted">{format!("{} model{}", sv.models.len(), if sv.models.len() == 1 { "" } else { "s" })}</span>
+                                            </label>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            }.into_any()
+                        }
+                    }
+                }}
+                <button class="small" disabled=move || scanning.get() on:click=move |_| scan()>
+                    {move || if scanning.get() { "Checking…" } else { "Check again" }}
+                </button>
+            </div>
+
+            <Show when=move || selected().is_some()>
+                <div class="wizard-step">
+                    <div class="step-title"><span class="num">"2"</span>"Choose a model"</div>
+                    {move || {
+                        let sv = selected()?;
+                        let v = setup.get()?;
+                        let installed: Vec<String> = sv.models.iter().map(|m| m.name.clone()).collect();
+                        let can_download = sv.kind == "ollama";
+                        let vram = v.gpu_vram_gb.unwrap_or(0) as f64;
+                        let pull = v.pull.clone();
+                        Some(view! {
+                            {v.gpu.clone().map(|g| view! { <p class="muted">{format!("Your graphics card: {g}. The voices need most of it while they're running, so a model that leaves room is faster.")}</p> })}
+                            <div class="model-cards">
+                                {SUGGESTED.map(|(name, tag, size, about)| {
+                                    let have = installed.iter().any(|m| m == name);
+                                    let too_big = vram > 0.0 && size > vram * 0.9;
+                                    let pulling = pull.as_ref().filter(|p| p.model == name).cloned();
+                                    let is_on = move || s.with(|x| x.ai.llm_model == name);
+                                    view! {
+                                        <div class="model-card" class:on=is_on>
+                                            <div class="model-head">
+                                                <strong>{name}</strong>
+                                                <span class="badge">{tag}</span>
+                                                <span class="muted">{format!("about {size} GB")}</span>
+                                            </div>
+                                            <p>{about}</p>
+                                            {too_big.then(|| view! { <p class="warn">"Bigger than your graphics card; it would run mostly on the processor and be slow."</p> })}
+                                            {match pulling {
+                                                Some(p) if !p.done => view! {
+                                                    <div class="install-progress">
+                                                        <div class="progress"><div style=format!("width:{:.0}%", p.progress * 100.0)></div></div>
+                                                        <span>{format!("{} ({:.0}%)", p.status, p.progress * 100.0)}</span>
+                                                    </div>
+                                                }.into_any(),
+                                                Some(p) if p.error.is_some() => view! { <p class="warn">{format!("Download failed: {}", p.error.unwrap_or_default())}</p> }.into_any(),
+                                                _ if have => view! {
+                                                    <button class:primary=move || !is_on() on:click=move |_| s.update(|x| x.ai.llm_model = name.to_string())>
+                                                        {move || if is_on() { "✓ In use" } else { "Use this model" }}
+                                                    </button>
+                                                }.into_any(),
+                                                _ if can_download => view! {
+                                                    <button on:click=move |_| download(name)>{format!("Download ({size} GB)")}</button>
+                                                }.into_any(),
+                                                _ => view! { <p class="muted">"Download it in your model server, then press Check again."</p> }.into_any(),
+                                            }}
+                                        </div>
+                                    }
+                                })}
+                            </div>
+                            {(!installed.is_empty()).then(|| view! {
+                                <label class="field">
+                                    <span>"Or use another installed model"</span>
+                                    <select on:change=move |ev| s.update(|x| x.ai.llm_model = event_target_value(&ev))>
+                                        {installed.iter().map(|m| {
+                                            let (value, label, current) = (m.clone(), m.clone(), m.clone());
+                                            view! { <option value=value selected=move || s.with(|x| x.ai.llm_model == current)>{label}</option> }
+                                        }).collect_view()}
+                                    </select>
+                                </label>
+                            })}
+                        })
+                    }}
+                </div>
+
+                <div class="wizard-step">
+                    <div class="step-title"><span class="num">"3"</span>"Try it"</div>
+                    <p class="muted">{move || format!("Asks {} a quick question to check it works and how fast it is. The first answer takes longer while the model loads.", s.with(|x| x.ai.llm_model.clone()))}</p>
+                    <button class="primary" disabled=move || testing.get() on:click=run_test>
+                        {move || if testing.get() { "Waiting for an answer…" } else { "Ask a test question" }}
+                    </button>
+                    {move || test.get().map(|r| match r {
+                        Ok(t) => {
+                            // A token is roughly three quarters of a word.
+                            let verdict = match t.tokens_per_second.map(|tps| tps * 0.75) {
+                                Some(wps) if wps >= 10.0 => format!("About {wps:.0} words a second: quick enough for conversation."),
+                                Some(wps) => format!("About {wps:.0} words a second: usable, but a smaller model would feel snappier."),
+                                None => format!("Answered in {:.1} s.", t.seconds),
+                            };
+                            view! {
+                                <div class="test-result ok-box">
+                                    <p>"✓ "{t.answer}</p>
+                                    <small>{verdict}</small>
+                                </div>
+                            }.into_any()
+                        }
+                        Err(e) => view! { <div class="test-result warn">{format!("That didn't work: {e}")}</div> }.into_any(),
+                    })}
+                </div>
+            </Show>
+        </div>
     }
 }

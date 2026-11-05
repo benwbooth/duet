@@ -477,3 +477,46 @@ impl VoiceSetup {
         self.fish_installed && self.fish_weights && self.workers_installed && self.casting_weights
     }
 }
+
+/// What the chat-model setup found on this computer.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ChatSetup {
+    pub nixos: bool,
+    pub gpu: Option<String>,
+    pub gpu_vram_gb: Option<u64>,
+    pub servers: Vec<DetectedServer>,
+    pub pull: Option<PullStatus>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct DetectedServer {
+    pub name: String,
+    pub url: String,
+    /// "ollama" (can download models) or "openai"
+    pub kind: String,
+    pub running: bool,
+    pub models: Vec<LocalModel>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct LocalModel {
+    pub name: String,
+    pub size_gb: Option<f64>,
+    pub parameters: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct PullStatus {
+    pub model: String,
+    pub status: String,
+    pub progress: f64,
+    pub done: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ChatTest {
+    pub answer: String,
+    pub seconds: f64,
+    pub tokens_per_second: Option<f64>,
+}

@@ -257,3 +257,26 @@ button.small { padding: 0.25rem 0.6rem; font-size: 0.85rem; }
 .options .meta { flex: 1; min-width: 0; }
 .options .release { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 @media (max-width: 760px) { .options .kind { width: auto; } .options li { flex-wrap: wrap; } }
+
+/* Chat model setup */
+.wizard-step { border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem 1rem; margin: 0.8rem 0; }
+.step-title { display: flex; align-items: center; gap: 0.6rem; font-weight: 600; margin-bottom: 0.5rem; }
+.step-title .num {
+  width: 1.6rem; height: 1.6rem; border-radius: 50%; background: var(--accent); color: var(--bg);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 0.85rem;
+}
+.choices { display: grid; gap: 0.4rem; margin-bottom: 0.6rem; }
+.choice { display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0.7rem; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.choice.on { border-color: var(--accent); background: var(--accent-soft); }
+.choice .muted { margin-left: auto; }
+.model-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 0.6rem; margin: 0.6rem 0; }
+.model-card { border: 1px solid var(--line); border-radius: 10px; padding: 0.7rem; display: flex; flex-direction: column; gap: 0.3rem; }
+.model-card.on { border-color: var(--accent); background: var(--accent-soft); }
+.model-card p { margin: 0; font-size: 0.88rem; }
+.model-card button { align-self: flex-start; margin-top: auto; }
+.model-head { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.model-head .muted { margin-left: auto; font-size: 0.8rem; }
+pre.code { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem; font-size: 0.85rem; user-select: all; }
+.test-result { margin-top: 0.6rem; padding: 0.6rem 0.8rem; border-radius: 8px; border: 1px solid var(--line); }
+.test-result p { margin: 0 0 0.2rem; }
+.ok-box { border-color: #2f7d4b; }

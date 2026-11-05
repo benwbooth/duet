@@ -1,6 +1,7 @@
 //! duet: a self-hosted ebook + audiobook library that reads and plays books in sync.
 
 mod ai;
+mod ai_setup;
 mod book;
 mod db;
 mod dev;
@@ -43,6 +44,7 @@ pub struct AppState {
     pub jobs_wake: Notify,
     pub qbit: qbit::Qbit,
     pub voices: setup::Voices,
+    pub pull: ai_setup::Pull,
 }
 
 pub type State = Arc<AppState>;
@@ -69,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
         http,
         jobs_wake: Notify::new(),
         voices: setup::Voices::default(),
+        pull: ai_setup::Pull::default(),
     });
 
     tokio::spawn(jobs::run(state.clone()));
