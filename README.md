@@ -47,11 +47,11 @@ Voices are split into two jobs. **Casting:** Qwen3-TTS *VoiceDesign* creates eac
 
 Both Fish models are under the Fish Audio Community/Research license: free for personal and non-commercial use.
 
+Local setup on an AMD GPU (ROCm), with S2-Pro as the default:
+
 ```bash
-git clone https://github.com/fishaudio/fish-speech ~/src/fish-speech   # install per its docs
-hf download fishaudio/s2-pro --local-dir ~/src/fish-speech/checkpoints/s2-pro
-.venv/bin/python workers/tts_server.py --engine fish --fish-dir ~/src/fish-speech \
-    --fish-python ~/src/fish-speech/.venv/bin/python --fish-checkpoint checkpoints/s2-pro
+scripts/setup-voices.sh   # fish-speech + S2-Pro, workers venv, Qwen3-TTS weights
+scripts/voices.sh         # TTS server on :8880
 ```
 
 Set up this way, the TTS server starts fish-speech itself and stops it while VoiceDesign is casting, because both won't fit on one 24 GB card at once. The full-cast job casts every voice before it records anything. To use Drama 3 on another machine, run its `tools/api_server.py` there and pass `--fish-url http://thatbox:8080` with no `--fish-dir`.

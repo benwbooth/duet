@@ -7,3 +7,4 @@ __pycache__/
 result
 /crates/web/dist.new
 /crates/web/dist.old
+/.venv

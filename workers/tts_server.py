@@ -241,7 +241,7 @@ def main():
     ap.add_argument("--fish-key", default="")
     ap.add_argument("--fish-dir", default="", help="fish-speech checkout; when set, this server starts and stops it")
     ap.add_argument("--fish-python", default="python")
-    ap.add_argument("--fish-checkpoint", default="checkpoints/drama-3", help="checkpoints/drama-3 or checkpoints/s2-pro")
+    ap.add_argument("--fish-checkpoint", default="checkpoints/s2-pro", help="checkpoints/s2-pro (24 GB, ROCm or CUDA) or checkpoints/drama-3 (48 GB NVIDIA)")
     ap.add_argument("--fish-decoder", default="", help="codec path, e.g. checkpoints/s2-pro/codec.pth")
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--top-p", type=float, default=0.7)
