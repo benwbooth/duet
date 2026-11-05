@@ -1,29 +1,47 @@
 //! Built-in sources of free, legally downloadable books: Project Gutenberg (via Gutendex),
 //! Standard Ebooks, LibriVox and Internet Archive public-domain texts.
 
-use anyhow::Context;
 use duet_common::{AssetKind, DownloadTarget, FreeSources, SearchResult};
 use kuchikiki::traits::TendrilSink;
 use serde::Deserialize;
 
+/// How long one source may take before the others are shown without it.
+const SOURCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// Runs one source with a time limit and a plain-language error naming it.
+async fn source(
+    name: &str,
+    on: bool,
+    f: impl std::future::Future<Output = anyhow::Result<Vec<SearchResult>>>,
+) -> Option<anyhow::Result<Vec<SearchResult>>> {
+    if !on {
+        return None;
+    }
+    Some(match tokio::time::timeout(SOURCE_TIMEOUT, f).await {
+        Err(_) => Err(anyhow::anyhow!("{name} didn't answer in time")),
+        Ok(Err(e)) => {
+            let status = e.chain().find_map(|c| c.downcast_ref::<reqwest::Error>()).and_then(|r| r.status());
+            Err(match status {
+                Some(s) if s.is_server_error() => anyhow::anyhow!("{name} is unavailable right now (HTTP {})", s.as_u16()),
+                _ => e.context(format!("{name} search failed")),
+            })
+        }
+        Ok(ok) => ok,
+    })
+}
+
 pub async fn search(http: &reqwest::Client, enabled: &FreeSources, q: &str, kind: AssetKind) -> Vec<anyhow::Result<Vec<SearchResult>>> {
-    let mut out = Vec::new();
     match kind {
         AssetKind::Ebook => {
-            let (g, s, ia) = tokio::join!(
-                async { if enabled.gutenberg { Some(gutenberg(http, q).await) } else { None } },
-                async { if enabled.standard_ebooks { Some(standard_ebooks(http, q).await) } else { None } },
-                async { if enabled.internet_archive { Some(internet_archive(http, q).await) } else { None } },
+            let (s, g, ia) = tokio::join!(
+                source("Standard Ebooks", enabled.standard_ebooks, standard_ebooks(http, q)),
+                source("Project Gutenberg", enabled.gutenberg, gutenberg(http, q)),
+                source("Internet Archive", enabled.internet_archive, internet_archive(http, q)),
             );
-            out.extend([s, g, ia].into_iter().flatten());
+            [s, g, ia].into_iter().flatten().collect()
         }
-        AssetKind::Audiobook => {
-            if enabled.librivox {
-                out.push(librivox(http, q).await);
-            }
-        }
+        AssetKind::Audiobook => source("LibriVox", enabled.librivox, librivox(http, q)).await.into_iter().collect(),
     }
-    out
 }
 
 /// "Austen, Jane" -> "Jane Austen"
@@ -59,7 +77,7 @@ async fn gutenberg(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec<Search
         .query(&[("search", q)])
         .send()
         .await
-        .context("searching Project Gutenberg")?
+        ?
         .error_for_status()?
         .json()
         .await?;
@@ -91,7 +109,7 @@ async fn standard_ebooks(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec<
         .query(&[("query", q)])
         .send()
         .await
-        .context("searching Standard Ebooks")?
+        ?
         .error_for_status()?
         .text()
         .await?;
@@ -149,7 +167,7 @@ async fn internet_archive(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec
         .query(&[("q", query.as_str()), ("fl[]", "identifier"), ("fl[]", "title"), ("fl[]", "creator"), ("rows", "25"), ("output", "json")])
         .send()
         .await
-        .context("searching Internet Archive")?
+        ?
         .error_for_status()?
         .json()
         .await?;
@@ -207,7 +225,7 @@ async fn librivox(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec<SearchR
         .query(&[("title", format!("^{q}").as_str()), ("format", "json"), ("limit", "25")])
         .send()
         .await
-        .context("searching LibriVox")?;
+        ?;
     // LibriVox answers 404 with an error object when nothing matches.
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(Vec::new());

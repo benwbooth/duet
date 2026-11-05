@@ -20,10 +20,60 @@ fn poll(every_ms: u64, f: impl Fn() + Clone + 'static) {
     }
 }
 
+/// One book in the search results, with every way to get it.
+struct BookGroup {
+    key: String,
+    title: String,
+    author: Option<String>,
+    options: Vec<SearchResult>,
+}
+
+/// Groups hits by book. Free sources give a title and author; indexer releases only have a
+/// release name, so they join the book whose title appears in it.
+fn group(results: Vec<SearchResult>) -> Vec<BookGroup> {
+    use duet_common::text::{normalize, title_key};
+    let surname = |a: &Option<String>| a.as_deref().map(normalize).and_then(|n| n.rsplit(' ').next().map(str::to_string)).unwrap_or_default();
+    let mut groups: Vec<BookGroup> = Vec::new();
+    let (named, releases): (Vec<_>, Vec<_>) = results.into_iter().partition(|r| r.author.is_some());
+    for r in named {
+        let key = format!("{}|{}", title_key(&r.title), surname(&r.author));
+        match groups.iter_mut().find(|g| g.key == key) {
+            Some(g) => g.options.push(r),
+            None => groups.push(BookGroup { key, title: r.title.clone(), author: r.author.clone(), options: vec![r] }),
+        }
+    }
+    for r in releases {
+        let name = normalize(&r.title);
+        let home = groups.iter_mut().find(|g| {
+            let t = g.key.split('|').next().unwrap_or("");
+            !t.is_empty() && name.contains(t)
+        });
+        match home {
+            Some(g) => g.options.push(r),
+            None => {
+                let key = format!("{}|", title_key(&r.title));
+                match groups.iter_mut().find(|g| g.key == key) {
+                    Some(g) => g.options.push(r),
+                    None => groups.push(BookGroup { key, title: r.title.clone(), author: None, options: vec![r] }),
+                }
+            }
+        }
+    }
+    for g in &mut groups {
+        // Ebooks first, then the best-seeded.
+        g.options.sort_by_key(|o| (o.kind == AssetKind::Audiobook, std::cmp::Reverse(o.seeders.unwrap_or(0))));
+    }
+    // Books available both ways first, then those with the most options.
+    groups.sort_by_key(|g| {
+        let both = g.options.iter().any(|o| o.kind == AssetKind::Ebook) && g.options.iter().any(|o| o.kind == AssetKind::Audiobook);
+        (!both, std::cmp::Reverse(g.options.len()))
+    });
+    groups
+}
+
 #[component]
 pub fn Discover() -> impl IntoView {
     let query = RwSignal::new(String::new());
-    let kind = RwSignal::new(AssetKind::Ebook);
     let results = RwSignal::new(None::<SearchResponse>);
     let searching = RwSignal::new(false);
     let downloads = LocalResource::new(|| api::get::<Vec<Download>>("/api/downloads"));
@@ -36,9 +86,8 @@ pub fn Discover() -> impl IntoView {
             return;
         }
         searching.set(true);
-        let k = kind.get_untracked();
         spawn_local(async move {
-            let url = format!("/api/search?q={}&kind={}", js_sys::encode_uri_component(&q), k.as_str());
+            let url = format!("/api/search?q={}", js_sys::encode_uri_component(&q));
             match api::get::<SearchResponse>(&url).await {
                 Ok(r) => results.set(Some(r)),
                 Err(e) => toast.show(e.0),
@@ -65,10 +114,6 @@ pub fn Discover() -> impl IntoView {
             <h1>"Discover"</h1>
         </header>
         <form class="search-form" on:submit=move |ev| { ev.prevent_default(); search() }>
-            <div class="segmented">
-                <button type="button" class:active=move || kind.get() == AssetKind::Ebook on:click=move |_| kind.set(AssetKind::Ebook)>"Ebooks"</button>
-                <button type="button" class:active=move || kind.get() == AssetKind::Audiobook on:click=move |_| kind.set(AssetKind::Audiobook)>"Audiobooks"</button>
-            </div>
             <input type="search" placeholder="Title or author" prop:value=move || query.get()
                 on:input=move |ev| query.set(event_target_value(&ev))/>
             <button type="submit" class="primary" disabled=move || searching.get()>
@@ -82,23 +127,50 @@ pub fn Discover() -> impl IntoView {
                 <ul class="errors">{r.errors.iter().map(|e| view! { <li>{e.clone()}</li> }).collect_view()}</ul>
             })}
             {r.results.is_empty().then(|| view! { <p class="empty">"Nothing found."</p> })}
-            <ul class="results">
-                {r.results.into_iter().map(|res| {
-                    let r2 = res.clone();
+            <ul class="books">
+                {group(r.results).into_iter().map(|g| {
+                    let has = |k: AssetKind| g.options.iter().any(|o| o.kind == k);
+                    let (ebook, audio) = (has(AssetKind::Ebook), has(AssetKind::Audiobook));
                     view! {
-                        <li>
-                            <div class="result-main">
-                                <div class="title">{res.title.clone()}</div>
-                                <div class="meta">
-                                    {res.author.clone().map(|a| view! { <span>{a}</span> })}
-                                    <span class="source">{res.source.clone()}</span>
-                                    {res.format.clone().map(|f| view! { <span>{f.to_uppercase()}</span> })}
-                                    {res.size.map(|s| view! { <span>{size_label(s)}</span> })}
-                                    {res.seeders.map(|s| view! { <span>{format!("{s} seeders")}</span> })}
-                                    {res.info_url.clone().map(|u| view! { <a href=u target="_blank" rel="noopener">"Details"</a> })}
+                        <li class="book">
+                            <div class="book-head">
+                                <div>
+                                    <div class="title">{g.title.clone()}</div>
+                                    {g.author.clone().map(|a| view! { <div class="author">{a}</div> })}
+                                </div>
+                                <div class="availability">
+                                    <span class="chip" class:on=ebook>{if ebook { "✓ Ebook" } else { "No ebook" }}</span>
+                                    <span class="chip" class:on=audio>{if audio { "✓ Audiobook" } else { "No audiobook" }}</span>
                                 </div>
                             </div>
-                            <button on:click=move |_| download(r2.clone())>"Get"</button>
+                            <ul class="options">
+                                {g.options.into_iter().map(|res| {
+                                    let r2 = res.clone();
+                                    view! {
+                                        <li>
+                                            <span class="kind">{if res.kind == AssetKind::Ebook { "Ebook" } else { "Audiobook" }}</span>
+                                            <div class="meta">
+                                                <span class="source">{res.source.clone()}</span>
+                                                {res.format.clone().map(|f| view! { <span>{f.to_uppercase()}</span> })}
+                                                {res.size.map(|s| view! { <span>{size_label(s)}</span> })}
+                                                {res.seeders.map(|s| view! { <span>{format!("{s} seeders")}</span> })}
+                                                // Indexer releases have their own names; show them so you know what you're getting.
+                                                {(res.author.is_none() || res.source == "Internet Archive").then(|| {
+                                                    // Archive items are separate scans/editions; tell them apart by item id.
+                                                    let label = if res.source == "Internet Archive" {
+                                                        res.info_url.as_deref().and_then(|u| u.rsplit('/').next()).unwrap_or(&res.title).to_string()
+                                                    } else {
+                                                        res.title.clone()
+                                                    };
+                                                    view! { <span class="release">{label}</span> }
+                                                })}
+                                                {res.info_url.clone().map(|u| view! { <a href=u target="_blank" rel="noopener">"Details"</a> })}
+                                            </div>
+                                            <button on:click=move |_| download(r2.clone())>"Get"</button>
+                                        </li>
+                                    }
+                                }).collect_view()}
+                            </ul>
                         </li>
                     }
                 }).collect_view()}

@@ -241,3 +241,19 @@ main { margin-left: var(--nav-w); padding: 1.6rem 2rem 6rem; max-width: 1200px; 
 button.small { padding: 0.25rem 0.6rem; font-size: 0.85rem; }
 .advanced { margin-top: 1.4rem; border-top: 1px solid var(--line); padding-top: 0.8rem; }
 .advanced summary { cursor: pointer; color: var(--muted); }
+
+/* Discover: results grouped by book */
+.books { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.8rem; }
+.book { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 0.8rem 1rem; }
+.book-head { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; align-items: start; }
+.book-head .title { font-weight: 600; font-size: 1.05rem; }
+.book-head .author { color: var(--muted); }
+.availability { display: flex; gap: 0.4rem; }
+.chip { font-size: 0.8rem; padding: 0.15rem 0.6rem; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+.chip.on { background: var(--accent-soft); color: var(--text); border-color: transparent; }
+.options { list-style: none; padding: 0; margin: 0.6rem 0 0; display: grid; gap: 0.3rem; }
+.options li { display: flex; align-items: center; gap: 0.8rem; padding: 0.4rem 0; border-top: 1px solid var(--line); }
+.options .kind { width: 6.5rem; flex: none; font-size: 0.85rem; font-weight: 500; }
+.options .meta { flex: 1; min-width: 0; }
+.options .release { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+@media (max-width: 760px) { .options .kind { width: auto; } .options li { flex-wrap: wrap; } }

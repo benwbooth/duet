@@ -240,7 +240,6 @@ async fn test_qbit( Json(q): Json<duet_common::QbitSettings>) -> ApiResult<Json<
 #[derive(Deserialize)]
 struct SearchQuery {
     q: String,
-    kind: AssetKind,
 }
 
 #[derive(serde::Serialize)]
@@ -249,18 +248,22 @@ struct SearchResponse {
     errors: Vec<String>,
 }
 
+/// Searches every source for both ebooks and audiobooks at once; the UI groups the hits by book.
 async fn search(AxState(s): AxState<State>, Query(q): Query<SearchQuery>) -> ApiResult<Json<SearchResponse>> {
     let settings = s.settings.read().await.clone();
     let mut results = Vec::new();
     let mut errors = Vec::new();
-    let indexer_searches = settings
-        .indexers
-        .iter()
-        .filter(|i| i.enabled)
-        .map(|ix| async { (ix.name.clone(), torznab::search(&s.http, ix, &q.q, q.kind).await) });
-    let (free_results, ix_results) =
-        tokio::join!(free::search(&s.http, &settings.free_sources, &q.q, q.kind), futures_util::future::join_all(indexer_searches));
-    for r in free_results {
+    let kinds = [AssetKind::Ebook, AssetKind::Audiobook];
+    let indexer_searches = settings.indexers.iter().filter(|i| i.enabled).flat_map(|ix| {
+        let (http, q) = (&s.http, &q.q);
+        kinds.map(move |kind| async move { (ix.name.clone(), torznab::search(http, ix, q, kind).await) })
+    });
+    let (free_ebooks, free_audio, ix_results) = tokio::join!(
+        free::search(&s.http, &settings.free_sources, &q.q, AssetKind::Ebook),
+        free::search(&s.http, &settings.free_sources, &q.q, AssetKind::Audiobook),
+        futures_util::future::join_all(indexer_searches)
+    );
+    for r in free_ebooks.into_iter().chain(free_audio) {
         match r {
             Ok(v) => results.extend(v),
             Err(e) => errors.push(format!("{e:#}")),
@@ -269,7 +272,12 @@ async fn search(AxState(s): AxState<State>, Query(q): Query<SearchQuery>) -> Api
     for (name, r) in ix_results {
         match r {
             Ok(v) => results.extend(v),
-            Err(e) => errors.push(format!("{name}: {e:#}")),
+            Err(e) => {
+                let msg = format!("{name}: {e:#}");
+                if !errors.contains(&msg) {
+                    errors.push(msg);
+                }
+            }
         }
     }
     Ok(Json(SearchResponse { results, errors }))
