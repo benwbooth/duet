@@ -21,6 +21,7 @@ exec "$venv/bin/python" workers/tts_server.py \
   --port "$port" \
   --engine fish \
   --fish-dir "$fish" \
+  --fish-url "http://127.0.0.1:$((port + 1))" \
   --fish-python "$fish/.venv/bin/python" \
   --fish-checkpoint checkpoints/s2-pro \
   --voices "$voices"

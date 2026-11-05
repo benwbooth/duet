@@ -251,6 +251,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, json.dumps({"text": text}).encode(), "application/json")
             body = json.loads(raw)
             language = body.get("language", "English")
+            if path in ("/v1/shutdown", "/shutdown"):
+                self.reply(200, b'{"ok":true}', "application/json")
+                fish.stop()
+                threading.Thread(target=lambda: os._exit(0), daemon=True).start()
+                return
             if path in ("/v1/voices", "/voices"):
                 # Cast voices ahead of time, so a long recording never switches models midway.
                 with lock:
@@ -275,7 +280,8 @@ def main():
     ap.add_argument("--voices", default="voices")
     ap.add_argument("--device", default="cuda:0", help="ROCm builds of torch also call the GPU cuda:0")
     ap.add_argument("--engine", choices=["fish", "qwen"], default="fish")
-    ap.add_argument("--fish-url", default="http://127.0.0.1:8080")
+    # Not 8080: that's qBittorrent's usual port.
+    ap.add_argument("--fish-url", default="http://127.0.0.1:8881")
     ap.add_argument("--fish-key", default="")
     ap.add_argument("--fish-dir", default="", help="fish-speech checkout; when set, this server starts and stops it")
     ap.add_argument("--fish-python", default="python")

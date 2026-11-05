@@ -34,4 +34,5 @@ urlencoding = "2"
 walkdir = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 futures-util = "0.3"
+libc = "0.2"
 tower = { version = "0.5", features = ["util"] }

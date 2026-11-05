@@ -811,6 +811,7 @@ dependencies = [
  "epub",
  "futures-util",
  "kuchikiki",
+ "libc",
  "lofty",
  "mime_guess",
  "quick-xml",

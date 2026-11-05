@@ -81,13 +81,14 @@ pub fn gpu() -> Option<(String, u64)> {
 pub async fn status(state: &State) -> VoiceSetup {
     let fish = fish_dir(state);
     let venv = venv_dir(state);
-    let server_running = {
+    let ours = {
         let mut s = state.voices.server.lock().await;
         match s.as_mut() {
             Some(child) => child.try_wait().ok().flatten().is_none(),
             None => false,
         }
     };
+    let server_running = ours || alive(state).await;
     let gpu = gpu();
     let i = state.voices.install.lock().unwrap();
     VoiceSetup {
@@ -221,6 +222,18 @@ async fn use_installed(state: &State) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether a voice server answers on duet's port (ours, or one left from an earlier run).
+async fn alive(state: &State) -> bool {
+    state
+        .http
+        .post(format!("http://127.0.0.1:{VOICE_PORT}/v1/voices"))
+        .json(&serde_json::json!({ "voices": [] }))
+        .timeout(std::time::Duration::from_millis(1500))
+        .send()
+        .await
+        .is_ok_and(|r| r.status().is_success())
+}
+
 pub async fn start_server(state: &State) -> anyhow::Result<()> {
     let mut server = state.voices.server.lock().await;
     if let Some(child) = server.as_mut() {
@@ -228,10 +241,14 @@ pub async fn start_server(state: &State) -> anyhow::Result<()> {
             return Ok(());
         }
     }
+    // One is already running (e.g. started before duet restarted): use it.
+    if alive(state).await {
+        return Ok(());
+    }
     let script = std::path::absolute(scripts_dir().join("voices.sh"))?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(state.data_dir.join("voices.log"))?;
-    let child = tokio::process::Command::new("bash")
-        .arg(&script)
+    let mut cmd = tokio::process::Command::new("bash");
+    cmd.arg(&script)
         .arg(fish_dir(state))
         .arg(venv_dir(state))
         .arg(state.data_dir.join("voices"))
@@ -239,9 +256,17 @@ pub async fn start_server(state: &State) -> anyhow::Result<()> {
         .env("DUET_DATA_DIR", &state.data_dir)
         .stdout(log.try_clone()?)
         .stderr(log)
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("running {}", script.display()))?;
+        .kill_on_drop(true);
+    // If duet itself is killed, take the voice server down with it rather than leaving it
+    // holding the port.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
+    let child = cmd.spawn().with_context(|| format!("running {}", script.display()))?;
     *server = Some(child);
     Ok(())
 }
@@ -249,6 +274,15 @@ pub async fn start_server(state: &State) -> anyhow::Result<()> {
 pub async fn stop_server(state: &State) {
     if let Some(mut child) = state.voices.server.lock().await.take() {
         let _ = child.kill().await;
+    }
+    // A server duet didn't start (left from an earlier run) is asked to shut itself down.
+    if alive(state).await {
+        let _ = state
+            .http
+            .post(format!("http://127.0.0.1:{VOICE_PORT}/v1/shutdown"))
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await;
     }
 }
 
