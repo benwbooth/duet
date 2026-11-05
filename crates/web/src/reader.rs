@@ -679,8 +679,9 @@ pub fn Reader(id: i64) -> impl IntoView {
                             }).collect_view())}
                         </select>
                         <button class="round" title="Back 30 seconds" on:click=move |_| skip(-30.0)>"−30"</button>
-                        <button class="round play" title="Play or pause" on:click=toggle>
+                        <button class="round play" class:playing=move || playing.get() title="Play or pause" on:click=toggle>
                             {move || if playing.get() { "❚❚" } else { "▶" }}
+                            <span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
                         </button>
                         <button class="round" title="Forward 30 seconds" on:click=move |_| skip(30.0)>"+30"</button>
                         <select title="Speed" on:change=move |ev| {

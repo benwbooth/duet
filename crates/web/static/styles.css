@@ -603,3 +603,125 @@ button.link { background: none; border: 0; color: var(--muted); padding: 0; text
 .choice.provider { align-items: flex-start; }
 .choice.provider small { display: block; color: var(--muted); font-size: 0.82rem; margin-top: 0.15rem; }
 .choice.provider.missing { opacity: 0.7; }
+
+/* ---------------------------------------------------------------------------------------------
+   Motion. Everything here is decoration: it all switches off under prefers-reduced-motion. */
+:root { --ease-out: cubic-bezier(0.22, 1, 0.36, 1); --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+/* Pages slide up into place when you move between them. */
+main > * { animation: page-in 0.45s var(--ease-out) both; }
+main > *:nth-child(2) { animation-delay: 0.04s; }
+main > *:nth-child(3) { animation-delay: 0.08s; }
+main > *:nth-child(4) { animation-delay: 0.12s; }
+@keyframes page-in { from { opacity: 0; transform: translateY(14px); } }
+.immersive main > * { animation: none; }
+
+/* Book covers ripple in, one after another. */
+.grid > * { animation: rise 0.55s var(--ease-out) both; }
+.grid > :nth-child(1) { animation-delay: 0.02s; } .grid > :nth-child(2) { animation-delay: 0.05s; }
+.grid > :nth-child(3) { animation-delay: 0.08s; } .grid > :nth-child(4) { animation-delay: 0.11s; }
+.grid > :nth-child(5) { animation-delay: 0.14s; } .grid > :nth-child(6) { animation-delay: 0.17s; }
+.grid > :nth-child(7) { animation-delay: 0.2s; } .grid > :nth-child(8) { animation-delay: 0.23s; }
+.grid > :nth-child(9) { animation-delay: 0.26s; } .grid > :nth-child(10) { animation-delay: 0.29s; }
+.grid > :nth-child(n+11) { animation-delay: 0.32s; }
+@keyframes rise { from { opacity: 0; transform: translateY(18px) scale(0.97); } }
+.continue-card, .edition-card, .action-card, .cast-card, .books > li, .settings > section {
+  animation: rise 0.5s var(--ease-out) both;
+}
+.continue-card:nth-child(2), .edition-card:nth-child(2), .action-card:nth-child(2), .cast-card:nth-child(2), .books > li:nth-child(2), .settings > section:nth-child(2) { animation-delay: 0.06s; }
+.continue-card:nth-child(3), .edition-card:nth-child(3), .action-card:nth-child(3), .cast-card:nth-child(3), .books > li:nth-child(3), .settings > section:nth-child(3) { animation-delay: 0.12s; }
+.continue-card:nth-child(n+4), .edition-card:nth-child(n+4), .action-card:nth-child(n+4), .cast-card:nth-child(n+4), .books > li:nth-child(n+4), .settings > section:nth-child(n+4) { animation-delay: 0.18s; }
+
+/* Covers tilt toward you like a book being picked up. */
+.cover-wrap { perspective: 900px; }
+.cover-wrap .cover { transition: transform 0.45s var(--ease-out), box-shadow 0.45s var(--ease-out); transform-origin: left center; }
+.card:hover .cover-wrap { transform: translateY(-6px); }
+.card:hover .cover-wrap .cover { transform: rotateY(-14deg) scale(1.02); }
+.card:active .cover-wrap { transform: translateY(-2px) scale(0.98); transition-duration: 0.1s; }
+.marks .mark { transition: transform 0.3s var(--ease-spring); }
+.card:hover .marks .mark { transform: translateY(-2px); }
+.card:hover .marks .mark:nth-child(2) { transition-delay: 0.04s; }
+.card:hover .marks .mark:nth-child(3) { transition-delay: 0.08s; }
+.continue-card .cover { transition: transform 0.4s var(--ease-out); }
+.continue-card:hover .cover { transform: rotate(-3deg) scale(1.04); }
+.resume .icon { transition: transform 0.3s var(--ease-spring); }
+.continue-card:hover .resume .icon { transform: translateX(3px) scale(1.15); }
+
+/* The book page: the cover drops in, the backdrop fades up. */
+.work-cover { animation: drop-in 0.7s var(--ease-spring) both; }
+@keyframes drop-in { from { opacity: 0; transform: translateY(-24px) rotate(-4deg) scale(0.92); } }
+.work-backdrop { animation: fade-in 1.2s ease-out both; }
+@keyframes fade-in { from { opacity: 0; } }
+.work-cover .cover { transition: transform 0.5s var(--ease-out); }
+.work-cover:hover .cover { transform: perspective(900px) rotateY(-10deg) scale(1.02); }
+.action-icon { transition: transform 0.35s var(--ease-spring), background 0.2s; }
+.action-card:hover .action-icon, .edition-card:hover .action-icon { transform: rotate(-8deg) scale(1.1); }
+.action-card, .edition-card, .cast-card { transition: transform 0.25s var(--ease-out), box-shadow 0.25s; }
+.action-card:hover, .edition-card:hover, .cast-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+.avatar { transition: transform 0.35s var(--ease-spring); }
+.cast-card:hover .avatar { transform: scale(1.12) rotate(6deg); }
+
+/* Buttons and controls feel springy. */
+button.primary, .button.primary { position: relative; overflow: hidden; }
+button.primary::after, .button.primary::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,0.28) 50%, transparent 70%);
+  transform: translateX(-120%); transition: transform 0.7s var(--ease-out);
+}
+button.primary:hover::after, .button.primary:hover::after { transform: translateX(120%); }
+.tabs a .icon { transition: transform 0.35s var(--ease-spring); }
+.tabs a:hover .icon { transform: scale(1.12) rotate(-6deg); }
+.tabs a.active .icon { animation: pop 0.45s var(--ease-spring); }
+@keyframes pop { 40% { transform: scale(1.3); } }
+.chip-button { transition: background 0.2s, color 0.2s, transform 0.2s var(--ease-spring); }
+.chip-button:active { transform: scale(0.94); }
+.logo { transition: transform 0.6s var(--ease-spring); }
+.brand:hover .logo { transform: rotate(-12deg) scale(1.08); }
+
+/* Progress bars fill in (on the library, which doesn't redraw while you watch). */
+.continue-info .progress > div, .cover-progress > div { animation: fill 0.9s var(--ease-out) both; transform-origin: left; }
+@keyframes fill { from { transform: scaleX(0); } }
+
+/* Toasts spring up; panels open with a little scale. */
+.toast { animation: toast-spring 0.5s var(--ease-spring); }
+@keyframes toast-spring { from { opacity: 0; transform: translate(-50%, 24px) scale(0.92); } }
+.editions-panel, .toc, .assistant { animation: panel-in 0.32s var(--ease-out); transform-origin: top right; }
+.assistant { transform-origin: bottom right; }
+@keyframes panel-in { from { opacity: 0; transform: translateY(-6px) scale(0.96); } }
+.toc { animation-name: slide-in; }
+@keyframes slide-in { from { transform: translateX(100%); } }
+.message { animation: message-in 0.35s var(--ease-spring) both; }
+.message.mine { transform-origin: right; }
+@keyframes message-in { from { opacity: 0; transform: translateY(8px) scale(0.96); } }
+.fab { transition: transform 0.25s var(--ease-spring), box-shadow 0.2s; }
+.fab:hover { transform: translateY(-2px) scale(1.04); }
+.assistant-buttons .fab.secondary { animation: rise 0.3s var(--ease-spring) both; }
+
+/* The sentence being read glows in. */
+.page .s.now { animation: glow 0.6s ease-out; }
+@keyframes glow { from { background: transparent; box-shadow: 0 0 0 2px transparent; } }
+
+/* A little equalizer dances on the play button while audio plays. */
+.round.play { position: relative; }
+.round.play .eq { position: absolute; bottom: -14px; left: 50%; transform: translateX(-50%); display: flex; gap: 2px; align-items: flex-end; height: 10px; opacity: 0; transition: opacity 0.3s; }
+.round.play .eq i { width: 3px; background: var(--accent); border-radius: 2px; height: 30%; }
+.round.play.playing .eq { opacity: 1; }
+.round.play.playing .eq i { animation: eq 0.9s ease-in-out infinite; }
+.round.play.playing .eq i:nth-child(2) { animation-delay: -0.3s; }
+.round.play.playing .eq i:nth-child(3) { animation-delay: -0.6s; }
+.round.play.playing .eq i:nth-child(4) { animation-delay: -0.15s; }
+@keyframes eq { 0%, 100% { height: 25%; } 50% { height: 100%; } }
+.round.play.playing { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); animation: breathe 2.4s ease-in-out infinite; }
+@keyframes breathe { 50% { box-shadow: 0 0 0 8px transparent; } }
+
+/* Setup guide and empty states. */
+.empty-icon { animation: float 3.5s ease-in-out infinite; }
+@keyframes float { 50% { transform: translateY(-6px) rotate(-3deg); } }
+.setup-body > * { animation: page-in 0.4s var(--ease-out) both; }
+.setup-steps-nav li .num { transition: background 0.3s, transform 0.35s var(--ease-spring); }
+.setup-steps-nav li.current .num { transform: scale(1.12); }
+.setup-steps li.done .mark { animation: pop 0.4s var(--ease-spring); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
