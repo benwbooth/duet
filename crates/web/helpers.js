@@ -218,6 +218,14 @@ class Pager {
   }
 
   report() {
+    // Page images (comics, PDF) load as they come near: this spread, and one either side.
+    const imgs = this.article.querySelectorAll(".img-page img");
+    if (imgs.length) {
+      const per = this.spread ? 2 : 1;
+      for (let i = (this.page - 1) * per; i < (this.page + 2) * per; i++) {
+        if (imgs[i]) imgs[i].loading = "eager";
+      }
+    }
     if (this.h.onPage) this.h.onPage(this.page + 1, this.pages, this.spread);
   }
 

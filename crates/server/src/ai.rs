@@ -54,7 +54,7 @@ pub async fn speak(state: &State, text: &str, voice: &str, instructions: Option<
 /// The text just before the reader's position, so answers stay spoiler-free and in context.
 async fn recent_text(state: &State, work_id: i64, chapter: usize, sentence: usize) -> anyhow::Result<String> {
     let assets = db::work_assets(&state.db, work_id).await?;
-    let Some(ebook) = assets.iter().find(|a| a.kind == AssetKind::Ebook && !matches!(book::source(a, &state.data_dir), book::Source::Pdf | book::Source::NeedsConversion)) else {
+    let Some(ebook) = assets.iter().find(|a| a.kind == AssetKind::Ebook && !matches!(book::source(a, &state.data_dir), book::Source::Pdf(_) | book::Source::Comic(_) | book::Source::NeedsConversion)) else {
         return Ok(String::new());
     };
     let src = book::source(ebook, &state.data_dir);

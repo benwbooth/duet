@@ -98,6 +98,9 @@ pub struct BookLayout {
     pub mode: ReadMode,
     pub chapters: usize,
     pub toc: Vec<TocEntry>,
+    /// For page-image books (comics, PDF): how many pages.
+    #[serde(default)]
+    pub pages: usize,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -105,8 +108,8 @@ pub struct BookLayout {
 pub enum ReadMode {
     /// Server-rendered chapters with sentence spans (EPUB, text, HTML, converted formats).
     Chapters,
-    /// The browser's own PDF viewer.
-    Pdf,
+    /// Pictures of pages (comics, PDF), served one image per page; one "chapter" holds them all.
+    Images,
     /// Needs conversion first (e.g. MOBI without Calibre installed).
     Unsupported,
 }

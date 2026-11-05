@@ -8,6 +8,7 @@ mod dev;
 mod downloads;
 mod error;
 mod free;
+mod images;
 mod jobs;
 mod library;
 mod qbit;

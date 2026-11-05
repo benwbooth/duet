@@ -7,20 +7,25 @@ use anyhow::{Context, bail};
 use duet_common::{Asset, BookLayout, Chapter, ReadMode, TocEntry, text};
 use kuchikiki::{NodeRef, traits::TendrilSink};
 
-use crate::library::ext_of;
+use crate::{images, library::ext_of};
 
 /// Where an ebook asset's readable content comes from.
 pub enum Source {
     Epub(PathBuf),
     Text(PathBuf),
     Html(PathBuf),
-    Pdf,
+    /// Pages rendered to images: PDF through poppler, comics straight from the archive.
+    Pdf(PathBuf),
+    Comic(PathBuf),
     /// MOBI, AZW3, FB2, DOCX... until converted to EPUB.
     NeedsConversion,
 }
 
 /// Formats Calibre's ebook-convert turns into EPUB for us.
-pub const CONVERTIBLE: &[&str] = &["mobi", "azw", "azw3", "fb2", "docx", "rtf", "odt", "lit"];
+pub const CONVERTIBLE: &[&str] = &[
+    "mobi", "azw", "azw3", "azw4", "prc", "pdb", "fb2", "fbz", "docx", "rtf", "odt", "lit", "lrf", "chm", "djvu",
+    "htmlz", "txtz", "pml", "rb", "snb", "tcr",
+];
 
 pub fn converted_path(data_dir: &Path, asset_id: i64) -> PathBuf {
     data_dir.join("converted").join(format!("{asset_id}.epub"))
@@ -32,7 +37,8 @@ pub fn source(asset: &Asset, data_dir: &Path) -> Source {
         "epub" => Source::Epub(path),
         "txt" | "md" => Source::Text(path),
         "html" | "htm" | "xhtml" => Source::Html(path),
-        "pdf" => Source::Pdf,
+        "pdf" => Source::Pdf(path),
+        "cbz" | "cbr" | "cb7" | "cbt" => Source::Comic(path),
         _ => {
             let converted = converted_path(data_dir, asset.id);
             if converted.exists() { Source::Epub(converted) } else { Source::NeedsConversion }
@@ -60,16 +66,19 @@ pub fn layout(src: &Source) -> anyhow::Result<BookLayout> {
                 }
             }
             walk(&doc, &doc.toc, 0, &mut toc);
-            Ok(BookLayout { mode: ReadMode::Chapters, chapters: doc.spine.len(), toc })
+            Ok(BookLayout { mode: ReadMode::Chapters, chapters: doc.spine.len(), toc, pages: 0 })
         }
         Source::Text(path) => {
             let chapters = text_chapters(&std::fs::read_to_string(path)?);
             let toc = chapters.iter().enumerate().map(|(i, c)| TocEntry { title: c.0.clone(), chapter: i, depth: 0 }).collect();
-            Ok(BookLayout { mode: ReadMode::Chapters, chapters: chapters.len(), toc })
+            Ok(BookLayout { mode: ReadMode::Chapters, chapters: chapters.len(), toc, pages: 0 })
         }
-        Source::Html(_) => Ok(BookLayout { mode: ReadMode::Chapters, chapters: 1, toc: Vec::new() }),
-        Source::Pdf => Ok(BookLayout { mode: ReadMode::Pdf, chapters: 0, toc: Vec::new() }),
-        Source::NeedsConversion => Ok(BookLayout { mode: ReadMode::Unsupported, chapters: 0, toc: Vec::new() }),
+        Source::Html(_) => Ok(BookLayout { mode: ReadMode::Chapters, chapters: 1, toc: Vec::new(), pages: 0 }),
+        Source::Pdf(path) => Ok(BookLayout { mode: ReadMode::Images, chapters: 1, toc: Vec::new(), pages: images::pdf_pages(path)? }),
+        Source::Comic(path) => {
+            Ok(BookLayout { mode: ReadMode::Images, chapters: 1, toc: Vec::new(), pages: images::comic_pages(path)?.len() })
+        }
+        Source::NeedsConversion => Ok(BookLayout { mode: ReadMode::Unsupported, chapters: 0, toc: Vec::new(), pages: 0 }),
     }
 }
 
@@ -98,7 +107,7 @@ fn chapter_source(src: &Source, index: usize) -> anyhow::Result<(String, String)
             Ok((html, String::new()))
         }
         Source::Html(path) => Ok((std::fs::read_to_string(path)?, String::new())),
-        Source::Pdf | Source::NeedsConversion => bail!("this format has no chapters"),
+        Source::Pdf(_) | Source::Comic(_) | Source::NeedsConversion => bail!("this format has no chapters"),
     }
 }
 
@@ -260,7 +269,25 @@ fn wrap_sentences(body: &NodeRef) -> Vec<String> {
     sentences
 }
 
+/// Page-image books are one "chapter" of page images, one per page of the book.
+fn image_pages(src: &Source, asset_id: i64) -> anyhow::Result<Chapter> {
+    let pages = layout(src)?.pages;
+    // PDFs are rendered to a size; comics are served as they are.
+    let query = if matches!(src, Source::Pdf(_)) { "?w=1400" } else { "" };
+    let mut html = String::new();
+    for n in 0..pages {
+        html.push_str(&format!(
+            r#"<div class="img-page"><img src="/api/assets/{asset_id}/pages/{n}{query}" alt="Page {}" loading="lazy" decoding="async"></div>"#,
+            n + 1
+        ));
+    }
+    Ok(Chapter { index: 0, html, sentences: 0 })
+}
+
 pub fn chapter(src: &Source, asset_id: i64, index: usize) -> anyhow::Result<Chapter> {
+    if matches!(src, Source::Pdf(_) | Source::Comic(_)) {
+        return image_pages(src, asset_id);
+    }
     let body = chapter_dom(src, asset_id, index)?;
     let sentences = wrap_sentences(&body);
     let mut html = Vec::new();

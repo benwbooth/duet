@@ -11,10 +11,12 @@ use duet_common::{AssetKind, ScanReport, text};
 use lofty::{file::{AudioFile, TaggedFileExt}, tag::Accessor};
 use sqlx::SqlitePool;
 
-use crate::State;
+use crate::{State, images};
 
-pub const EBOOK_EXTS: &[&str] =
-    &["epub", "pdf", "txt", "md", "html", "htm", "xhtml", "mobi", "azw", "azw3", "fb2", "docx", "rtf", "odt", "lit"];
+pub const EBOOK_EXTS: &[&str] = &[
+    "epub", "pdf", "txt", "md", "html", "htm", "xhtml", "cbz", "cbr", "cb7", "cbt", "mobi", "azw", "azw3", "azw4", "prc",
+    "pdb", "fb2", "fbz", "docx", "rtf", "odt", "lit", "lrf", "chm", "djvu", "htmlz", "txtz", "pml", "rb", "snb", "tcr",
+];
 pub const AUDIO_EXTS: &[&str] = &["m4b", "m4a", "mp3", "aac", "ogg", "oga", "opus", "flac", "wav"];
 
 pub fn ext_of(path: &Path) -> String {
@@ -144,6 +146,10 @@ pub async fn import_path(state: &State, path: &Path, kind: AssetKind, origin: &s
     .bind(origin)
     .fetch_one(&state.db)
     .await?;
+    // Formats only Calibre reads get an EPUB made straight away.
+    if kind == AssetKind::Ebook && crate::book::CONVERTIBLE.contains(&format.as_str()) {
+        crate::jobs::enqueue_pair(state, duet_common::JobKind::Convert, work_id, Some(asset_id), None).await?;
+    }
     for (i, t) in tracks.iter().enumerate() {
         sqlx::query("INSERT INTO tracks (asset_id, idx, path, title, duration_secs) VALUES (?, ?, ?, ?, ?)")
             .bind(asset_id)
@@ -256,7 +262,66 @@ pub fn ebook_meta(path: &Path) -> Meta {
                 return meta;
             }
         }
+    if images::is_comic(path) {
+        return comic_meta(path);
+    }
+    if ext_of(path) == "pdf" {
+        return pdf_meta(path);
+    }
     meta_from_filename(path)
+}
+
+/// The text of an XML element, e.g. `<Series>…</Series>` in ComicInfo.xml.
+fn xml_field(xml: &str, tag: &str) -> Option<String> {
+    let start = xml.find(&format!("<{tag}>"))? + tag.len() + 2;
+    let end = xml[start..].find(&format!("</{tag}>"))? + start;
+    let v = xml[start..end].trim().replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">");
+    (!v.is_empty()).then_some(v)
+}
+
+/// Comics: ComicInfo.xml when present (series, issue, writer), and the first page as the cover.
+fn comic_meta(path: &Path) -> Meta {
+    let mut meta = meta_from_filename(path);
+    if let Some(xml) = images::comic_info(path) {
+        let series = xml_field(&xml, "Series");
+        let number = xml_field(&xml, "Number");
+        meta.title = match (xml_field(&xml, "Title"), &series, &number) {
+            (Some(t), _, _) => t,
+            (None, Some(s), Some(n)) => format!("{s} #{n}"),
+            (None, Some(s), None) => s.clone(),
+            _ => meta.title,
+        };
+        meta.author = xml_field(&xml, "Writer").or(meta.author);
+        meta.description = xml_field(&xml, "Summary");
+        meta.series_index = number.and_then(|n| n.parse().ok());
+        meta.series = series;
+    }
+    meta.cover = images::comic_page(path, 0).ok().map(|(bytes, _)| bytes);
+    meta
+}
+
+/// PDFs: the document's title and author when it has them, and page one as the cover.
+fn pdf_meta(path: &Path) -> Meta {
+    let mut meta = meta_from_filename(path);
+    if let Ok(out) = std::process::Command::new("pdfinfo").arg(path).output() {
+        let info = String::from_utf8_lossy(&out.stdout);
+        let field = |k: &str| {
+            info.lines()
+                .find_map(|l| l.strip_prefix(k))
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("untitled") && !v.ends_with(".doc"))
+        };
+        // Tools often stamp the file name or their own URL in here; those aren't a title or author.
+        let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        if let Some(t) = field("Title:").filter(|t| *t != stem && !t.contains("://") && !t.contains('\\') && !t.contains('/')) {
+            meta.title = t;
+        }
+        meta.author = field("Author:").filter(|a| !a.contains("://") && !a.contains('@')).or(meta.author);
+    }
+    let tmp = std::env::temp_dir().join(format!("duet-cover-{}", std::process::id()));
+    meta.cover = images::pdf_page(path, 0, 600, &tmp).ok();
+    let _ = std::fs::remove_dir_all(&tmp);
+    meta
 }
 
 fn strip_tags(s: &str) -> String {

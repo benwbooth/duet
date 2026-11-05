@@ -121,7 +121,8 @@ async fn run_one(
             let src = work
                 .assets
                 .iter()
-                .find(|a| a.kind == AssetKind::Ebook && book::CONVERTIBLE.contains(&a.format.as_str()))
+                .filter(|a| a.kind == AssetKind::Ebook && book::CONVERTIBLE.contains(&a.format.as_str()))
+                .find(|a| ebook_choice.is_none_or(|c| c == a.id))
                 .context("no MOBI/AZW3/FB2/DOCX edition to convert")?;
             let out = book::converted_path(&state.data_dir, src.id);
             tokio::fs::create_dir_all(out.parent().unwrap()).await?;

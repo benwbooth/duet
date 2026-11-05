@@ -82,10 +82,11 @@
               mkdir -p $out/share/duet
               ln -s ${web} $out/share/duet/web
               cp -r workers $out/share/duet/workers
-              # Calibre converts MOBI/AZW3/FB2/DOCX; ffmpeg encodes generated audio.
+              # Calibre converts MOBI/AZW3/FB2/DOCX; ffmpeg encodes generated audio; poppler renders
+              # PDF pages; libarchive's bsdtar opens CBR/CB7/CBT comics.
               wrapProgram $out/bin/duet \
                 --set-default DUET_WEB_DIR $out/share/duet/web \
-                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.calibre pkgs.ffmpeg ]}
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.calibre pkgs.ffmpeg pkgs.poppler-utils pkgs.libarchive ]}
               runHook postInstall
             '';
             doCheck = false;
@@ -95,7 +96,7 @@
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ rustc cargo clippy rustfmt rust-analyzer wasm-bindgen-cli lld ffmpeg watchexec ];
+          packages = with pkgs; [ rustc cargo clippy rustfmt rust-analyzer wasm-bindgen-cli lld ffmpeg watchexec poppler-utils libarchive calibre ];
         };
       });
     };

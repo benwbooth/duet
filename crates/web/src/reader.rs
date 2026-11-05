@@ -272,7 +272,7 @@ pub fn Reader(id: i64) -> impl IntoView {
         let c = chapter.get();
         let Some(e) = ebook.get() else { return };
         let Some(l) = layout.get() else { return };
-        if l.mode != ReadMode::Chapters || c == usize::MAX {
+        if !matches!(l.mode, ReadMode::Chapters | ReadMode::Images) || c == usize::MAX {
             return;
         }
         let c = c.min(l.chapters.saturating_sub(1));
@@ -585,17 +585,14 @@ pub fn Reader(id: i64) -> impl IntoView {
             </Show>
 
             {move || match (ebook.get(), layout.get()) {
-                (Some(e), Some(l)) if l.mode == ReadMode::Pdf => view! {
-                    <iframe class="pdf" src=format!("/api/assets/{}/file", e.id) title="PDF"></iframe>
-                }.into_any(),
                 (Some(_), Some(l)) if l.mode == ReadMode::Unsupported => view! {
                     <div class="empty">
-                        <p>"This format needs converting before it can be read."</p>
-                        <button on:click=move |_| spawn_local(crate::start_job(duet_common::JobKind::Convert, id))>"Convert to EPUB"</button>
+                        <p>"This book is being converted so it can be read. It usually takes a minute; follow it in "<a href="#/jobs">"Jobs"</a>"."</p>
+                        <button on:click=move |_| spawn_local(crate::start_job(duet_common::JobKind::Convert, id))>"Convert again"</button>
                     </div>
                 }.into_any(),
-                (Some(_), Some(_)) => view! {
-                    <div class="bookview" class:paged=paged node_ref=book>
+                (Some(_), Some(l)) => view! {
+                    <div class="bookview" class:paged=paged class:images=l.mode == ReadMode::Images node_ref=book>
                         <article class="page" class:synced=move || !sync.get().is_empty() node_ref=page
                             inner_html=move || html.get() on:click=on_page_click></article>
                     </div>

@@ -43,6 +43,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assets/{id}/layout", get(layout))
         .route("/assets/{id}/chapters/{n}", get(chapter))
         .route("/assets/{id}/res/{*path}", get(resource))
+        .route("/assets/{id}/pages/{n}", get(page_image))
         .route("/assets/{id}/locate", get(locate))
         .route("/assets/{id}/tracks/{n}", get(track))
         .route("/assets/{id}/link", post(link))
@@ -436,4 +437,31 @@ async fn folders(Query(q): Query<FolderQuery>) -> ApiResult<Json<duet_common::Fo
         }))
     })
     .await?
+}
+
+#[derive(Deserialize)]
+struct PageQuery {
+    w: Option<u32>,
+}
+
+/// One page of a comic or PDF as an image.
+async fn page_image(
+    AxState(s): AxState<State>,
+    Path((id, n)): Path<(i64, usize)>,
+    Query(q): Query<PageQuery>,
+) -> ApiResult<Response> {
+    let a = asset_or_404(&s, id).await?;
+    let src = book::source(&a, &s.data_dir);
+    let cache = s.data_dir.join("cache").join("pages").join(id.to_string());
+    let (bytes, mime) = tokio::task::spawn_blocking(move || match src {
+        book::Source::Comic(path) => crate::images::comic_page(&path, n),
+        book::Source::Pdf(path) => {
+            let w = q.w.unwrap_or(1400).clamp(200, 3000);
+            crate::images::pdf_page(&path, n, w, &cache).map(|b| (b, "image/jpeg".to_string()))
+        }
+        _ => Err(anyhow::anyhow!("not a comic or PDF")),
+    })
+    .await?
+    .map_err(|e| ApiError::not_found(&format!("page ({e:#})")))?;
+    Ok(([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "max-age=604800".to_string())], bytes).into_response())
 }
