@@ -365,6 +365,8 @@ pub struct ReaderSettings {
     pub playback_rate: f64,
     /// Turn pages / scroll to follow the audio.
     pub follow_audio: bool,
+    /// "pages" (turn pages like a book) or "scroll"
+    pub layout: String,
 }
 
 impl Default for ReaderSettings {
@@ -376,6 +378,7 @@ impl Default for ReaderSettings {
             line_height: 1.6,
             playback_rate: 1.0,
             follow_audio: true,
+            layout: "pages".into(),
         }
     }
 }

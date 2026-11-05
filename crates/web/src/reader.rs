@@ -7,7 +7,7 @@ use duet_common::{
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 
 use crate::{api, format_time, toast};
 
@@ -137,6 +137,12 @@ pub fn Reader(id: i64) -> impl IntoView {
     let font_size = RwSignal::new(19u32);
 
     let page = NodeRef::<leptos::html::Article>::new();
+    let book = NodeRef::<leptos::html::Div>::new();
+    let paged = move || prefs.with(|p| p.layout != "scroll");
+    // (page, pages) within the chapter, in the paged layout.
+    let page_info = RwSignal::new((1u32, 1u32));
+    // Coming back from the next chapter opens this one on its last page.
+    let start_at_end = RwSignal::new(false);
     let audio = NodeRef::<leptos::html::Audio>::new();
     let toast = toast();
 
@@ -176,6 +182,72 @@ pub fn Reader(id: i64) -> impl IntoView {
         work.set(Some(w));
     });
 
+    // Turning past the first or last page moves to the neighbouring chapter.
+    let chapter_count = move || layout.get_untracked().map(|l| l.chapters).unwrap_or(0);
+    let pager_next = Closure::<dyn Fn()>::new(move || {
+        let c = chapter.get_untracked();
+        if c + 1 < chapter_count() {
+            scroll_to.set(Some(0));
+            chapter.set(c + 1);
+        }
+    })
+    .into_js_value()
+    .unchecked_into::<js_sys::Function>();
+    let pager_prev = Closure::<dyn Fn()>::new(move || {
+        let c = chapter.get_untracked();
+        if c > 0 && c != usize::MAX {
+            start_at_end.set(true);
+            chapter.set(c - 1);
+        }
+    })
+    .into_js_value()
+    .unchecked_into::<js_sys::Function>();
+    let pager_page = Closure::<dyn Fn(u32, u32)>::new(move |p, n| page_info.set((p, n)))
+        .into_js_value()
+        .unchecked_into::<js_sys::Function>();
+    // Lays the chapter out as pages (or a scrolling column) and goes to the wanted place.
+    let lay_out = StoredValue::new_local(move || {
+        let (Some(el), Some(b)) = (page.get_untracked(), book.get_untracked()) else { return };
+        if paged() {
+            crate::pager_init(&b, &el, &pager_next, &pager_prev, &pager_page);
+        } else {
+            crate::pager_destroy(&b);
+            el.set_attribute("style", "").ok();
+        }
+        if start_at_end.get_untracked() && paged() {
+            start_at_end.set(false);
+            crate::pager_end(&b);
+        } else {
+            crate::scroll_to_sentence(&el, scroll_to.get_untracked().unwrap_or(0));
+        }
+        scroll_to.set(None);
+        crate::highlight(&el, sentence.get_untracked(), false);
+    });
+    // The page element is rebuilt when the edition or layout changes; lay it out again then.
+    Effect::new(move |_| {
+        if book.get().is_some() && !html.get_untracked().is_empty() {
+            request_animation_frame(move || lay_out.with_value(|f| f()));
+        }
+    });
+    on_cleanup(move || {
+        if let Some(b) = book.get_untracked() {
+            crate::pager_destroy(&b);
+        }
+    });
+    let toggle_layout = move |_| {
+        let keep = page.get_untracked().map(|el| crate::visible_sentence(&el)).unwrap_or(0);
+        prefs.update(|p| p.layout = if p.layout == "scroll" { "pages".into() } else { "scroll".into() });
+        let layout_choice = prefs.get_untracked().layout;
+        scroll_to.set(Some(keep));
+        request_animation_frame(move || lay_out.with_value(|f| f()));
+        spawn_local(async move {
+            if let Ok(mut s) = api::get::<Settings>("/api/settings").await {
+                s.reader.layout = layout_choice;
+                let _ = api::put::<_, Settings>("/api/settings", &s).await;
+            }
+        });
+    };
+
     // Load a chapter whenever it changes.
     Effect::new(move |_| {
         let c = chapter.get();
@@ -190,13 +262,7 @@ pub fn Reader(id: i64) -> impl IntoView {
                 Ok(ch) => {
                     html.set(ch.html);
                     // Let the DOM update first.
-                    request_animation_frame(move || {
-                        if let Some(el) = page.get_untracked() {
-                            crate::scroll_to_sentence(&el, scroll_to.get_untracked().unwrap_or(0));
-                            scroll_to.set(None);
-                            crate::highlight(&el, sentence.get_untracked(), false);
-                        }
-                    });
+                    request_animation_frame(move || lay_out.with_value(|f| f()));
                 }
                 Err(err) => toast.show(err.0),
             }
@@ -401,7 +467,7 @@ pub fn Reader(id: i64) -> impl IntoView {
     };
 
     view! {
-        <div class="reader" style=move || {
+        <div class="reader" class:paged-mode=paged class:has-player=move || audio_asset.get().is_some() style=move || {
             let p = prefs.get();
             format!("--font-size:{}px;--line-height:{};--font:{}", font_size.get(), p.line_height, p.font)
         } data-theme=move || prefs.get().theme>
@@ -414,6 +480,9 @@ pub fn Reader(id: i64) -> impl IntoView {
                         layout.get().and_then(|l| l.toc.iter().rev().find(|t| t.chapter <= c).map(|t| t.title.clone()))
                     }}</small>
                 </div>
+                <button class="icon-button" title="Switch between turning pages and scrolling" on:click=toggle_layout>
+                    {move || if paged() { "Scroll" } else { "Pages" }}
+                </button>
                 <button class="icon-button" title="Smaller text" on:click=move |_| font_size.update(|f| *f = (*f - 1).max(12))>"A−"</button>
                 <button class="icon-button" title="Larger text" on:click=move |_| font_size.update(|f| *f = (*f + 1).min(32))>"A+"</button>
                 <Show when=move || work.get().is_some_and(|w| w.assets.len() > 1)>
@@ -502,13 +571,23 @@ pub fn Reader(id: i64) -> impl IntoView {
                     </div>
                 }.into_any(),
                 (Some(_), Some(_)) => view! {
-                    <article class="page" class:synced=move || !sync.get().is_empty() node_ref=page
-                        inner_html=move || html.get() on:click=on_page_click></article>
+                    <div class="bookview" class:paged=paged node_ref=book>
+                        <article class="page" class:synced=move || !sync.get().is_empty() node_ref=page
+                            inner_html=move || html.get() on:click=on_page_click></article>
+                    </div>
                     <div class="chapter-nav">
                         <button disabled=move || chapter.get() == 0 || chapter.get() == usize::MAX
                             on:click=move |_| go_chapter(chapter.get_untracked().saturating_sub(1))>"‹ Previous"</button>
-                        <span>{move || format!("{} / {}", chapter.get().saturating_add(1).min(chapters()), chapters())}</span>
-                        <button disabled=move || chapter.get().saturating_add(1) >= chapters()
+                        <span>{move || {
+                            let c = format!("Chapter {} of {}", chapter.get().saturating_add(1).min(chapters()), chapters());
+                            if paged() {
+                                let (p, n) = page_info.get();
+                                format!("{c} · page {p} of {n}")
+                            } else {
+                                c
+                            }
+                        }}</span>
+                        <button disabled=move || chapters() <= chapter.get().saturating_add(1)
                             on:click=move |_| go_chapter(chapter.get_untracked() + 1)>"Next ›"</button>
                     </div>
                 }.into_any(),

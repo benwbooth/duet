@@ -211,6 +211,13 @@ pub fn SettingsPage() -> impl IntoView {
                     <input type="number" min="0.5" max="3" step="0.05" prop:value=move || s.with(|x| x.reader.playback_rate.to_string())
                         on:change=move |ev| s.update(|x| if let Ok(v) = event_target_value(&ev).parse() { x.reader.playback_rate = v })/>
                 </label>
+                <label class="field">
+                    <span>"Page layout"</span>
+                    <select on:change=move |ev| s.update(|x| x.reader.layout = event_target_value(&ev))>
+                        <option value="pages" selected=move || s.with(|x| x.reader.layout != "scroll")>"Turn pages, like a book"</option>
+                        <option value="scroll" selected=move || s.with(|x| x.reader.layout == "scroll")>"Scroll"</option>
+                    </select>
+                </label>
                 {toggle(s, "Follow the audio (scroll and turn chapters)", |x| x.reader.follow_audio, |x, v| x.reader.follow_audio = v)}
             </section>
         </div>

@@ -326,3 +326,49 @@ button.link { background: none; border: 0; color: var(--muted); padding: 0; text
 }
 .edition-group h4 { margin: 0.4rem 0; font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .edition-group .choice { margin-bottom: 0.3rem; }
+
+/* Paged reader: a book with turning pages */
+.reader.has-player { --player-h: 132px; }
+.reader.paged-mode { padding-bottom: 0; }
+.reader.paged-mode .bookview {
+  position: relative; overflow: hidden; contain: paint;
+  height: calc(100dvh - 54px - var(--player-h, 0px) - 3.2rem);
+  max-width: 46em; margin: 1rem auto 0;
+  background: linear-gradient(to right, rgba(0,0,0,0.07), rgba(0,0,0,0) 4%), var(--page-bg);
+  border-radius: 3px 8px 8px 3px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.12), 0 12px 32px rgba(0,0,0,0.18),
+    3px 0 0 -1px var(--page-bg), 4px 0 0 -1px rgba(0,0,0,0.12), 6px 1px 0 -2px var(--page-bg), 7px 1px 0 -2px rgba(0,0,0,0.1);
+  touch-action: pan-y; user-select: text;
+}
+.bookview.paged .page {
+  max-width: none; margin: 0; height: 100%; width: 100%;
+  padding: 2.6rem var(--page-pad, 40px) 2.2rem; column-fill: auto;
+  text-align: justify; hyphens: auto; will-change: transform;
+}
+.bookview.paged .page img { max-height: calc(100% - 2rem); object-fit: contain; break-inside: avoid; }
+.bookview.paged .page h1, .bookview.paged .page h2, .bookview.paged .page h3 { break-after: avoid; text-align: left; }
+.leaf {
+  position: absolute; inset: 0; z-index: 3; transform-origin: left center; transform-style: preserve-3d;
+  pointer-events: none;
+}
+.leaf-front, .leaf-back { position: absolute; inset: 0; overflow: hidden; backface-visibility: hidden; background: var(--page-bg); }
+.leaf-front .page { color: var(--page-text); }
+.leaf-back {
+  transform: rotateY(180deg);
+  background: linear-gradient(to left, rgba(0,0,0,0.1), rgba(0,0,0,0) 25%), var(--page-bg);
+}
+/* The paper darkens toward the fold as it lifts. */
+.leaf-shade {
+  position: absolute; inset: 0; opacity: 0; pointer-events: none;
+  background: linear-gradient(to left, rgba(0,0,0,0.38), rgba(0,0,0,0.06) 30%, rgba(255,255,255,0.12) 55%, rgba(0,0,0,0) 80%);
+}
+/* The shadow the turning page casts on the one underneath. */
+.turn-shadow {
+  position: absolute; inset: 0; z-index: 2; opacity: 0; pointer-events: none;
+  background: linear-gradient(to left, rgba(0,0,0,0.3), rgba(0,0,0,0) 40%);
+}
+.reader.paged-mode .chapter-nav { margin: 0.4rem auto 0; max-width: 46em; font-size: 0.85rem; padding: 0 0.6rem; }
+.reader.paged-mode .chapter-nav button { padding: 0.25rem 0.6rem; font-size: 0.85rem; }
+@media (max-width: 760px) {
+  .reader.paged-mode .bookview { margin: 0; border-radius: 0; box-shadow: none; height: calc(100dvh - 54px - var(--player-h, 0px) - 2.8rem); }
+}

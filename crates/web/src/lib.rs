@@ -35,6 +35,12 @@ extern "C" {
     fn format_time(secs: f64) -> String;
     #[wasm_bindgen(js_name = setMediaSession)]
     fn set_media_session(title: &str, artist: &str, artwork: &str);
+    #[wasm_bindgen(js_name = pagerInit)]
+    fn pager_init(book: &web_sys::Element, article: &web_sys::Element, on_next: &js_sys::Function, on_prev: &js_sys::Function, on_page: &js_sys::Function);
+    #[wasm_bindgen(js_name = pagerDestroy)]
+    fn pager_destroy(book: &web_sys::Element);
+    #[wasm_bindgen(js_name = pagerEnd)]
+    fn pager_end(book: &web_sys::Element);
 }
 
 #[wasm_bindgen(start)]

@@ -65,6 +65,8 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         // Positions, sync maps and job status change under the browser; covers and book
         // resources set their own caching.
         .layer(SetResponseHeaderLayer::if_not_present(header::CACHE_CONTROL, header::HeaderValue::from_static("no-cache")))
+        // Unknown API paths are a 404, not the app's index page.
+        .fallback(|| async { ApiError::not_found("API endpoint") })
         .with_state(state);
     let index = web_dir.join("index.html");
     let mut app = Router::new();
