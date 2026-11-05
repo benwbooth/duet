@@ -1,0 +1,7 @@
+/target
+/crates/web/dist
+/data
+__pycache__/
+*.pyc
+.venv/
+result

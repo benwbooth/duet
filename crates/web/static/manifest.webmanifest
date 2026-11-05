@@ -1,0 +1,10 @@
+{
+  "name": "duet",
+  "short_name": "duet",
+  "description": "Read and listen to your books in sync",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#faf6ef",
+  "theme_color": "#7a4b2a",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

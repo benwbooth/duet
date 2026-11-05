@@ -1,0 +1,11 @@
+[package]
+name = "duet-common"
+description = "Types shared by the duet server and web UI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true

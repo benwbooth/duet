@@ -1,0 +1,326 @@
+//! Reading: splits ebooks into chapters, renders them as HTML with every sentence wrapped in a
+//! numbered span, and exports the same sentences for the aligner and the full-cast pipeline.
+
+use std::path::{Component, Path, PathBuf};
+
+use anyhow::{Context, bail};
+use duet_common::{Asset, BookLayout, Chapter, ReadMode, TocEntry, text};
+use kuchikiki::{NodeRef, traits::TendrilSink};
+
+use crate::library::ext_of;
+
+/// Where an ebook asset's readable content comes from.
+pub enum Source {
+    Epub(PathBuf),
+    Text(PathBuf),
+    Html(PathBuf),
+    Pdf,
+    /// MOBI, AZW3, FB2, DOCX... until converted to EPUB.
+    NeedsConversion,
+}
+
+/// Formats Calibre's ebook-convert turns into EPUB for us.
+pub const CONVERTIBLE: &[&str] = &["mobi", "azw", "azw3", "fb2", "docx", "rtf", "odt", "lit"];
+
+pub fn converted_path(data_dir: &Path, asset_id: i64) -> PathBuf {
+    data_dir.join("converted").join(format!("{asset_id}.epub"))
+}
+
+pub fn source(asset: &Asset, data_dir: &Path) -> Source {
+    let path = PathBuf::from(&asset.path);
+    match ext_of(&path).as_str() {
+        "epub" => Source::Epub(path),
+        "txt" | "md" => Source::Text(path),
+        "html" | "htm" | "xhtml" => Source::Html(path),
+        "pdf" => Source::Pdf,
+        _ => {
+            let converted = converted_path(data_dir, asset.id);
+            if converted.exists() { Source::Epub(converted) } else { Source::NeedsConversion }
+        }
+    }
+}
+
+const BLOCKS: &[&str] = &[
+    "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "td", "th", "pre", "section", "article",
+    "header", "footer", "figcaption", "dd", "dt", "body", "aside", "caption",
+];
+
+pub fn layout(src: &Source) -> anyhow::Result<BookLayout> {
+    match src {
+        Source::Epub(path) => {
+            let doc = epub::doc::EpubDoc::new(path).context("opening EPUB")?;
+            let mut toc = Vec::new();
+            fn walk(doc: &epub::doc::EpubDoc<std::io::BufReader<std::fs::File>>, points: &[epub::doc::NavPoint], depth: usize, toc: &mut Vec<TocEntry>) {
+                for p in points {
+                    let content = PathBuf::from(p.content.to_string_lossy().split('#').next().unwrap_or(""));
+                    if let Some(chapter) = doc.resource_uri_to_chapter(&content) {
+                        toc.push(TocEntry { title: p.label.trim().to_string(), chapter, depth });
+                    }
+                    walk(doc, &p.children, depth + 1, toc);
+                }
+            }
+            walk(&doc, &doc.toc, 0, &mut toc);
+            Ok(BookLayout { mode: ReadMode::Chapters, chapters: doc.spine.len(), toc })
+        }
+        Source::Text(path) => {
+            let chapters = text_chapters(&std::fs::read_to_string(path)?);
+            let toc = chapters.iter().enumerate().map(|(i, c)| TocEntry { title: c.0.clone(), chapter: i, depth: 0 }).collect();
+            Ok(BookLayout { mode: ReadMode::Chapters, chapters: chapters.len(), toc })
+        }
+        Source::Html(_) => Ok(BookLayout { mode: ReadMode::Chapters, chapters: 1, toc: Vec::new() }),
+        Source::Pdf => Ok(BookLayout { mode: ReadMode::Pdf, chapters: 0, toc: Vec::new() }),
+        Source::NeedsConversion => Ok(BookLayout { mode: ReadMode::Unsupported, chapters: 0, toc: Vec::new() }),
+    }
+}
+
+/// Raw chapter HTML and the path it lives at inside the book (for resolving images).
+fn chapter_source(src: &Source, index: usize) -> anyhow::Result<(String, String)> {
+    match src {
+        Source::Epub(path) => {
+            let mut doc = epub::doc::EpubDoc::new(path)?;
+            if !doc.set_current_chapter(index) {
+                bail!("no chapter {index}");
+            }
+            let base = doc.get_current_path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let (html, _) = doc.get_current_str().context("reading chapter")?;
+            Ok((html, base))
+        }
+        Source::Text(path) => {
+            let chapters = text_chapters(&std::fs::read_to_string(path)?);
+            let (title, body) = chapters.get(index).context("no such chapter")?;
+            let mut html = String::new();
+            if !title.is_empty() {
+                html.push_str(&format!("<h2>{}</h2>", escape(title)));
+            }
+            for para in body.split("\n\n").map(str::trim).filter(|p| !p.is_empty()) {
+                html.push_str(&format!("<p>{}</p>", escape(&para.replace('\n', " "))));
+            }
+            Ok((html, String::new()))
+        }
+        Source::Html(path) => Ok((std::fs::read_to_string(path)?, String::new())),
+        Source::Pdf | Source::NeedsConversion => bail!("this format has no chapters"),
+    }
+}
+
+/// Splits plain text at "Chapter ..." lines; the whole text is one chapter if there are none.
+fn text_chapters(t: &str) -> Vec<(String, String)> {
+    let t = t.replace("\r\n", "\n");
+    let mut out: Vec<(String, String)> = vec![(String::new(), String::new())];
+    for line in t.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_lowercase();
+        let heading = trimmed.len() < 60
+            && (lower.starts_with("chapter ") || lower.starts_with("book ") || lower == "prologue" || lower == "epilogue");
+        if heading {
+            out.push((trimmed.to_string(), String::new()));
+        } else {
+            let body = &mut out.last_mut().unwrap().1;
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if out[0].1.trim().is_empty() && out.len() > 1 {
+        out.remove(0);
+    }
+    out
+}
+
+fn escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Resolves `href` relative to the chapter at `base`, both paths inside the book.
+fn resolve(base: &str, href: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let base_dir = Path::new(base).parent().unwrap_or(Path::new(""));
+    for c in base_dir.join(href).components() {
+        match c {
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::Normal(s) => parts.push(s.to_string_lossy().to_string()),
+            _ => {}
+        }
+    }
+    parts.join("/")
+}
+
+/// The chapter's body as a DOM, cleaned up for display.
+fn chapter_dom(src: &Source, asset_id: i64, index: usize) -> anyhow::Result<NodeRef> {
+    let (html, base) = chapter_source(src, index)?;
+    let doc = kuchikiki::parse_html().one(html).document_node;
+    let body = doc.select_first("body").map(|b| b.as_node().clone()).unwrap_or(doc);
+    // The reader's theme replaces the book's styles; scripts never run.
+    let junk: Vec<NodeRef> =
+        body.select("script, style, link, meta, title").map(|s| s.collect::<Vec<_>>()).unwrap_or_default().into_iter().map(|n| n.as_node().clone()).collect();
+    for n in junk {
+        n.detach();
+    }
+    for el in body.select("img, image, a").into_iter().flatten() {
+        let mut attrs = el.attributes.borrow_mut();
+        for name in ["src", "href", "xlink:href"] {
+            let Some(v) = attrs.get(name).map(str::to_string) else { continue };
+            if v.starts_with("http:") || v.starts_with("https:") || v.starts_with("mailto:") || v.starts_with("data:") {
+                continue;
+            }
+            if el.name.local.as_ref() == "a" {
+                // Links to other chapters: the UI turns data-href into navigation.
+                if let Some((file, frag)) = v.split_once('#').or(Some((v.as_str(), ""))) {
+                    let target = if file.is_empty() { base.clone() } else { resolve(&base, file) };
+                    attrs.insert("data-href", format!("{target}#{frag}"));
+                    attrs.insert("href", "#".to_string());
+                }
+            } else {
+                let path = resolve(&base, &v);
+                let url = format!("/api/assets/{asset_id}/res/{}", path.split('/').map(|p| urlencoding::encode(p).into_owned()).collect::<Vec<_>>().join("/"));
+                attrs.insert(name, url);
+            }
+        }
+    }
+    Ok(body)
+}
+
+fn block_of(node: &NodeRef) -> Option<NodeRef> {
+    node.ancestors().find(|a| a.as_element().is_some_and(|e| BLOCKS.contains(&e.name.local.as_ref())))
+}
+
+/// Text nodes grouped by the block they belong to, in document order.
+fn text_groups(body: &NodeRef) -> Vec<Vec<NodeRef>> {
+    let mut groups: Vec<Vec<NodeRef>> = Vec::new();
+    let mut current_block: Option<NodeRef> = None;
+    for node in body.inclusive_descendants() {
+        if node.as_text().is_none() {
+            continue;
+        }
+        let block = block_of(&node);
+        let same = match (&block, &current_block) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same || groups.is_empty() {
+            groups.push(Vec::new());
+            current_block = block;
+        }
+        groups.last_mut().unwrap().push(node);
+    }
+    groups
+}
+
+/// Wraps every sentence in `<span class="s" data-s="N">` and returns the sentences' text.
+fn wrap_sentences(body: &NodeRef) -> Vec<String> {
+    let span_name = {
+        let tmp = kuchikiki::parse_html().one("<span></span>").document_node;
+        tmp.select_first("span").map(|s| s.name.clone()).expect("span parses")
+    };
+    let mut sentences = Vec::new();
+    for group in text_groups(body) {
+        let texts: Vec<String> = group.iter().map(|n| n.as_text().unwrap().borrow().clone()).collect();
+        let full: String = texts.concat();
+        let ranges = text::sentences(&full);
+        if ranges.is_empty() {
+            continue;
+        }
+        let first = sentences.len();
+        sentences.extend(ranges.iter().map(|r| full[r.clone()].split_whitespace().collect::<Vec<_>>().join(" ")));
+        let mut offset = 0;
+        for (node, t) in group.iter().zip(&texts) {
+            let (start, end) = (offset, offset + t.len());
+            offset = end;
+            let mut pieces: Vec<NodeRef> = Vec::new();
+            let mut pos = start;
+            for (i, r) in ranges.iter().enumerate() {
+                let (s, e) = (r.start.max(start), r.end.min(end));
+                if s >= e {
+                    continue;
+                }
+                if s > pos {
+                    pieces.push(NodeRef::new_text(&full[pos..s]));
+                }
+                let span = NodeRef::new_element(span_name.clone(), None);
+                {
+                    let el = span.as_element().unwrap();
+                    let mut attrs = el.attributes.borrow_mut();
+                    attrs.insert("class", "s".into());
+                    attrs.insert("data-s", (first + i).to_string());
+                }
+                span.append(NodeRef::new_text(&full[s..e]));
+                pieces.push(span);
+                pos = e;
+            }
+            if pos < end {
+                pieces.push(NodeRef::new_text(&full[pos..end]));
+            }
+            for p in pieces {
+                node.insert_before(p);
+            }
+            node.detach();
+        }
+    }
+    sentences
+}
+
+pub fn chapter(src: &Source, asset_id: i64, index: usize) -> anyhow::Result<Chapter> {
+    let body = chapter_dom(src, asset_id, index)?;
+    let sentences = wrap_sentences(&body);
+    let mut html = Vec::new();
+    for child in body.children() {
+        child.serialize(&mut html)?;
+    }
+    Ok(Chapter { index, html: String::from_utf8_lossy(&html).into_owned(), sentences: sentences.len() })
+}
+
+/// One chapter's sentences, numbered exactly as `chapter` numbers them.
+pub fn chapter_sentences(src: &Source, asset_id: i64, index: usize) -> anyhow::Result<Vec<String>> {
+    Ok(wrap_sentences(&chapter_dom(src, asset_id, index)?))
+}
+
+/// Every chapter's sentences.
+pub fn all_sentences(src: &Source, asset_id: i64) -> anyhow::Result<Vec<Vec<String>>> {
+    let n = layout(src)?.chapters;
+    (0..n).map(|i| chapter_sentences(src, asset_id, i)).collect()
+}
+
+/// A file inside an EPUB (images, fonts) by its path in the archive.
+pub fn resource(src: &Source, path: &str) -> anyhow::Result<(Vec<u8>, String)> {
+    let Source::Epub(epub_path) = src else { bail!("not an EPUB") };
+    let mut doc = epub::doc::EpubDoc::new(epub_path)?;
+    let bytes = doc.get_resource_by_path(path).context("no such resource")?;
+    let mime = doc.get_resource_mime_by_path(path).unwrap_or_else(|| mime_guess::from_path(path).first_or_octet_stream().to_string());
+    Ok((bytes, mime))
+}
+
+/// Finds the spine index of a chapter file, for links between chapters.
+pub fn chapter_of(src: &Source, path: &str) -> Option<usize> {
+    let Source::Epub(epub_path) = src else { return None };
+    let doc = epub::doc::EpubDoc::new(epub_path).ok()?;
+    doc.resource_uri_to_chapter(&PathBuf::from(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wraps_across_inline_elements() {
+        let doc = kuchikiki::parse_html().one("<body><p>One <em>two.</em> Three.</p><p>Four</p></body>").document_node;
+        let body = doc.select_first("body").unwrap().as_node().clone();
+        let s = wrap_sentences(&body);
+        assert_eq!(s, ["One two.", "Three.", "Four"]);
+        let html = body.to_string();
+        assert!(html.contains(r#"<span class="s" data-s="0">One </span><em><span class="s" data-s="0">two.</span></em>"#), "{html}");
+        assert!(html.contains(r#"<span class="s" data-s="2">Four</span>"#));
+    }
+
+    #[test]
+    fn resolves_paths() {
+        assert_eq!(resolve("OEBPS/text/ch1.xhtml", "../images/a.png"), "OEBPS/images/a.png");
+    }
+
+    #[test]
+    fn splits_text_chapters() {
+        let c = text_chapters("Title page\n\nCHAPTER I\nIt began.\n\nChapter 2\nIt ended.\n");
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[1].0, "CHAPTER I");
+    }
+}

@@ -1,0 +1,71 @@
+"""Helpers shared by the duet workers."""
+
+import json
+import os
+import re
+import sys
+import urllib.request
+
+
+def progress(fraction, message=""):
+    """Reports progress to the duet server (it reads JSON lines on stdout)."""
+    print(json.dumps({"progress": round(float(fraction), 4), "message": message}), flush=True)
+
+
+def log(*args):
+    print(*args, file=sys.stderr, flush=True)
+
+
+def load(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+def device(name):
+    if name != "auto":
+        return name
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        return "cpu"
+
+
+WORD = re.compile(r"[\w']+", re.UNICODE)
+
+
+def words(text):
+    """Lowercased words, apostrophes kept, for matching transcripts to book text."""
+    return [w.lower().strip("'") for w in WORD.findall(text) if w.strip("'")]
+
+
+def chat(url, model, key, messages, json_mode=False, temperature=0.2):
+    """One call to an OpenAI-compatible chat completions endpoint."""
+    body = {"model": model, "messages": messages, "temperature": temperature}
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    req = urllib.request.Request(
+        url.rstrip("/") + "/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {key}"} if key else {})},
+    )
+    with urllib.request.urlopen(req, timeout=600) as r:
+        content = json.load(r)["choices"][0]["message"]["content"] or ""
+    # Reasoning models may put their thinking inline.
+    if "</think>" in content:
+        content = content.split("</think>", 1)[1]
+    return content.strip()
+
+
+def chat_json(url, model, key, messages):
+    text = chat(url, model, key, messages, json_mode=True)
+    match = re.search(r"\{.*\}|\[.*\]", text, re.S)
+    return json.loads(match.group(0) if match else text)
