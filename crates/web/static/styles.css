@@ -743,3 +743,22 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .source-chip.found { background: var(--good-soft); color: var(--good); border-color: transparent; animation: pop 0.4s var(--ease-spring); }
 .source-chip.failed { color: var(--danger); }
 .search-wait { display: grid; justify-items: center; gap: 0.6rem; padding: 3rem 1rem; color: var(--muted); }
+
+/* Discover: search as you type, ebooks and audiobooks side by side */
+.big-search {
+  display: flex; align-items: center; gap: 0.6rem; padding: 0 1rem; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--surface); box-shadow: var(--shadow-sm); max-width: 720px;
+}
+.big-search:focus-within { border-color: var(--accent-2); box-shadow: 0 0 0 3px var(--accent-soft); }
+.big-search .icon { color: var(--muted); }
+.big-search input { flex: 1; border: 0; background: none; box-shadow: none !important; min-height: 52px; font-size: 1.1rem; padding-left: 0; }
+.big-search .spinner { color: var(--accent); }
+.result-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1.6rem; align-items: start; margin-top: 0.6rem; }
+@media (max-width: 900px) { .result-columns { grid-template-columns: 1fr; } }
+.result-column h2 { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.8rem; font-size: 1.15rem; }
+.result-column h2 .icon { color: var(--accent); }
+.result-column .count { font: 600 0.75rem var(--sans); background: var(--surface-2); color: var(--muted); border-radius: 99px; padding: 0.1rem 0.5rem; }
+.result-column .book .title { font-weight: 600; font-family: var(--serif); font-size: 1.02rem; }
+.result-column .book .author { color: var(--muted); font-size: 0.88rem; }
+.result-column .options li { justify-content: space-between; }
+.result-column .options .meta { flex: 1; }

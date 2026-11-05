@@ -71,6 +71,58 @@ fn group(results: Vec<SearchResult>) -> Vec<BookGroup> {
     groups
 }
 
+/// One column of results (ebooks or audiobooks), grouped by book.
+fn result_column(
+    heading: &'static str,
+    path: &'static str,
+    results: Vec<SearchResult>,
+    download: impl Fn(SearchResult) + Copy + 'static,
+) -> impl IntoView {
+    let groups = group(results);
+    let count = groups.len();
+    view! {
+        <section class="result-column">
+            <h2>{crate::icon(path)}{heading}<span class="count">{count}</span></h2>
+            {(count == 0).then(|| view! { <p class="muted">"None found."</p> })}
+            <ul class="books">
+                {groups.into_iter().map(|g| view! {
+                    <li class="book">
+                        <div class="title">{g.title.clone()}</div>
+                        {g.author.clone().map(|a| view! { <div class="author">{a}</div> })}
+                        <ul class="options">
+                            {g.options.into_iter().map(|res| {
+                                let r2 = res.clone();
+                                // Archive items are separate scans/editions, and indexer releases have
+                                // their own names: show them so you know what you're getting.
+                                let label = if res.source == "Internet Archive" {
+                                    res.info_url.as_deref().and_then(|u| u.rsplit('/').next()).map(str::to_string)
+                                } else if res.author.is_none() {
+                                    Some(res.title.clone())
+                                } else {
+                                    None
+                                };
+                                view! {
+                                    <li>
+                                        <div class="meta">
+                                            <span class="source">{res.source.clone()}</span>
+                                            {res.format.clone().map(|f| view! { <span>{f.to_uppercase()}</span> })}
+                                            {res.size.map(|s| view! { <span>{size_label(s)}</span> })}
+                                            {res.seeders.map(|s| view! { <span>{format!("{s} seeders")}</span> })}
+                                            {label.map(|l| view! { <span class="release">{l}</span> })}
+                                            {res.info_url.clone().map(|u| view! { <a href=u target="_blank" rel="noopener">"Details"</a> })}
+                                        </div>
+                                        <button class="small" on:click=move |_| download(r2.clone())>{crate::icon(crate::icons::DOWNLOAD)}"Get"</button>
+                                    </li>
+                                }
+                            }).collect_view()}
+                        </ul>
+                    </li>
+                }).collect_view()}
+            </ul>
+        </section>
+    }
+}
+
 /// The places Discover searches, as (id for the API, name shown).
 const SOURCES: [(&str, &str); 5] = [
     ("gutenberg", "Project Gutenberg"),
@@ -83,6 +135,7 @@ const SOURCES: [(&str, &str); 5] = [
 #[component]
 pub fn Discover() -> impl IntoView {
     let query = RwSignal::new(String::new());
+    let typed = RwSignal::new(0u32);
     let results = RwSignal::new(None::<SearchResponse>);
     // Each source's progress: None while searching, then Ok(count) or Err(message).
     let status = RwSignal::new(Vec::<(&'static str, Option<Result<usize, String>>)>::new());
@@ -151,12 +204,25 @@ pub fn Discover() -> impl IntoView {
                 <p class="subtitle">"Free classics, plus anything your own indexers find."</p>
             </div>
         </header>
-        <form class="search-form" on:submit=move |ev| { ev.prevent_default(); search() }>
-            <input type="search" placeholder="Title or author" prop:value=move || query.get()
-                on:input=move |ev| query.set(event_target_value(&ev))/>
-            <button type="submit" class="primary" disabled=searching>
-                {move || if searching() { view! { <span class="spinner"></span>"Searching…" }.into_any() } else { view! { "Search" }.into_any() }}
-            </button>
+        <form class="search-form big-search" on:submit=move |ev| { ev.prevent_default(); search() }>
+            {crate::icon(crate::icons::DISCOVER)}
+            <input type="search" placeholder="Search by title or author" aria-label="Search for books" autofocus
+                prop:value=move || query.get()
+                on:input=move |ev| {
+                    query.set(event_target_value(&ev));
+                    // Search as you type, once typing pauses.
+                    let n = typed.get_untracked() + 1;
+                    typed.set(n);
+                    spawn_local(async move {
+                        gloo_timers::future::TimeoutFuture::new(450).await;
+                        if typed.get_untracked() == n && query.get_untracked().trim().chars().count() >= 3 {
+                            search();
+                        }
+                    });
+                }/>
+            <Show when=searching>
+                <span class="spinner"></span>
+            </Show>
         </form>
         <p class="hint">"Free sources: Project Gutenberg, Standard Ebooks, Internet Archive and LibriVox. Add your own Torznab indexers in "<a href="#/settings">"Settings"</a>"."</p>
 
@@ -184,54 +250,16 @@ pub fn Discover() -> impl IntoView {
             {(r.results.is_empty() && searching()).then(|| view! {
                 <div class="search-wait"><span class="spinner big"></span><p>"Searching the libraries…"</p></div>
             })}
-            <ul class="books">
-                {group(r.results).into_iter().map(|g| {
-                    let has = |k: AssetKind| g.options.iter().any(|o| o.kind == k);
-                    let (ebook, audio) = (has(AssetKind::Ebook), has(AssetKind::Audiobook));
-                    view! {
-                        <li class="book">
-                            <div class="book-head">
-                                <div>
-                                    <div class="title">{g.title.clone()}</div>
-                                    {g.author.clone().map(|a| view! { <div class="author">{a}</div> })}
-                                </div>
-                                <div class="availability">
-                                    <span class="chip" class:on=ebook>{if ebook { "✓ Ebook" } else { "No ebook" }}</span>
-                                    <span class="chip" class:on=audio>{if audio { "✓ Audiobook" } else { "No audiobook" }}</span>
-                                </div>
-                            </div>
-                            <ul class="options">
-                                {g.options.into_iter().map(|res| {
-                                    let r2 = res.clone();
-                                    view! {
-                                        <li>
-                                            <span class="kind">{if res.kind == AssetKind::Ebook { "Ebook" } else { "Audiobook" }}</span>
-                                            <div class="meta">
-                                                <span class="source">{res.source.clone()}</span>
-                                                {res.format.clone().map(|f| view! { <span>{f.to_uppercase()}</span> })}
-                                                {res.size.map(|s| view! { <span>{size_label(s)}</span> })}
-                                                {res.seeders.map(|s| view! { <span>{format!("{s} seeders")}</span> })}
-                                                // Indexer releases have their own names; show them so you know what you're getting.
-                                                {(res.author.is_none() || res.source == "Internet Archive").then(|| {
-                                                    // Archive items are separate scans/editions; tell them apart by item id.
-                                                    let label = if res.source == "Internet Archive" {
-                                                        res.info_url.as_deref().and_then(|u| u.rsplit('/').next()).unwrap_or(&res.title).to_string()
-                                                    } else {
-                                                        res.title.clone()
-                                                    };
-                                                    view! { <span class="release">{label}</span> }
-                                                })}
-                                                {res.info_url.clone().map(|u| view! { <a href=u target="_blank" rel="noopener">"Details"</a> })}
-                                            </div>
-                                            <button on:click=move |_| download(r2.clone())>"Get"</button>
-                                        </li>
-                                    }
-                                }).collect_view()}
-                            </ul>
-                        </li>
-                    }
-                }).collect_view()}
-            </ul>
+            {(!r.results.is_empty()).then(|| {
+                let of = |k: AssetKind| r.results.iter().filter(|x| x.kind == k).cloned().collect::<Vec<_>>();
+                let (ebooks, audio) = (of(AssetKind::Ebook), of(AssetKind::Audiobook));
+                view! {
+                    <div class="result-columns">
+                        {result_column("Ebooks", crate::icons::BOOK, ebooks, download)}
+                        {result_column("Audiobooks", crate::icons::HEADPHONES, audio, download)}
+                    </div>
+                }
+            })}
         })}
 
         <h2>"Downloads"</h2>
