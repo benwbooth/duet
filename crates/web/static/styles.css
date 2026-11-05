@@ -725,3 +725,21 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
+
+/* Spinners and search progress */
+.spinner {
+  width: 16px; height: 16px; border-radius: 50%; display: inline-block; flex: none;
+  border: 2px solid currentColor; border-right-color: transparent; animation: spin 0.7s linear infinite;
+}
+.spinner.small { width: 11px; height: 11px; border-width: 2px; }
+.spinner.big { width: 34px; height: 34px; border-width: 3px; color: var(--accent); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.source-status { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 1rem 0; }
+.source-chip {
+  display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; padding: 0.25rem 0.7rem; border-radius: 99px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--muted); transition: background 0.3s, color 0.3s;
+}
+.source-chip.searching { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.source-chip.found { background: var(--good-soft); color: var(--good); border-color: transparent; animation: pop 0.4s var(--ease-spring); }
+.source-chip.failed { color: var(--danger); }
+.search-wait { display: grid; justify-items: center; gap: 0.6rem; padding: 3rem 1rem; color: var(--muted); }

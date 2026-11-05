@@ -30,6 +30,18 @@ async fn source(
     })
 }
 
+/// Searches one built-in source by its id ("gutenberg", "standard_ebooks", "internet_archive",
+/// "librivox"), if it's switched on.
+pub async fn search_one(http: &reqwest::Client, enabled: &FreeSources, id: &str, q: &str) -> Option<anyhow::Result<Vec<SearchResult>>> {
+    match id {
+        "gutenberg" => source("Project Gutenberg", enabled.gutenberg, gutenberg(http, q)).await,
+        "standard_ebooks" => source("Standard Ebooks", enabled.standard_ebooks, standard_ebooks(http, q)).await,
+        "internet_archive" => source("Internet Archive", enabled.internet_archive, internet_archive(http, q)).await,
+        "librivox" => source("LibriVox", enabled.librivox, librivox(http, q)).await,
+        _ => None,
+    }
+}
+
 pub async fn search(http: &reqwest::Client, enabled: &FreeSources, q: &str, kind: AssetKind) -> Vec<anyhow::Result<Vec<SearchResult>>> {
     match kind {
         AssetKind::Ebook => {
@@ -56,51 +68,75 @@ fn safe_filename(s: &str) -> String {
     s.chars().map(|c| if c.is_alphanumeric() || " -_.,'()".contains(c) { c } else { '_' }).collect::<String>().trim().to_string()
 }
 
+/// Project Gutenberg's own OPDS search (faster and more reliable than third-party mirrors).
 async fn gutenberg(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec<SearchResult>> {
-    #[derive(Deserialize)]
-    struct Resp {
-        results: Vec<Book>,
-    }
-    #[derive(Deserialize)]
-    struct Book {
-        id: i64,
-        title: String,
-        authors: Vec<Person>,
-        formats: std::collections::HashMap<String, String>,
-    }
-    #[derive(Deserialize)]
-    struct Person {
-        name: String,
-    }
-    let resp: Resp = http
-        .get("https://gutendex.com/books/")
-        .query(&[("search", q)])
+    use quick_xml::{Reader, events::Event};
+    let xml = http
+        .get("https://www.gutenberg.org/ebooks/search.opds/")
+        .query(&[("query", q)])
         .send()
-        .await
-        ?
+        .await?
         .error_for_status()?
-        .json()
+        .text()
         .await?;
-    Ok(resp
-        .results
-        .into_iter()
-        .filter_map(|b| {
-            let author = b.authors.first().map(|a| first_last(&a.name));
-            let url = b.formats.get("application/epub+zip")?.clone();
-            let filename = safe_filename(&format!("{} - {}.epub", author.as_deref().unwrap_or("Unknown"), b.title));
-            Some(SearchResult {
-                source: "Project Gutenberg".into(),
-                title: b.title,
-                author,
-                kind: AssetKind::Ebook,
-                size: None,
-                seeders: None,
-                download: DownloadTarget::Direct { url, filename },
-                info_url: Some(format!("https://www.gutenberg.org/ebooks/{}", b.id)),
-                format: Some("epub".into()),
-            })
-        })
-        .collect())
+    let mut reader = Reader::from_str(&xml);
+    let (mut out, mut text) = (Vec::new(), String::new());
+    let (mut in_entry, mut id, mut title, mut author) = (false, String::new(), String::new(), String::new());
+    loop {
+        match reader.read_event()? {
+            Event::Start(e) => {
+                text.clear();
+                if e.local_name().as_ref() == b"entry" {
+                    in_entry = true;
+                    (id, title, author) = (String::new(), String::new(), String::new());
+                }
+            }
+            Event::Text(t) => text.push_str(&t.xml_content()?),
+            Event::GeneralRef(r) => {
+                if let Some(c) = r.resolve_char_ref()? {
+                    text.push(c);
+                } else if let Some(v) = quick_xml::escape::resolve_xml_entity(&r.decode()?) {
+                    text.push_str(v);
+                }
+            }
+            Event::End(e) if in_entry => {
+                let v = std::mem::take(&mut text).trim().to_string();
+                match e.local_name().as_ref() {
+                    b"id" => id = v,
+                    b"title" => title = v,
+                    b"content" => author = v,
+                    b"entry" => {
+                        in_entry = false;
+                        // Book entries look like https://www.gutenberg.org/ebooks/11.opds.
+                        let num = id.rsplit('/').next().and_then(|n| n.strip_suffix(".opds")).filter(|n| n.chars().all(|c| c.is_ascii_digit()));
+                        if let Some(num) = num.filter(|n| !n.is_empty()) {
+                            let author = (!author.is_empty()).then(|| first_last(&author));
+                            let filename = safe_filename(&format!("{} - {}.epub", author.as_deref().unwrap_or("Unknown"), title));
+                            out.push(SearchResult {
+                                source: "Project Gutenberg".into(),
+                                title: title.clone(),
+                                author,
+                                kind: AssetKind::Ebook,
+                                size: None,
+                                seeders: None,
+                                download: DownloadTarget::Direct {
+                                    url: format!("https://www.gutenberg.org/ebooks/{num}.epub3.images"),
+                                    filename,
+                                },
+                                info_url: Some(format!("https://www.gutenberg.org/ebooks/{num}")),
+                                format: Some("epub".into()),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::End(_) => text.clear(),
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(out)
 }
 
 async fn standard_ebooks(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec<SearchResult>> {
@@ -201,7 +237,17 @@ async fn internet_archive(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec
         .collect())
 }
 
+/// The words of a query that matter for matching titles.
+fn significant_words(q: &str) -> Vec<String> {
+    const SMALL: [&str; 10] = ["the", "a", "an", "of", "in", "and", "to", "on", "at", "for"];
+    q.split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| !w.is_empty() && !SMALL.contains(&w.as_str()))
+        .collect()
+}
+
 async fn librivox(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec<SearchResult>> {
+    let words = significant_words(q);
     #[derive(Deserialize)]
     struct Resp {
         #[serde(default)]
@@ -222,7 +268,9 @@ async fn librivox(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec<SearchR
     }
     let resp = http
         .get("https://librivox.org/api/feed/audiobooks/")
-        .query(&[("title", format!("^{q}").as_str()), ("format", "json"), ("limit", "25")])
+        // LibriVox only matches titles by prefix, so search by the first real word and keep the
+        // books whose titles have all the words ("alice wonderland" finds "Alice's Adventures in Wonderland").
+        .query(&[("title", format!("^{}", words.first().map(String::as_str).unwrap_or(q)).as_str()), ("format", "json"), ("limit", "200")])
         .send()
         .await
         ?;
@@ -234,6 +282,11 @@ async fn librivox(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec<SearchR
     Ok(resp
         .books
         .into_iter()
+        .filter(|b| {
+            let title = b.title.to_lowercase();
+            words.iter().all(|w| title.contains(w.as_str()))
+        })
+        .take(25)
         .filter_map(|b| {
             let url = b.url_zip_file.filter(|u| !u.is_empty())?;
             let author = b.authors.first().map(|a| format!("{} {}", a.first_name, a.last_name).trim().to_string());

@@ -11,7 +11,7 @@ use axum::{
     routing::{get, post},
 };
 use duet_common::{
-    AskReply, AskRequest, AssetKind, BookLayout, CastMember, Chapter, Download, Job, NewDownload, NewJob, Position,
+    AskReply, AskRequest, AssetKind, FreeSources, BookLayout, CastMember, Chapter, Download, Job, NewDownload, NewJob, Position,
     ScanReport, SearchResult, Settings, WorkDetail, WorkSummary,
 };
 use serde::Deserialize;
@@ -259,6 +259,9 @@ async fn test_qbit( Json(q): Json<duet_common::QbitSettings>) -> ApiResult<Json<
 #[derive(Deserialize)]
 struct SearchQuery {
     q: String,
+    /// One source only: a free source's id or "indexers". The UI asks each source separately so
+    /// results appear as they arrive.
+    source: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -272,14 +275,25 @@ async fn search(AxState(s): AxState<State>, Query(q): Query<SearchQuery>) -> Api
     let settings = s.settings.read().await.clone();
     let mut results = Vec::new();
     let mut errors = Vec::new();
+    if let Some(src) = q.source.as_deref().filter(|s| *s != "indexers") {
+        match free::search_one(&s.http, &settings.free_sources, src, &q.q).await {
+            Some(Ok(v)) => results = v,
+            Some(Err(e)) => errors.push(format!("{e:#}")),
+            None => {}
+        }
+        return Ok(Json(SearchResponse { results, errors }));
+    }
+    let only_indexers = q.source.as_deref() == Some("indexers");
     let kinds = [AssetKind::Ebook, AssetKind::Audiobook];
     let indexer_searches = settings.indexers.iter().filter(|i| i.enabled).flat_map(|ix| {
         let (http, q) = (&s.http, &q.q);
         kinds.map(move |kind| async move { (ix.name.clone(), torznab::search(http, ix, q, kind).await) })
     });
+    let none = FreeSources { gutenberg: false, standard_ebooks: false, librivox: false, internet_archive: false };
+    let free_on = if only_indexers { &none } else { &settings.free_sources };
     let (free_ebooks, free_audio, ix_results) = tokio::join!(
-        free::search(&s.http, &settings.free_sources, &q.q, AssetKind::Ebook),
-        free::search(&s.http, &settings.free_sources, &q.q, AssetKind::Audiobook),
+        free::search(&s.http, free_on, &q.q, AssetKind::Ebook),
+        free::search(&s.http, free_on, &q.q, AssetKind::Audiobook),
         futures_util::future::join_all(indexer_searches)
     );
     for r in free_ebooks.into_iter().chain(free_audio) {

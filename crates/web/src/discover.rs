@@ -71,29 +71,64 @@ fn group(results: Vec<SearchResult>) -> Vec<BookGroup> {
     groups
 }
 
+/// The places Discover searches, as (id for the API, name shown).
+const SOURCES: [(&str, &str); 5] = [
+    ("gutenberg", "Project Gutenberg"),
+    ("standard_ebooks", "Standard Ebooks"),
+    ("internet_archive", "Internet Archive"),
+    ("librivox", "LibriVox"),
+    ("indexers", "Your indexers"),
+];
+
 #[component]
 pub fn Discover() -> impl IntoView {
     let query = RwSignal::new(String::new());
     let results = RwSignal::new(None::<SearchResponse>);
-    let searching = RwSignal::new(false);
+    // Each source's progress: None while searching, then Ok(count) or Err(message).
+    let status = RwSignal::new(Vec::<(&'static str, Option<Result<usize, String>>)>::new());
+    let searching = move || status.with(|s| s.iter().any(|(_, st)| st.is_none()));
+    // Which search the arriving answers belong to, so a slow source can't add to a newer search.
+    let generation = RwSignal::new(0u32);
     let downloads = LocalResource::new(|| api::get::<Vec<Download>>("/api/downloads"));
     poll(3000, move || downloads.refetch());
     let toast = toast();
 
+    // Every source is asked separately, so results show up as each one answers.
     let search = move || {
         let q = query.get_untracked();
         if q.trim().is_empty() {
             return;
         }
-        searching.set(true);
-        spawn_local(async move {
-            let url = format!("/api/search?q={}", js_sys::encode_uri_component(&q));
-            match api::get::<SearchResponse>(&url).await {
-                Ok(r) => results.set(Some(r)),
-                Err(e) => toast.show(e.0),
-            }
-            searching.set(false);
-        });
+        let this = generation.get_untracked() + 1;
+        generation.set(this);
+        results.set(Some(SearchResponse::default()));
+        status.set(SOURCES.iter().map(|(_, label)| (*label, None)).collect());
+        for (i, (id, _)) in SOURCES.iter().enumerate() {
+            let url = format!("/api/search?q={}&source={id}", js_sys::encode_uri_component(&q));
+            spawn_local(async move {
+                let answer = api::get::<SearchResponse>(&url).await;
+                if generation.get_untracked() != this {
+                    return;
+                }
+                let outcome = match answer {
+                    Ok(r) => {
+                        let n = r.results.len();
+                        let err = r.errors.first().cloned();
+                        results.update(|all| {
+                            if let Some(all) = all {
+                                all.results.extend(r.results);
+                            }
+                        });
+                        match err {
+                            Some(e) if n == 0 => Err(e),
+                            _ => Ok(n),
+                        }
+                    }
+                    Err(e) => Err(e.0),
+                };
+                status.update(|s| s[i].1 = Some(outcome));
+            });
+        }
     };
 
     let download = move |r: SearchResult| {
@@ -119,17 +154,36 @@ pub fn Discover() -> impl IntoView {
         <form class="search-form" on:submit=move |ev| { ev.prevent_default(); search() }>
             <input type="search" placeholder="Title or author" prop:value=move || query.get()
                 on:input=move |ev| query.set(event_target_value(&ev))/>
-            <button type="submit" class="primary" disabled=move || searching.get()>
-                {move || if searching.get() { "Searching…" } else { "Search" }}
+            <button type="submit" class="primary" disabled=searching>
+                {move || if searching() { view! { <span class="spinner"></span>"Searching…" }.into_any() } else { view! { "Search" }.into_any() }}
             </button>
         </form>
         <p class="hint">"Free sources: Project Gutenberg, Standard Ebooks, Internet Archive and LibriVox. Add your own Torznab indexers in "<a href="#/settings">"Settings"</a>"."</p>
 
+        <Show when=move || !status.with(Vec::is_empty)>
+            <div class="source-status">
+                {move || status.get().into_iter().map(|(label, st)| {
+                    let (class, text) = match &st {
+                        None => ("searching", format!("{label}")),
+                        Some(Ok(0)) => ("none", format!("{label}: nothing")),
+                        Some(Ok(n)) => ("found", format!("{label}: {n}")),
+                        Some(Err(_)) => ("failed", format!("{label}: unavailable")),
+                    };
+                    let title = match st { Some(Err(e)) => e, _ => String::new() };
+                    view! {
+                        <span class=format!("source-chip {class}") title=title>
+                            {(class == "searching").then(|| view! { <span class="spinner small"></span> })}
+                            {text}
+                        </span>
+                    }
+                }).collect_view()}
+            </div>
+        </Show>
         {move || results.get().map(|r| view! {
-            {(!r.errors.is_empty()).then(|| view! {
-                <ul class="errors">{r.errors.iter().map(|e| view! { <li>{e.clone()}</li> }).collect_view()}</ul>
+            {(r.results.is_empty() && !searching()).then(|| view! { <p class="empty">"Nothing found. Try fewer words, or just the title."</p> })}
+            {(r.results.is_empty() && searching()).then(|| view! {
+                <div class="search-wait"><span class="spinner big"></span><p>"Searching the libraries…"</p></div>
             })}
-            {r.results.is_empty().then(|| view! { <p class="empty">"Nothing found."</p> })}
             <ul class="books">
                 {group(r.results).into_iter().map(|g| {
                     let has = |k: AssetKind| g.options.iter().any(|o| o.kind == k);
