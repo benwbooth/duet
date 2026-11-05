@@ -779,3 +779,31 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .result-column .option.picked { background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--accent); border-top-color: transparent; }
 .radio { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line); flex: none; transition: border 0.15s; }
 .option.picked .radio { border: 5px solid var(--accent); animation: pop 0.3s var(--ease-spring); }
+
+/* Downloads pane, lower right */
+.downloads-pane {
+  position: fixed; right: 1.2rem; bottom: 1.2rem; z-index: 40; width: min(380px, calc(100vw - 2rem));
+  background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow-lg);
+  overflow: hidden; animation: panel-up 0.4s var(--ease-spring);
+}
+@keyframes panel-up { from { opacity: 0; transform: translateY(30px) scale(0.95); } }
+.downloads-pane header { display: flex; align-items: center; gap: 0.6rem; padding: 0.7rem 0.6rem 0.7rem 1rem; cursor: pointer; border-bottom: 1px solid var(--line); }
+.downloads-pane.collapsed header { border-bottom: 0; }
+.downloads-pane header strong { flex: 1; font-size: 0.92rem; }
+.downloads-pane header .icon { color: var(--good); width: 18px; height: 18px; }
+.downloads-pane header .spinner { color: var(--accent); }
+.downloads-pane header .icon-button { min-height: 28px; padding: 0.15rem 0.45rem; box-shadow: none; border: 0; background: none; color: var(--muted); }
+.downloads-pane ul { list-style: none; margin: 0; padding: 0.3rem; max-height: min(50vh, 420px); overflow: auto; }
+.downloads-pane li { display: flex; align-items: center; gap: 0.7rem; padding: 0.6rem; border-radius: 10px; animation: rise 0.35s var(--ease-out) both; }
+.downloads-pane li + li { border-top: 1px solid var(--line); }
+.dl-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); flex: none; }
+.dl-icon .icon { width: 18px; height: 18px; }
+.downloads-pane li.done .dl-icon { background: var(--good-soft); color: var(--good); }
+.downloads-pane li.failed .dl-icon { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+.dl-body { flex: 1; min-width: 0; display: grid; gap: 0.3rem; }
+.dl-name { font-weight: 500; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dl-meta { display: flex; gap: 0.7rem; color: var(--muted); font-size: 0.76rem; }
+.downloads-pane li.done .progress > div { background: var(--good); }
+.downloads-pane li.failed .dl-meta span:first-child { color: var(--danger); }
+.dl-open { font-size: 0.85rem; font-weight: 600; }
+@media (max-width: 760px) { .downloads-pane { right: 0.6rem; left: 0.6rem; width: auto; bottom: calc(72px + env(safe-area-inset-bottom)); } }

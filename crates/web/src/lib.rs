@@ -125,6 +125,111 @@ pub fn toast() -> Toast {
     expect_context::<Toast>()
 }
 
+/// The downloads panel in the lower-right corner: it opens when a download starts and follows
+/// progress until everything is done.
+#[derive(Clone, Copy)]
+pub struct DownloadsPanel {
+    open: RwSignal<bool>,
+    list: RwSignal<Vec<duet_common::Download>>,
+    collapsed: RwSignal<bool>,
+}
+
+impl DownloadsPanel {
+    pub fn opened(&self) {
+        self.open.set(true);
+        self.collapsed.set(false);
+        self.refresh();
+    }
+
+    fn refresh(&self) {
+        let list = self.list;
+        spawn_local(async move {
+            if let Ok(v) = api::get::<Vec<duet_common::Download>>("/api/downloads").await {
+                list.set(v);
+            }
+        });
+    }
+}
+
+pub fn downloads_panel() -> DownloadsPanel {
+    expect_context::<DownloadsPanel>()
+}
+
+fn active(d: &duet_common::Download) -> bool {
+    !matches!(d.state.as_str(), "imported" | "failed" | "uploading" | "stalledUP" | "pausedUP" | "stoppedUP" | "queuedUP" | "forcedUP")
+        && d.progress < 1.0
+}
+
+#[component]
+fn DownloadsPane() -> impl IntoView {
+    let panel = downloads_panel();
+    // Follow progress while the panel is open; look in now and then for torrents started elsewhere.
+    let tick = RwSignal::new(0u32);
+    if let Ok(h) = set_interval_with_handle(
+        move || {
+            tick.update(|t| *t += 1);
+            if panel.open.get_untracked() || tick.get_untracked() % 15 == 0 {
+                panel.refresh();
+            }
+        },
+        std::time::Duration::from_secs(2),
+    ) {
+        on_cleanup(move || h.clear());
+    }
+    panel.refresh();
+    // Open by itself when something is downloading.
+    Effect::new(move |_| {
+        if panel.list.with(|l| l.iter().any(active)) {
+            panel.open.set(true);
+        }
+    });
+    // Newest first; finished ones from earlier sessions aren't news.
+    let shown = move || panel.list.get().into_iter().take(12).collect::<Vec<_>>();
+    let busy = move || panel.list.with(|l| l.iter().filter(|d| active(d)).count());
+    view! {
+        <Show when=move || panel.open.get() && !panel.list.with(Vec::is_empty)>
+            <aside class="downloads-pane" class:collapsed=move || panel.collapsed.get()>
+                <header on:click=move |_| panel.collapsed.update(|c| *c = !*c)>
+                    {move || if busy() > 0 { view! { <span class="spinner small"></span> }.into_any() } else { view! { {icon(icons::CHECK)} }.into_any() }}
+                    <strong>{move || match busy() {
+                        0 => "Downloads finished".to_string(),
+                        1 => "Downloading 1 item".to_string(),
+                        n => format!("Downloading {n} items"),
+                    }}</strong>
+                    <button class="icon-button" aria-label="Collapse">{move || if panel.collapsed.get() { "▴" } else { "▾" }}</button>
+                    <button class="icon-button" aria-label="Close" on:click=move |ev| { ev.stop_propagation(); panel.open.set(false) }>"×"</button>
+                </header>
+                <Show when=move || !panel.collapsed.get()>
+                    <ul>
+                        <For each=shown key=|d| (d.id.clone(), (d.progress * 100.0) as i64, d.state.clone()) let:d>
+                            {
+                                let done = d.state == "imported" || (!active(&d) && d.state != "failed");
+                                let failed = d.state == "failed";
+                                let pct = (d.progress * 100.0).clamp(0.0, 100.0);
+                                view! {
+                                    <li class:done=done class:failed=failed>
+                                        <div class="dl-icon">{icon(if d.kind == AssetKind::Ebook { icons::BOOK } else { icons::HEADPHONES })}</div>
+                                        <div class="dl-body">
+                                            <div class="dl-name" title=d.name.clone()>{d.name.clone()}</div>
+                                            <div class="progress"><div style=format!("width:{pct:.1}%")></div></div>
+                                            <div class="dl-meta">
+                                                <span>{if failed { "Failed".to_string() } else if done { "In your library".to_string() } else { format!("{pct:.0}%") }}</span>
+                                                {d.size.map(|s| view! { <span>{size_label(s)}</span> })}
+                                                <span>{d.source.clone()}</span>
+                                            </div>
+                                        </div>
+                                        {done.then(|| view! { <a class="dl-open" href="#/">"Open"</a> })}
+                                    </li>
+                                }
+                            }
+                        </For>
+                    </ul>
+                </Show>
+            </aside>
+        </Show>
+    }
+}
+
 /// Line icons (24×24, stroked), drawn for duet.
 pub mod icons {
     pub const LIBRARY: &str = "M4 19V5a1 1 0 0 1 1-1h3v16H5a1 1 0 0 1-1-1zM8 4h3v16H8M13.5 5.2l3-.8 3.6 14.4-3 .8z";
@@ -185,6 +290,7 @@ fn App() -> impl IntoView {
     handler.forget();
     let toast_sig = RwSignal::new(None::<String>);
     provide_context(Toast(toast_sig));
+    provide_context(DownloadsPanel { open: RwSignal::new(false), list: RwSignal::new(Vec::new()), collapsed: RwSignal::new(false) });
     // The reader takes the whole screen on phones.
     let immersive = move || matches!(route.get(), Route::Read(_));
 
@@ -210,6 +316,7 @@ fn App() -> impl IntoView {
                     Route::Setup => view! { <setup::SetupPage/> }.into_any(),
                 }}
             </main>
+            <DownloadsPane/>
             <Show when=move || toast_sig.get().is_some()>
                 <div class="toast" role="status" on:click=move |_| toast_sig.set(None)>{move || toast_sig.get()}</div>
             </Show>

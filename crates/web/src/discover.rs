@@ -1,6 +1,6 @@
 //! Finding books (free sources and the user's own indexers), downloads, and background jobs.
 
-use duet_common::{AssetKind, Download, Job, JobKind, NewDownload, SearchResult};
+use duet_common::{AssetKind, Job, JobKind, NewDownload, SearchResult};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use serde::Deserialize;
@@ -174,8 +174,7 @@ pub fn Discover() -> impl IntoView {
     let searching = move || status.with(|s| s.iter().any(|(_, st)| st.is_none()));
     // Which search the arriving answers belong to, so a slow source can't add to a newer search.
     let generation = RwSignal::new(0u32);
-    let downloads = LocalResource::new(|| api::get::<Vec<Download>>("/api/downloads"));
-    poll(3000, move || downloads.refetch());
+    let panel = crate::downloads_panel();
     let toast = toast();
 
     // Every source is asked separately, so results show up as each one answers.
@@ -220,10 +219,7 @@ pub fn Discover() -> impl IntoView {
         let req = NewDownload { kind: r.kind, title: r.title.clone(), target: r.download.clone() };
         spawn_local(async move {
             match api::post::<_, ()>("/api/downloads", &req).await {
-                Ok(()) => {
-                    toast.show(format!("Downloading {}", req.title));
-                    downloads.refetch();
-                }
+                Ok(()) => panel.opened(),
                 Err(e) => toast.show(e.0),
             }
         });
@@ -287,24 +283,6 @@ pub fn Discover() -> impl IntoView {
             </div>
         })}
 
-        <h2>"Downloads"</h2>
-        {move || {
-            let list = downloads.get().and_then(|r| r.ok()).unwrap_or_default();
-            if list.is_empty() {
-                return view! { <p class="empty">"No downloads yet."</p> }.into_any();
-            }
-            view! {
-                <ul class="downloads">
-                    {list.into_iter().map(|d| view! {
-                        <li>
-                            <div class="title">{d.name}</div>
-                            <div class="meta"><span>{d.source}</span><span>{d.state.clone()}</span></div>
-                            <div class="progress"><div style=format!("width:{:.1}%", d.progress * 100.0)></div></div>
-                        </li>
-                    }).collect_view()}
-                </ul>
-            }.into_any()
-        }}
     }
 }
 
