@@ -49,9 +49,24 @@ impl Qbit {
             .send()
             .await
             .context("connecting to qBittorrent")?;
+        let status = resp.status();
+        // qBittorrent 4.x answers 200 "Ok."; newer versions may answer 204 and name the cookie
+        // QBT_SID_<port>. A session cookie is the real sign of success.
+        let got_cookie = resp
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .any(|c| c.to_str().is_ok_and(|c| c.starts_with("SID=") || c.starts_with("QBT_SID")));
         let body = resp.text().await.unwrap_or_default();
-        if body.trim() != "Ok." {
-            bail!("qBittorrent login failed ({})", body.trim());
+        match status.as_u16() {
+            200..=299 if got_cookie || body.trim() == "Ok." => {}
+            401 => bail!("qBittorrent rejected the username or password"),
+            403 => bail!(
+                "qBittorrent refused the login. It bans an address for a while after several failed attempts, \
+                 and it rejects requests whose Referer doesn't match its address ({})",
+                s.url
+            ),
+            _ => bail!("qBittorrent login failed (HTTP {status}: {})", body.trim()),
         }
         *self.logged_in_as.lock().await = Some(format!("{}@{}", s.username, s.url));
         Ok(())

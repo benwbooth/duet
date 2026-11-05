@@ -14,7 +14,7 @@ fn text(s: RwSignal<Settings>, label: &'static str, hint: &'static str, get: Get
     view! {
         <label class="field">
             <span>{label}</span>
-            <input type="text" prop:value=move || s.with(get) on:change=move |ev| s.update(|x| set(x, event_target_value(&ev)))/>
+            <input type="text" prop:value=move || s.with(get) on:input=move |ev| s.update(|x| set(x, event_target_value(&ev)))/>
             {(!hint.is_empty()).then(|| view! { <small>{hint}</small> })}
         </label>
     }
@@ -25,7 +25,7 @@ fn secret(s: RwSignal<Settings>, label: &'static str, get: Getter<String>, set: 
         <label class="field">
             <span>{label}</span>
             <input type="password" autocomplete="off" prop:value=move || s.with(get)
-                on:change=move |ev| s.update(|x| set(x, event_target_value(&ev)))/>
+                on:input=move |ev| s.update(|x| set(x, event_target_value(&ev)))/>
         </label>
     }
 }
