@@ -12,12 +12,17 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::{State, book, db, downloads, library};
 
-pub async fn enqueue(state: &State, kind: JobKind, work_id: i64) -> anyhow::Result<i64> {
-    let (id,): (i64,) = sqlx::query_as("INSERT INTO jobs (kind, work_id) VALUES (?, ?) RETURNING id")
-        .bind(kind.as_str())
-        .bind(work_id)
-        .fetch_one(&state.db)
-        .await?;
+/// Queues a job; for syncing, `ebook`/`audio` choose the editions to pair.
+pub async fn enqueue_pair(state: &State, kind: JobKind, work_id: i64, ebook: Option<i64>, audio: Option<i64>) -> anyhow::Result<i64> {
+    let (id,): (i64,) = sqlx::query_as(
+        "INSERT INTO jobs (kind, work_id, ebook_asset, audiobook_asset) VALUES (?, ?, ?, ?) RETURNING id",
+    )
+    .bind(kind.as_str())
+    .bind(work_id)
+    .bind(ebook)
+    .bind(audio)
+    .fetch_one(&state.db)
+    .await?;
     state.jobs_wake.notify_one();
     Ok(id)
 }
@@ -61,18 +66,19 @@ pub async fn run(state: State) {
     // Jobs interrupted by a restart start over.
     let _ = sqlx::query("UPDATE jobs SET status = 'queued' WHERE status = 'running'").execute(&state.db).await;
     loop {
-        let next: Option<(i64, String, i64)> =
-            sqlx::query_as("SELECT id, kind, work_id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1")
+        let next: Option<(i64, String, i64, Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT id, kind, work_id, ebook_asset, audiobook_asset FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1",
+        )
                 .fetch_optional(&state.db)
                 .await
                 .unwrap_or(None);
-        let Some((id, kind, work_id)) = next else {
+        let Some((id, kind, work_id, ebook, audio)) = next else {
             state.jobs_wake.notified().await;
             continue;
         };
         update(&state, id, "running", Some(0.0), "Starting").await;
         let result = match JobKind::parse(&kind) {
-            Some(kind) => run_one(&state, id, kind, work_id).await,
+            Some(kind) => run_one(&state, id, kind, work_id, ebook, audio).await,
             None => Err(anyhow::anyhow!("unknown job kind {kind}")),
         };
         match result {
@@ -90,13 +96,23 @@ fn first(assets: &[Asset], kind: AssetKind) -> Option<&Asset> {
     assets.iter().filter(|a| a.kind == kind).min_by_key(|a| a.origin == "generated")
 }
 
+/// The ebook to read from: one with chapters, preferring files the user added over generated ones.
 fn readable<'a>(assets: &'a [Asset], data_dir: &Path) -> Option<&'a Asset> {
-    assets.iter().filter(|a| a.kind == AssetKind::Ebook).find(|a| {
-        matches!(book::source(a, data_dir), book::Source::Epub(_) | book::Source::Text(_) | book::Source::Html(_))
-    })
+    assets
+        .iter()
+        .filter(|a| a.kind == AssetKind::Ebook)
+        .filter(|a| matches!(book::source(a, data_dir), book::Source::Epub(_) | book::Source::Text(_) | book::Source::Html(_)))
+        .min_by_key(|a| a.origin == "generated")
 }
 
-async fn run_one(state: &State, id: i64, kind: JobKind, work_id: i64) -> anyhow::Result<String> {
+async fn run_one(
+    state: &State,
+    id: i64,
+    kind: JobKind,
+    work_id: i64,
+    ebook_choice: Option<i64>,
+    audio_choice: Option<i64>,
+) -> anyhow::Result<String> {
     let work = db::work_detail(&state.db, work_id).await?.context("work not found")?;
     let dir = state.data_dir.join("jobs").join(id.to_string());
     tokio::fs::create_dir_all(&dir).await?;
@@ -121,8 +137,11 @@ async fn run_one(state: &State, id: i64, kind: JobKind, work_id: i64) -> anyhow:
             Ok("Converted to EPUB".into())
         }
         JobKind::Align => {
-            let ebook = readable(&work.assets, &state.data_dir).context("needs a readable ebook (EPUB/text); convert it first")?;
-            let audio = first(&work.assets, AssetKind::Audiobook).context("needs an audiobook")?;
+            let chosen = |want: Option<i64>| want.and_then(|w| work.assets.iter().find(|a| a.id == w));
+            let ebook = chosen(ebook_choice)
+                .or_else(|| readable(&work.assets, &state.data_dir))
+                .context("needs a readable ebook (EPUB/text); convert it first")?;
+            let audio = chosen(audio_choice).or_else(|| first(&work.assets, AssetKind::Audiobook)).context("needs an audiobook")?;
             write_book_json(state, ebook, &dir).await?;
             write_audio_json(state, audio, &dir).await?;
             let s = state.settings.read().await.ai.clone();
@@ -191,10 +210,9 @@ async fn run_one(state: &State, id: i64, kind: JobKind, work_id: i64) -> anyhow:
                         sqlx::query_as("SELECT id FROM assets WHERE path = ?").bind(&out_s).fetch_one(&state.db).await?;
                     library::link_asset(&state.db, asset_id, work_id).await?;
                 }
-            // Sentence numbering comes from the rendered EPUB, so sync it like any other book.
-            if !work.has_sync {
-                enqueue(state, JobKind::Align, work_id).await?;
-            }
+            // Sentence numbering comes from the rendered EPUB, so sync it like any other pairing.
+            let (ebook_id,): (i64,) = sqlx::query_as("SELECT id FROM assets WHERE path = ?").bind(&out_s).fetch_one(&state.db).await?;
+            enqueue_pair(state, JobKind::Align, work_id, Some(ebook_id), Some(audio.id)).await?;
             Ok("Ebook created; syncing queued".into())
         }
     }
@@ -242,12 +260,11 @@ async fn store_sync(state: &State, work_id: i64, ebook: i64, audio: i64, path: &
     let map = SyncMap { ebook_asset: ebook, audiobook_asset: audio, spans };
     let dest = state.data_dir.join("sync");
     tokio::fs::create_dir_all(&dest).await?;
-    let dest = dest.join(format!("{work_id}.json"));
+    let dest = dest.join(format!("{work_id}-{ebook}-{audio}.json"));
     tokio::fs::write(&dest, serde_json::to_vec(&map)?).await?;
     sqlx::query(
         "INSERT INTO sync_maps (work_id, ebook_asset, audiobook_asset, path) VALUES (?, ?, ?, ?)
-         ON CONFLICT(work_id) DO UPDATE SET ebook_asset = excluded.ebook_asset,
-            audiobook_asset = excluded.audiobook_asset, path = excluded.path",
+         ON CONFLICT(ebook_asset, audiobook_asset) DO UPDATE SET path = excluded.path",
     )
     .bind(work_id)
     .bind(ebook)
@@ -258,13 +275,25 @@ async fn store_sync(state: &State, work_id: i64, ebook: i64, audio: i64, path: &
     Ok(())
 }
 
-pub async fn sync_map(state: &State, work_id: i64) -> anyhow::Result<Option<SyncMap>> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT path FROM sync_maps WHERE work_id = ?").bind(work_id).fetch_optional(&state.db).await?;
+/// The sync map for one ebook/audiobook pairing.
+pub async fn sync_map(state: &State, ebook: i64, audio: i64) -> anyhow::Result<Option<SyncMap>> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT path FROM sync_maps WHERE ebook_asset = ? AND audiobook_asset = ?")
+        .bind(ebook)
+        .bind(audio)
+        .fetch_optional(&state.db)
+        .await?;
     match row {
         Some((p,)) => Ok(Some(serde_json::from_slice(&tokio::fs::read(p).await?)?)),
         None => Ok(None),
     }
+}
+
+/// Which ebook/audiobook pairings of a work are synced: (ebook asset, audiobook asset).
+pub async fn synced_pairs(state: &State, work_id: i64) -> anyhow::Result<Vec<(i64, i64)>> {
+    Ok(sqlx::query_as("SELECT ebook_asset, audiobook_asset FROM sync_maps WHERE work_id = ?")
+        .bind(work_id)
+        .fetch_all(&state.db)
+        .await?)
 }
 
 #[derive(Deserialize)]

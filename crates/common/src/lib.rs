@@ -222,6 +222,11 @@ pub struct Job {
 pub struct NewJob {
     pub kind: JobKind,
     pub work_id: i64,
+    /// For syncing: which editions to pair. Empty: the original ebook and audiobook.
+    #[serde(default)]
+    pub ebook_asset: Option<i64>,
+    #[serde(default)]
+    pub audiobook_asset: Option<i64>,
 }
 
 /// Everything configured on the settings page. Stored as one JSON document.

@@ -12,7 +12,7 @@ use axum::{
 };
 use duet_common::{
     AskReply, AskRequest, AssetKind, BookLayout, CastMember, Chapter, Download, Job, NewDownload, NewJob, Position,
-    ScanReport, SearchResult, Settings, SyncMap, WorkDetail, WorkSummary,
+    ScanReport, SearchResult, Settings, WorkDetail, WorkSummary,
 };
 use serde::Deserialize;
 use tower::ServiceExt;
@@ -149,8 +149,18 @@ async fn put_position(AxState(s): AxState<State>, Path(id): Path<i64>, Json(p): 
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn sync(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Json<Option<SyncMap>>> {
-    Ok(Json(jobs::sync_map(&s, id).await?))
+#[derive(Deserialize)]
+struct SyncQuery {
+    ebook: Option<i64>,
+    audio: Option<i64>,
+}
+
+/// With ?ebook=&audio=, that pairing's sync map; without, the list of synced pairings.
+async fn sync(AxState(s): AxState<State>, Path(id): Path<i64>, Query(q): Query<SyncQuery>) -> ApiResult<Response> {
+    Ok(match (q.ebook, q.audio) {
+        (Some(e), Some(a)) => Json(jobs::sync_map(&s, e, a).await?).into_response(),
+        _ => Json(jobs::synced_pairs(&s, id).await?).into_response(),
+    })
 }
 
 async fn save_cast(AxState(s): AxState<State>, Path(id): Path<i64>, Json(m): Json<CastMember>) -> ApiResult<Json<Vec<CastMember>>> {
@@ -221,7 +231,7 @@ async fn list_jobs(AxState(s): AxState<State>) -> ApiResult<Json<Vec<Job>>> {
 }
 
 async fn new_job(AxState(s): AxState<State>, Json(j): Json<NewJob>) -> ApiResult<Json<i64>> {
-    Ok(Json(jobs::enqueue(&s, j.kind, j.work_id).await?))
+    Ok(Json(jobs::enqueue_pair(&s, j.kind, j.work_id, j.ebook_asset, j.audiobook_asset).await?))
 }
 
 async fn get_settings(AxState(s): AxState<State>) -> Json<Settings> {

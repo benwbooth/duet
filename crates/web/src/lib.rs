@@ -297,7 +297,7 @@ fn asset_label(a: &Asset) -> String {
 }
 
 pub async fn start_job(kind: JobKind, work_id: i64) {
-    match api::post::<_, i64>("/api/jobs", &NewJob { kind, work_id }).await {
+    match api::post::<_, i64>("/api/jobs", &NewJob { kind, work_id, ebook_asset: None, audiobook_asset: None }).await {
         Ok(_) => toast().show(format!("{} started; follow it in Jobs", kind.label())),
         Err(e) => toast().show(e.0),
     }

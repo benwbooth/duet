@@ -13,21 +13,67 @@ use crate::{api, format_time, toast};
 
 const READABLE: [&str; 6] = ["epub", "txt", "md", "html", "htm", "xhtml"];
 
-/// The edition to read: an EPUB or text first, then PDF, then anything (shown as unsupported).
+fn readable(a: &Asset) -> bool {
+    READABLE.contains(&a.format.as_str())
+}
+
+/// How an edition is named in the edition picker.
+pub fn edition_label(a: &Asset) -> String {
+    match (a.kind, a.origin == "generated") {
+        (AssetKind::Ebook, true) => "Transcribed from the audiobook (AI)".into(),
+        (AssetKind::Audiobook, true) => "Full cast (AI)".into(),
+        (AssetKind::Ebook, false) => format!("Original {}", a.format.to_uppercase()),
+        (AssetKind::Audiobook, false) => "Original narration".into(),
+    }
+}
+
+/// The edition to read: an original EPUB or text first, then a generated one, then PDF, then
+/// anything (shown as needing conversion).
 fn pick_ebook(assets: &[Asset]) -> Option<Asset> {
     let ebooks = || assets.iter().filter(|a| a.kind == AssetKind::Ebook);
     ebooks()
-        .find(|a| READABLE.contains(&a.format.as_str()) && a.origin != "generated")
-        .or_else(|| ebooks().find(|a| READABLE.contains(&a.format.as_str())))
+        .find(|a| readable(a) && a.origin != "generated")
+        .or_else(|| ebooks().find(|a| readable(a)))
         .or_else(|| ebooks().find(|a| a.format == "pdf"))
         .or_else(|| ebooks().next())
         .cloned()
 }
 
-fn pick_audio(assets: &[Asset], sync: Option<&SyncMap>) -> Option<Asset> {
-    // The synced edition, if there is one.
-    let synced = sync.and_then(|s| assets.iter().find(|a| a.id == s.audiobook_asset));
-    synced.or_else(|| assets.iter().find(|a| a.kind == AssetKind::Audiobook)).cloned()
+/// The audiobook to play: one synced with the chosen ebook if possible, originals first.
+fn pick_audio(assets: &[Asset], ebook: Option<i64>, pairs: &[(i64, i64)]) -> Option<Asset> {
+    let audio = || assets.iter().filter(|a| a.kind == AssetKind::Audiobook);
+    let synced = |a: &&Asset| ebook.is_some_and(|e| pairs.contains(&(e, a.id)));
+    audio()
+        .filter(synced)
+        .min_by_key(|a| a.origin == "generated")
+        .or_else(|| audio().min_by_key(|a| a.origin == "generated"))
+        .cloned()
+}
+
+fn storage() -> Option<web_sys::Storage> {
+    window().local_storage().ok().flatten()
+}
+
+/// The editions last chosen for a book on this device.
+fn remembered(work: i64) -> (Option<i64>, Option<i64>) {
+    let v = storage().and_then(|s| s.get_item(&format!("duet-editions-{work}")).ok().flatten()).unwrap_or_default();
+    let mut parts = v.split(',').map(|p| p.parse::<i64>().ok());
+    (parts.next().flatten(), parts.next().flatten())
+}
+
+fn remember(work: i64, ebook: Option<i64>, audio: Option<i64>) {
+    let fmt = |x: Option<i64>| x.map(|v| v.to_string()).unwrap_or_default();
+    if let Some(s) = storage() {
+        let _ = s.set_item(&format!("duet-editions-{work}"), &format!("{},{}", fmt(ebook), fmt(audio)));
+    }
+}
+
+async fn load_sync(work: i64, ebook: Option<i64>, audio: Option<i64>) -> SyncIndex {
+    let (Some(e), Some(a)) = (ebook, audio) else { return SyncIndex::default() };
+    match api::get::<Option<SyncMap>>(&format!("/api/works/{work}/sync?ebook={e}&audio={a}")).await {
+        Ok(Some(m)) => SyncIndex::new(m.spans),
+        _ => SyncIndex::default(),
+    }
 }
 
 /// Sync spans in playback order, for looking up what's being said at a time.
@@ -70,7 +116,10 @@ pub fn Reader(id: i64) -> impl IntoView {
     let audio_asset = RwSignal::new(None::<Asset>);
     let layout = RwSignal::new(None::<BookLayout>);
     let sync = RwSignal::new(SyncIndex::default());
+    // Synced (ebook, audiobook) pairings of this book.
+    let pairs = RwSignal::new(Vec::<(i64, i64)>::new());
     let prefs = RwSignal::new(Settings::default().reader);
+    let editions_open = RwSignal::new(false);
 
     let chapter = RwSignal::new(usize::MAX);
     let html = RwSignal::new(String::new());
@@ -102,23 +151,22 @@ pub fn Reader(id: i64) -> impl IntoView {
             rate.set(s.reader.playback_rate);
             prefs.set(s.reader);
         }
-        let map = api::get::<Option<SyncMap>>(&format!("/api/works/{id}/sync")).await.ok().flatten();
-        let e = map
-            .as_ref()
-            .and_then(|m| w.assets.iter().find(|a| a.id == m.ebook_asset).cloned())
-            .or_else(|| pick_ebook(&w.assets));
-        audio_asset.set(pick_audio(&w.assets, map.as_ref()));
-        if let Some(m) = map {
-            sync.set(SyncIndex::new(m.spans));
-        }
+        let synced: Vec<(i64, i64)> = api::get(&format!("/api/works/{id}/sync")).await.unwrap_or_default();
+        let (want_e, want_a) = remembered(id);
+        let find = |want: Option<i64>| want.and_then(|want| w.assets.iter().find(|a| a.id == want).cloned());
+        let e = find(want_e).or_else(|| pick_ebook(&w.assets));
+        let a = find(want_a).or_else(|| pick_audio(&w.assets, e.as_ref().map(|e| e.id), &synced));
+        sync.set(load_sync(id, e.as_ref().map(|e| e.id), a.as_ref().map(|a| a.id)).await);
+        pairs.set(synced);
         if let Some(e) = &e {
             if let Ok(l) = api::get::<BookLayout>(&format!("/api/assets/{}/layout", e.id)).await {
                 layout.set(Some(l));
             }
         }
         ebook.set(e);
+        audio_asset.set(a.clone());
         let pos = w.position.clone().unwrap_or_default();
-        if let Some(a) = audio_asset.get_untracked() {
+        if let Some(a) = a {
             crate::set_media_session(&w.title, w.author.as_deref().unwrap_or(""), w.cover_url.as_deref().unwrap_or(""));
             track.set(pos.track.min(a.tracks.len().saturating_sub(1)));
             pending_seek.set(Some((pos.seconds, false)));
@@ -237,6 +285,81 @@ pub fn Reader(id: i64) -> impl IntoView {
         };
         Position { chapter: if c == usize::MAX { 0 } else { c }, sentence: s, track: tr, seconds: t, fraction, updated_at: None }
     };
+    // Switching editions keeps your place: through the sync map when the new pairing has one,
+    // otherwise at the same point proportionally.
+    let switch_audio = move |new: Asset| {
+        let Some(a) = audio_el() else { return };
+        let was_playing = !a.paused();
+        let _ = a.pause();
+        let here = position();
+        // The sentence being heard (or last tapped), else the one at the top of the page.
+        let s = if sentence.get_untracked() >= 0 { sentence.get_untracked() as usize } else { here.sentence };
+        let c = chapter.get_untracked();
+        let e = ebook.get_untracked().map(|e| e.id);
+        remember(id, e, Some(new.id));
+        spawn_local(async move {
+            let idx = load_sync(id, e, Some(new.id)).await;
+            let (tr, secs) = match idx.of(c, s) {
+                Some(span) => (span.track, span.start),
+                None => {
+                    // Same fraction of the whole recording.
+                    let total = new.duration_secs.unwrap_or(0.0) * here.fraction;
+                    let mut left = total;
+                    let mut at = (0, 0.0);
+                    for (i, t) in new.tracks.iter().enumerate() {
+                        if left <= t.duration_secs {
+                            at = (i, left);
+                            break;
+                        }
+                        left -= t.duration_secs;
+                    }
+                    at
+                }
+            };
+            sync.set(idx);
+            // The new source loads and then applies the pending seek (see on:loadedmetadata).
+            pending_seek.set(Some((secs, was_playing)));
+            track.set(tr);
+            audio_asset.set(Some(new));
+        });
+    };
+    let switch_ebook = move |new: Asset| {
+        let old_chapters = layout.get_untracked().map(|l| l.chapters).unwrap_or(1).max(1);
+        let old_chapter = chapter.get_untracked().min(old_chapters - 1);
+        let a = audio_asset.get_untracked().map(|a| a.id);
+        remember(id, Some(new.id), a);
+        spawn_local(async move {
+            let idx = load_sync(id, Some(new.id), a).await;
+            let l = api::get::<BookLayout>(&format!("/api/assets/{}/layout", new.id)).await.ok();
+            let new_chapters = l.as_ref().map(|l| l.chapters).unwrap_or(1).max(1);
+            let (c, s) = match idx.at(track.get_untracked(), time.get_untracked()) {
+                Some(span) => (span.chapter, span.sentence as u32),
+                None => ((old_chapter * new_chapters) / old_chapters, 0),
+            };
+            sync.set(idx);
+            sentence.set(-1);
+            layout.set(l);
+            ebook.set(Some(new));
+            scroll_to.set(Some(s));
+            chapter.set(usize::MAX);
+            chapter.set(c);
+        });
+    };
+    let sync_these = move |_| {
+        let (Some(e), Some(a)) = (ebook.get_untracked(), audio_asset.get_untracked()) else { return };
+        spawn_local(async move {
+            match api::post::<_, i64>(
+                "/api/jobs",
+                &duet_common::NewJob { kind: duet_common::JobKind::Align, work_id: id, ebook_asset: Some(e.id), audiobook_asset: Some(a.id) },
+            )
+            .await
+            {
+                Ok(_) => toast.show("Syncing these editions; follow it in Jobs"),
+                Err(err) => toast.show(err.0),
+            }
+        });
+    };
+
     let save = move || {
         if work.get_untracked().is_none() {
             return;
@@ -293,10 +416,67 @@ pub fn Reader(id: i64) -> impl IntoView {
                 </div>
                 <button class="icon-button" title="Smaller text" on:click=move |_| font_size.update(|f| *f = (*f - 1).max(12))>"A−"</button>
                 <button class="icon-button" title="Larger text" on:click=move |_| font_size.update(|f| *f = (*f + 1).min(32))>"A+"</button>
+                <Show when=move || work.get().is_some_and(|w| w.assets.len() > 1)>
+                    <button class="icon-button" title="Editions" on:click=move |_| editions_open.update(|o| *o = !*o)>"Editions"</button>
+                </Show>
                 <Show when=move || layout.get().is_some_and(|l| !l.toc.is_empty())>
                     <button class="icon-button" title="Contents" on:click=move |_| toc_open.update(|o| *o = !*o)>"☰"</button>
                 </Show>
             </header>
+
+            <Show when=move || editions_open.get()>
+                <div class="editions-panel">
+                    {move || work.get().map(|w| {
+                        let of = |k: AssetKind| w.assets.iter().filter(|a| a.kind == k).cloned().collect::<Vec<_>>();
+                        let (texts, audios) = (of(AssetKind::Ebook), of(AssetKind::Audiobook));
+                        view! {
+                            {(!texts.is_empty()).then(|| view! {
+                                <div class="edition-group">
+                                    <h4>"Text"</h4>
+                                    {texts.into_iter().map(|a| {
+                                        let (aid, label, a2) = (a.id, edition_label(&a), a.clone());
+                                        view! {
+                                            <label class="choice" class:on=move || ebook.get().is_some_and(|e| e.id == aid)>
+                                                <input type="radio" name="text-edition" prop:checked=move || ebook.get().is_some_and(|e| e.id == aid)
+                                                    on:change=move |_| switch_ebook(a2.clone())/>
+                                                {label}
+                                            </label>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            })}
+                            {(!audios.is_empty()).then(|| view! {
+                                <div class="edition-group">
+                                    <h4>"Audio"</h4>
+                                    {audios.into_iter().map(|a| {
+                                        let (aid, label, a2) = (a.id, edition_label(&a), a.clone());
+                                        view! {
+                                            <label class="choice" class:on=move || audio_asset.get().is_some_and(|x| x.id == aid)>
+                                                <input type="radio" name="audio-edition" prop:checked=move || audio_asset.get().is_some_and(|x| x.id == aid)
+                                                    on:change=move |_| switch_audio(a2.clone())/>
+                                                {label}
+                                            </label>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            })}
+                        }
+                    })}
+                    {move || match (ebook.get(), audio_asset.get()) {
+                        (Some(e), Some(a)) => {
+                            if pairs.get().contains(&(e.id, a.id)) || !sync.get().is_empty() {
+                                view! { <p class="ok">"✓ These two are in sync."</p> }.into_any()
+                            } else {
+                                view! {
+                                    <p class="muted">"These two aren't synced yet, so the text won't follow the audio."</p>
+                                    <button class="primary" on:click=sync_these>"Sync these editions"</button>
+                                }.into_any()
+                            }
+                        }
+                        _ => view! { <span></span> }.into_any(),
+                    }}
+                </div>
+            </Show>
 
             <Show when=move || toc_open.get()>
                 <nav class="toc">
