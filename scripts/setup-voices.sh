@@ -32,6 +32,9 @@ uv pip install --python .venv/bin/python \
   cachetools descript-audio-codec safetensors soundfile vector_quantize_pytorch "huggingface_hub[cli]"
 uv pip install --python .venv/bin/python --no-deps -e .
 uv pip install --python .venv/bin/python --no-deps --upgrade "protobuf>=4.25,<6.0"
+# Newer TensorBoard (pulled in through torch.utils.tensorboard by audiotools) is generated for
+# protobuf 6 and refuses to load with the 5.x pinned above.
+uv pip install --python .venv/bin/python --no-deps "tensorboard<2.20"
 # Keep the ROCm torch even if a dependency asked for another one.
 uv pip install --python .venv/bin/python --index-url "$torch_index" --reinstall-package torch --reinstall-package torchaudio torch torchaudio
 

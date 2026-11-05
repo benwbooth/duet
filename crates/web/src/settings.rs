@@ -324,6 +324,10 @@ pub fn VoicesSetup(s: RwSignal<Settings>) -> impl IntoView {
                                 <button class="primary" disabled=move || busy.get() on:click=move |_| act("/api/setup/voices/start")>"Start"</button>
                             }.into_any()
                         })}
+                        {(ready && !v.installing).then(|| view! {
+                            <button title="Run the installer again to fix a broken install" disabled=move || busy.get()
+                                on:click=move |_| act("/api/setup/voices/install")>"Repair"</button>
+                        })}
                         {ready.then(|| view! {
                             <button on:click=move |_| { show_log.update(|s| *s = !*s); refresh() }>
                                 {move || if show_log.get() { "Hide log" } else { "Show log" }}
