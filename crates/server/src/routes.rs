@@ -62,6 +62,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/ai/setup", get(ai_detect))
         .route("/ai/pull", post(ai_pull))
         .route("/ai/test", post(ai_test))
+        .route("/ai/speak", post(ai_speak))
         .route("/assistant/ask", post(ask))
         .route("/assistant/transcribe", post(transcribe))
         // Positions, sync maps and job status change under the browser; covers and book
@@ -380,8 +381,32 @@ async fn ai_pull(AxState(s): AxState<State>, Json(r): Json<PullReq>) -> ApiResul
     Ok(Json(ai_setup::detect(&s).await))
 }
 
-async fn ai_test(AxState(s): AxState<State>) -> ApiResult<Json<duet_common::ChatTest>> {
-    Ok(Json(ai_setup::test(&s).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?))
+#[derive(Deserialize)]
+struct TestReq {
+    #[serde(default)]
+    question: String,
+}
+
+async fn ai_test(AxState(s): AxState<State>, body: Option<Json<TestReq>>) -> ApiResult<Json<duet_common::ChatTest>> {
+    let q = body.map(|b| b.0.question).filter(|q| !q.trim().is_empty());
+    let q = q.as_deref().unwrap_or("Who wrote Treasure Island, and what is it about?");
+    Ok(Json(ai_setup::test(&s, q).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?))
+}
+
+#[derive(Deserialize)]
+struct SpeakReq {
+    text: String,
+    description: String,
+}
+
+/// Says a line in a voice made from a description, to try the voice models.
+async fn ai_speak(AxState(s): AxState<State>, Json(r): Json<SpeakReq>) -> ApiResult<Json<String>> {
+    // Each description gets its own voice name, so a new description designs a new voice.
+    let voice = format!("try-{:x}", r.description.trim().to_lowercase().bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3)));
+    let audio = ai::speak(&s, &r.text, &voice, Some(r.description.as_str()))
+        .await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+    Ok(Json(audio))
 }
 
 #[derive(Deserialize)]

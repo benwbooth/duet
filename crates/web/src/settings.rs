@@ -339,6 +339,9 @@ pub fn VoicesSetup(s: RwSignal<Settings>) -> impl IntoView {
                     </Show>
                 }
             })}
+            <Show when=move || status.get().is_some_and(|v| v.ready() && v.server_running)>
+                <VoiceTry/>
+            </Show>
             {toggle(s, "Start the voice server with duet", |x| x.ai.auto_start_voices, |x, v| x.ai.auto_start_voices = v)}
         </section>
     }
@@ -526,13 +529,15 @@ pub fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
             }
         });
     };
+    let question = RwSignal::new("Who wrote Treasure Island, and what is it about?".to_string());
     let run_test = move |_| {
         testing.set(true);
         test.set(None);
+        let q = question.get_untracked();
         spawn_local(async move {
             // Make sure the latest choice is saved before the server uses it.
             let _ = api::put::<_, Settings>("/api/settings", &s.get_untracked()).await;
-            test.set(Some(api::post::<_, ChatTest>("/api/ai/test", &()).await.map_err(|e| e.0)));
+            test.set(Some(api::post::<_, ChatTest>("/api/ai/test", &serde_json::json!({ "question": q })).await.map_err(|e| e.0)));
             testing.set(false);
         });
     };
@@ -748,9 +753,13 @@ pub fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
             <Show when=move || !is_local() || selected().is_some()>
                 <div class="wizard-step">
                     <div class="step-title"><span class="num">"{move || if is_local() { "3" } else { "2" }}"</span>"Try it"</div>
-                    <p class="muted">{move || format!("Asks {} a quick question to check it works and how fast it is. The first answer takes longer while the model loads.", s.with(|x| x.ai.llm_model.clone()))}</p>
+                    <p class="muted">"Ask the chat model something to check it works and how quickly it answers. The first answer takes longer while the model loads."</p>
+                    <label class="field">
+                        <span>"Question"</span>
+                        <input type="text" prop:value=move || question.get() on:input=move |ev| question.set(event_target_value(&ev))/>
+                    </label>
                     <button class="primary" disabled=move || testing.get() on:click=run_test>
-                        {move || if testing.get() { "Waiting for an answer…" } else { "Ask a test question" }}
+                        {move || if testing.get() { "Waiting for an answer…" } else { "Ask" }}
                     </button>
                     {move || test.get().map(|r| match r {
                         Ok(t) => {
@@ -763,6 +772,7 @@ pub fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
                             };
                             view! {
                                 <div class="test-result ok-box">
+                                    <p class="muted">{format!("You asked: {}", question.get_untracked())}</p>
                                     <p>"✓ "{t.answer}</p>
                                     <small>{verdict}</small>
                                 </div>
@@ -872,6 +882,53 @@ pub fn FolderPicker(s: RwSignal<Settings>) -> impl IntoView {
                     })}
                 </div>
             </Show>
+        </div>
+    }
+}
+
+/// Try the voice models: describe a voice, give it a line, hear it.
+#[component]
+fn VoiceTry() -> impl IntoView {
+    let description = RwSignal::new("A warm, friendly woman in her thirties with a gentle British accent".to_string());
+    let line = RwSignal::new("[warmly] Hello! Shall we pick up where we left off? I think you'll like what happens next.".to_string());
+    let speaking = RwSignal::new(false);
+    let result = RwSignal::new(None::<Result<f64, String>>);
+    let speak = move |_| {
+        speaking.set(true);
+        result.set(None);
+        let body = serde_json::json!({ "text": line.get_untracked(), "description": description.get_untracked() });
+        spawn_local(async move {
+            let started = js_sys::Date::now();
+            match api::post::<_, String>("/api/ai/speak", &body).await {
+                Ok(audio) => {
+                    crate::play_data_url(&audio);
+                    result.set(Some(Ok((js_sys::Date::now() - started) / 1000.0)));
+                }
+                Err(e) => result.set(Some(Err(e.0))),
+            }
+            speaking.set(false);
+        });
+    };
+    view! {
+        <div class="wizard-step voice-try">
+            <div class="step-title">{crate::icon(crate::icons::HEADPHONES)}"Try a voice"</div>
+            <label class="field">
+                <span>"Describe the voice"</span>
+                <textarea rows="2" prop:value=move || description.get() on:input=move |ev| description.set(event_target_value(&ev))></textarea>
+                <small>"A new description creates a new voice the first time, which takes a minute or two."</small>
+            </label>
+            <label class="field">
+                <span>"What it says"</span>
+                <textarea rows="2" prop:value=move || line.get() on:input=move |ev| line.set(event_target_value(&ev))></textarea>
+                <small>"Words in [brackets] are acting directions, like [whispering] or [laughing]."</small>
+            </label>
+            <button class="primary" disabled=move || speaking.get() on:click=speak>
+                {move || if speaking.get() { "Speaking…" } else { "Speak" }}
+            </button>
+            {move || result.get().map(|r| match r {
+                Ok(secs) => view! { <p class="ok">{format!("✓ Played. Took {secs:.1} s (the first line after starting also loads the models).")}</p> }.into_any(),
+                Err(e) => view! { <div class="test-result warn">{format!("That didn't work: {e}")}</div> }.into_any(),
+            })}
         </div>
     }
 }

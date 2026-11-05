@@ -135,14 +135,9 @@ pub async fn pull(state: &State, url: &str, model: &str) -> anyhow::Result<()> {
 }
 
 /// Asks the configured model one short question and times it.
-pub async fn test(state: &State) -> anyhow::Result<ChatTest> {
+pub async fn test(state: &State, question: &str) -> anyhow::Result<ChatTest> {
     let started = std::time::Instant::now();
-    let answer = crate::llm::chat(
-        state,
-        "Answer in one short sentence.",
-        &[("user".into(), "Who wrote Treasure Island, and what is it about?".into())],
-    )
-    .await?;
+    let answer = crate::llm::chat(state, "Answer in one or two short sentences.", &[("user".into(), question.to_string())]).await?;
     let seconds = started.elapsed().as_secs_f64();
     // Roughly four characters to a token.
     Ok(ChatTest { tokens_per_second: Some(answer.len() as f64 / 4.0 / seconds.max(0.01)), answer, seconds })
