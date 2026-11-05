@@ -3,6 +3,7 @@
 mod ai;
 mod book;
 mod db;
+mod dev;
 mod downloads;
 mod error;
 mod free;

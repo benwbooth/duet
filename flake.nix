@@ -95,7 +95,7 @@
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ rustc cargo clippy rustfmt rust-analyzer wasm-bindgen-cli lld ffmpeg ];
+          packages = with pkgs; [ rustc cargo clippy rustfmt rust-analyzer wasm-bindgen-cli lld ffmpeg watchexec ];
         };
       });
     };

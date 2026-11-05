@@ -17,6 +17,8 @@ crates/web/build.sh         # builds the UI into crates/web/dist
 cargo run -p duet-server    # http://127.0.0.1:8484, data in ./data
 ```
 
+For development, `scripts/dev.sh` watches the source with watchexec. It rebuilds the UI or the server on any change and swaps in the new one only when the build succeeds. Open pages reload themselves.
+
 `nix build` produces a wrapped `duet` binary that has the UI, the workers, Calibre and ffmpeg. The options are `--listen` / `DUET_LISTEN`, `--data-dir` / `DUET_DATA_DIR` and `--web-dir` / `DUET_WEB_DIR`.
 
 Then open **Settings**. Add your book folders, then press *Scan folders* in the library.

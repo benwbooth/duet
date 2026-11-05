@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 .venv/
 result
+/crates/web/dist.new
+/crates/web/dist.old

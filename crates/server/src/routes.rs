@@ -57,9 +57,15 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .layer(SetResponseHeaderLayer::if_not_present(header::CACHE_CONTROL, header::HeaderValue::from_static("no-cache")))
         .with_state(state);
     let index = web_dir.join("index.html");
-    Router::new()
-        .nest("/api", api)
+    let mut app = Router::new();
+    if std::env::var_os("DUET_DEV").is_some() {
+        let (dir, instance) = (web_dir.to_path_buf(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        app = app.route("/api/dev/reload", get(move || std::future::ready(crate::dev::reload_stream(dir.clone(), instance))));
+    }
+    app.nest("/api", api)
         .fallback_service(ServeDir::new(web_dir).fallback(ServeFile::new(index)))
+        // Revalidate the UI on every load (a cheap 304) so a new build is picked up at once.
+        .layer(SetResponseHeaderLayer::if_not_present(header::CACHE_CONTROL, header::HeaderValue::from_static("no-cache")))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
 }
