@@ -818,3 +818,9 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .fbadge.ebook { background: var(--accent-soft); color: var(--accent); }
 .fbadge.audio { background: color-mix(in srgb, hsl(210 60% 50%) 16%, transparent); color: hsl(210 55% 45%); }
 @media (prefers-color-scheme: dark) { .fbadge.audio { color: hsl(210 70% 72%); } }
+
+/* Line art drawn black on transparent (Standard Ebooks marks it) would vanish on a dark page. */
+.reader[data-theme="dark"] .page img[class*="black-on-transparent"] { filter: invert(1) brightness(0.9); }
+@media (prefers-color-scheme: dark) {
+  .reader[data-theme="auto"] .page img[class*="black-on-transparent"] { filter: invert(1) brightness(0.9); }
+}

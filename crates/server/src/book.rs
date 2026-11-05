@@ -165,11 +165,30 @@ fn chapter_dom(src: &Source, asset_id: i64, index: usize) -> anyhow::Result<Node
     for n in junk {
         n.detach();
     }
-    for el in body.select("img, image, a").into_iter().flatten() {
+    let res_url = |path: &str| {
+        format!("/api/assets/{asset_id}/res/{}", path.split('/').map(|p| urlencoding::encode(p).into_owned()).collect::<Vec<_>>().join("/"))
+    };
+    let external = |v: &str| v.starts_with("http:") || v.starts_with("https:") || v.starts_with("mailto:") || v.starts_with("data:");
+    for el in body.select("img, image, a, source, video, audio").into_iter().flatten() {
         let mut attrs = el.attributes.borrow_mut();
-        for name in ["src", "href", "xlink:href"] {
+        // Responsive images ("a.png 1x, a-2x.png 2x"): the browser prefers these over src, so
+        // every candidate has to point into the book too.
+        if let Some(set) = attrs.get("srcset").map(str::to_string) {
+            let rewritten = set
+                .split(',')
+                .map(|cand| {
+                    let cand = cand.trim();
+                    let (url, descriptor) = cand.split_once(char::is_whitespace).unwrap_or((cand, ""));
+                    let url = if external(url) { url.to_string() } else { res_url(&resolve(&base, url)) };
+                    format!("{url} {descriptor}").trim().to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            attrs.insert("srcset", rewritten);
+        }
+        for name in ["src", "href", "xlink:href", "poster"] {
             let Some(v) = attrs.get(name).map(str::to_string) else { continue };
-            if v.starts_with("http:") || v.starts_with("https:") || v.starts_with("mailto:") || v.starts_with("data:") {
+            if external(&v) {
                 continue;
             }
             if el.name.local.as_ref() == "a" {
@@ -180,9 +199,7 @@ fn chapter_dom(src: &Source, asset_id: i64, index: usize) -> anyhow::Result<Node
                     attrs.insert("href", "#".to_string());
                 }
             } else {
-                let path = resolve(&base, &v);
-                let url = format!("/api/assets/{asset_id}/res/{}", path.split('/').map(|p| urlencoding::encode(p).into_owned()).collect::<Vec<_>>().join("/"));
-                attrs.insert(name, url);
+                attrs.insert(name, res_url(&resolve(&base, &v)));
             }
         }
     }
