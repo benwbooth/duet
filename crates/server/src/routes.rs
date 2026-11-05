@@ -26,7 +26,7 @@ use tower_http::{
 use crate::{
     State, ai, book, db, downloads,
     error::{ApiError, ApiResult},
-    free, jobs, library, torznab,
+    free, jobs, library, setup, torznab,
 };
 
 pub fn router(state: State, web_dir: &FsPath) -> Router {
@@ -48,6 +48,11 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/jobs", get(list_jobs).post(new_job))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/settings/test-qbittorrent", post(test_qbit))
+        .route("/setup/voices", get(voices_status))
+        .route("/setup/voices/install", post(voices_install))
+        .route("/setup/voices/start", post(voices_start))
+        .route("/setup/voices/stop", post(voices_stop))
+        .route("/setup/voices/log", get(voices_log))
         .route("/search", get(search))
         .route("/downloads", get(list_downloads).post(new_download))
         .route("/assistant/ask", post(ask))
@@ -294,4 +299,30 @@ async fn transcribe(AxState(s): AxState<State>, mut form: Multipart) -> ApiResul
         }
     }
     Err(ApiError::bad_request("no audio"))
+}
+
+async fn voices_status(AxState(s): AxState<State>) -> Json<duet_common::VoiceSetup> {
+    Json(setup::status(&s).await)
+}
+
+async fn voices_install(AxState(s): AxState<State>) -> ApiResult<Json<duet_common::VoiceSetup>> {
+    setup::install(&s).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    Ok(Json(setup::status(&s).await))
+}
+
+async fn voices_start(AxState(s): AxState<State>) -> ApiResult<Json<duet_common::VoiceSetup>> {
+    setup::start_server(&s).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    Ok(Json(setup::status(&s).await))
+}
+
+async fn voices_stop(AxState(s): AxState<State>) -> Json<duet_common::VoiceSetup> {
+    setup::stop_server(&s).await;
+    Json(setup::status(&s).await)
+}
+
+/// The last lines of the voice server's log, for troubleshooting from the UI.
+async fn voices_log(AxState(s): AxState<State>) -> ApiResult<Json<Vec<String>>> {
+    let text = tokio::fs::read_to_string(setup::log_path(&s.data_dir)).await.unwrap_or_default();
+    let lines: Vec<String> = text.lines().rev().take(80).map(str::to_string).collect();
+    Ok(Json(lines.into_iter().rev().collect()))
 }

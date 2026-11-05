@@ -50,6 +50,7 @@ Both Fish models are under the Fish Audio Community/Research license: free for p
 Local setup on an AMD GPU (ROCm), with S2-Pro as the default:
 
 ```bash
+# Or from the web UI: Settings → Voices → Install voices.
 scripts/setup-voices.sh   # fish-speech + S2-Pro, workers venv, Qwen3-TTS weights
 scripts/voices.sh         # TTS server on :8880
 ```

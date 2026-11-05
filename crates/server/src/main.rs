@@ -11,6 +11,7 @@ mod jobs;
 mod library;
 mod qbit;
 mod routes;
+mod setup;
 mod torznab;
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -41,6 +42,7 @@ pub struct AppState {
     /// Wakes the job runner when a job is queued.
     pub jobs_wake: Notify,
     pub qbit: qbit::Qbit,
+    pub voices: setup::Voices,
 }
 
 pub type State = Arc<AppState>;
@@ -66,10 +68,12 @@ async fn main() -> anyhow::Result<()> {
         qbit: qbit::Qbit::new()?,
         http,
         jobs_wake: Notify::new(),
+        voices: setup::Voices::default(),
     });
 
     tokio::spawn(jobs::run(state.clone()));
     tokio::spawn(downloads::watch_torrents(state.clone()));
+    tokio::spawn(setup::autostart(state.clone()));
 
     let app = routes::router(state, &args.web_dir);
     let listener = tokio::net::TcpListener::bind(args.listen).await?;

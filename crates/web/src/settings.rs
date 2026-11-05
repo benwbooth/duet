@@ -1,7 +1,7 @@
 //! The settings page: library folders, downloads (qBittorrent, indexers, free sources), AI
 //! services and reading preferences.
 
-use duet_common::{Indexer, Settings};
+use duet_common::{Indexer, Settings, VoiceSetup};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -99,6 +99,7 @@ pub fn SettingsPage() -> impl IntoView {
             </button>
         </header>
         <div class="settings">
+            <VoicesSetup s/>
             <section>
                 <h2>"Library"</h2>
                 <label class="field">
@@ -205,5 +206,104 @@ pub fn SettingsPage() -> impl IntoView {
                 {toggle(s, "Follow the audio (scroll and turn chapters)", |x| x.reader.follow_audio, |x, v| x.reader.follow_audio = v)}
             </section>
         </div>
+    }
+}
+
+/// Installs and runs the local voice stack: Fish Audio S2-Pro for acting, Qwen3-TTS for casting.
+#[component]
+fn VoicesSetup(s: RwSignal<Settings>) -> impl IntoView {
+    let status = RwSignal::new(None::<VoiceSetup>);
+    let busy = RwSignal::new(false);
+    let show_log = RwSignal::new(false);
+    let server_log = RwSignal::new(Vec::<String>::new());
+    let toast = toast();
+    let refresh = move || {
+        spawn_local(async move {
+            if let Ok(v) = api::get::<VoiceSetup>("/api/setup/voices").await {
+                status.set(Some(v));
+            }
+            if show_log.get_untracked() {
+                if let Ok(l) = api::get::<Vec<String>>("/api/setup/voices/log").await {
+                    server_log.set(l);
+                }
+            }
+        })
+    };
+    refresh();
+    if let Ok(h) = set_interval_with_handle(refresh, std::time::Duration::from_secs(2)) {
+        on_cleanup(move || h.clear());
+    }
+    let act = move |path: &'static str| {
+        busy.set(true);
+        spawn_local(async move {
+            match api::post::<_, VoiceSetup>(path, &()).await {
+                Ok(v) => status.set(Some(v)),
+                Err(e) => toast.show(e.0),
+            }
+            busy.set(false);
+        });
+    };
+    let item = |done: bool, label: &'static str| view! {
+        <li class:done=done><span class="mark">{if done { "✓" } else { "○" }}</span>{label}</li>
+    };
+
+    view! {
+        <section class="voices">
+            <h2>"Voices"</h2>
+            <p class="hint">"Character voices run on this computer: Fish Audio S2-Pro performs every line, and Qwen3-TTS VoiceDesign creates each character's voice from its description."</p>
+            {move || status.get().map(|v| {
+                let ready = v.ready();
+                let small_gpu = v.gpu_vram_gb.is_some_and(|g| g < 24);
+                view! {
+                    <p class="gpu">{v.gpu.clone().map(|g| format!("Graphics card: {g}")).unwrap_or_else(|| "No graphics card found".into())}</p>
+                    {small_gpu.then(|| view! {
+                        <p class="warn">"S2-Pro needs about 24 GB of graphics memory; this card may be too small."</p>
+                    })}
+                    <ul class="setup-steps">
+                        {item(v.fish_installed, "Fish Audio speech engine")}
+                        {item(v.fish_weights, "S2-Pro acting model")}
+                        {item(v.workers_installed, "duet workers (speech recognition, casting)")}
+                        {item(v.casting_weights, "Qwen3-TTS voice design models")}
+                    </ul>
+                    {v.installing.then(|| view! {
+                        <div class="install-progress">
+                            <div class="progress"><div style=format!("width:{:.0}%", v.progress * 100.0)></div></div>
+                            <span>{v.step.clone()}</span>
+                        </div>
+                    })}
+                    {v.error.clone().map(|e| view! { <p class="warn">{e}</p> })}
+                    {(v.installing || v.error.is_some()).then(|| view! {
+                        <pre class="log">{v.log.join("\n")}</pre>
+                    })}
+                    <div class="row">
+                        {(!ready && !v.installing).then(|| view! {
+                            <button class="primary" disabled=move || busy.get() on:click=move |_| act("/api/setup/voices/install")>
+                                {if v.fish_installed || v.workers_installed { "Finish installing" } else { "Install voices (downloads tens of GB)" }}
+                            </button>
+                        })}
+                        {(ready && !v.installing).then(|| if v.server_running {
+                            view! {
+                                <span class="badge sync">"Voice server running"</span>
+                                <button disabled=move || busy.get() on:click=move |_| act("/api/setup/voices/stop")>"Stop"</button>
+                            }.into_any()
+                        } else {
+                            view! {
+                                <span class="badge">"Voice server stopped"</span>
+                                <button class="primary" disabled=move || busy.get() on:click=move |_| act("/api/setup/voices/start")>"Start"</button>
+                            }.into_any()
+                        })}
+                        {ready.then(|| view! {
+                            <button on:click=move |_| { show_log.update(|s| *s = !*s); refresh() }>
+                                {move || if show_log.get() { "Hide log" } else { "Show log" }}
+                            </button>
+                        })}
+                    </div>
+                    <Show when=move || show_log.get()>
+                        <pre class="log">{move || server_log.get().join("\n")}</pre>
+                    </Show>
+                }
+            })}
+            {toggle(s, "Start the voice server with duet", |x| x.ai.auto_start_voices, |x, v| x.ai.auto_start_voices = v)}
+        </section>
     }
 }

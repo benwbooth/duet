@@ -217,3 +217,18 @@ main { margin-left: var(--nav-w); padding: 1.6rem 2rem 6rem; max-width: 1200px; 
   .assistant { inset: auto 0.5rem calc(150px + env(safe-area-inset-bottom)) 0.5rem; width: auto; }
   .assistant-buttons { right: 0.8rem; bottom: calc(150px + env(safe-area-inset-bottom)); }
 }
+
+/* Voices setup */
+.setup-steps { list-style: none; padding: 0; margin: 0.6rem 0; display: grid; gap: 0.3rem; }
+.setup-steps li { color: var(--muted); display: flex; gap: 0.6rem; }
+.setup-steps li.done { color: var(--text); }
+.setup-steps .mark { width: 1.2rem; text-align: center; color: var(--muted); }
+.setup-steps li.done .mark { color: #2f7d4b; font-weight: 700; }
+.voices .row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin: 0.8rem 0; }
+.voices .gpu { margin: 0.4rem 0; }
+.warn { color: var(--danger); }
+.install-progress { display: grid; gap: 0.3rem; margin: 0.6rem 0; font-size: 0.9rem; }
+.log {
+  max-height: 240px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 0.6rem; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all;
+}

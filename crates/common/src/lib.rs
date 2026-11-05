@@ -320,6 +320,8 @@ pub struct AiSettings {
     pub workers_dir: String,
     /// "cuda", "cpu" or "auto", passed to the workers.
     pub device: String,
+    /// Start the local voice server with duet once it's installed.
+    pub auto_start_voices: bool,
 }
 
 impl Default for AiSettings {
@@ -336,6 +338,7 @@ impl Default for AiSettings {
             python: "python3".into(),
             workers_dir: "workers".into(),
             device: "auto".into(),
+            auto_start_voices: true,
         }
     }
 }
@@ -445,4 +448,28 @@ pub struct ScanReport {
     pub ebooks: usize,
     pub audiobooks: usize,
     pub errors: Vec<String>,
+}
+
+/// State of the local voice stack (Settings → Voices).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct VoiceSetup {
+    /// e.g. "AMD GPU, 24 GB"
+    pub gpu: Option<String>,
+    pub gpu_vram_gb: Option<u64>,
+    pub fish_installed: bool,
+    pub fish_weights: bool,
+    pub workers_installed: bool,
+    pub casting_weights: bool,
+    pub installing: bool,
+    pub step: String,
+    pub progress: f64,
+    pub error: Option<String>,
+    pub log: Vec<String>,
+    pub server_running: bool,
+}
+
+impl VoiceSetup {
+    pub fn ready(&self) -> bool {
+        self.fish_installed && self.fish_weights && self.workers_installed && self.casting_weights
+    }
 }
