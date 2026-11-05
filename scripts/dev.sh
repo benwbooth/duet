@@ -83,11 +83,11 @@ trap cleanup EXIT INT TERM
 [[ -d crates/web/dist ]] || build_web
 restart_server
 
-watchexec --quiet --postpone --debounce 300ms \
+watchexec --quiet --postpone --debounce 300ms --on-busy-update=queue \
   -w crates/web -w crates/common -e rs,js,css,html,svg,webmanifest,toml \
   --ignore 'crates/web/dist*' \
   -- "$0" --step-web &
-watchexec --quiet --postpone --debounce 300ms \
+watchexec --quiet --postpone --debounce 300ms --on-busy-update=queue \
   -w crates/server -w crates/common -e rs,sql,toml \
   -- "$0" --step-server &
 wait

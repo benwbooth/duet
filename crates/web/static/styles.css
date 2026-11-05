@@ -348,9 +348,10 @@ button.link { background: none; border: 0; color: var(--muted); padding: 0; text
 .bookview.paged .page img { max-height: calc(100% - 2rem); object-fit: contain; break-inside: avoid; }
 .bookview.paged .page h1, .bookview.paged .page h2, .bookview.paged .page h3 { break-after: avoid; text-align: left; }
 .leaf {
-  position: absolute; inset: 0; z-index: 3; transform-origin: left center; transform-style: preserve-3d;
-  pointer-events: none;
+  position: absolute; top: 0; bottom: 0; z-index: 3; transform-style: preserve-3d; pointer-events: none;
 }
+.leaf-static { position: absolute; top: 0; bottom: 0; z-index: 2; overflow: hidden; background: var(--page-bg); pointer-events: none; }
+.leaf-front .page, .leaf-back .page, .leaf-static .page { height: 100%; max-width: none; margin: 0; }
 .leaf-front, .leaf-back { position: absolute; inset: 0; overflow: hidden; backface-visibility: hidden; background: var(--page-bg); }
 .leaf-front .page { color: var(--page-text); }
 .leaf-back {
@@ -364,11 +365,18 @@ button.link { background: none; border: 0; color: var(--muted); padding: 0; text
 }
 /* The shadow the turning page casts on the one underneath. */
 .turn-shadow {
-  position: absolute; inset: 0; z-index: 2; opacity: 0; pointer-events: none;
+  position: absolute; top: 0; bottom: 0; left: 0; width: 100%; z-index: 2; opacity: 0; pointer-events: none;
   background: linear-gradient(to left, rgba(0,0,0,0.3), rgba(0,0,0,0) 40%);
 }
 .reader.paged-mode .chapter-nav { margin: 0.4rem auto 0; max-width: 46em; font-size: 0.85rem; padding: 0 0.6rem; }
 .reader.paged-mode .chapter-nav button { padding: 0.25rem 0.6rem; font-size: 0.85rem; }
 @media (max-width: 760px) {
   .reader.paged-mode .bookview { margin: 0; border-radius: 0; box-shadow: none; height: calc(100dvh - 54px - var(--player-h, 0px) - 2.8rem); }
+}
+
+/* Two facing pages: wider book, with a fold down the middle. */
+.reader.paged-mode .bookview.spread { max-width: min(92em, 100%); }
+.bookview.spread::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: calc(50% - 40px); width: 80px; z-index: 1; pointer-events: none;
+  background: linear-gradient(to right, rgba(0,0,0,0) 0%, rgba(0,0,0,0.06) 35%, rgba(0,0,0,0.16) 50%, rgba(0,0,0,0.06) 65%, rgba(0,0,0,0) 100%);
 }

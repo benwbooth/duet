@@ -123,21 +123,17 @@ function pagerOf(container) {
 const TURN_MS = 520;
 
 class Pager {
-  constructor(book, article, handlers) {
+  constructor(book, article, handlers, spreadPref) {
     this.book = book;
     this.article = article;
     this.h = handlers;
+    this.spreadPref = spreadPref || "auto";
     this.page = 0;
     this.pages = 1;
     this.busy = false;
     this.layout();
-    this.resize = new ResizeObserver(() => {
-      const anchor = this.firstSentence();
-      this.layout();
-      const e = this.article.querySelector(`.s[data-s="${anchor}"]`);
-      if (e) this.showElement(e, false);
-    });
-    this.resize.observe(book);
+    this.resize = new ResizeObserver(() => this.relayout());
+    this.resize.observe(book.parentElement || book);
     this.onKey = (e) => {
       if (e.target.closest && e.target.closest("input, textarea, select")) return;
       if (["ArrowRight", "PageDown", " "].includes(e.key)) { e.preventDefault(); this.next(); }
@@ -150,25 +146,52 @@ class Pager {
   destroy() {
     this.resize.disconnect();
     document.removeEventListener("keydown", this.onKey);
-    this.book.querySelectorAll(".leaf, .turn-shadow").forEach((e) => e.remove());
+    this.book.querySelectorAll(".leaf, .leaf-static, .turn-shadow").forEach((e) => e.remove());
+    this.book.classList.remove("spread");
     delete this.book.__pager;
+  }
+
+  // Lays out again (resize, one/two pages) keeping the same text on screen.
+  relayout() {
+    if (this.busy) return;
+    const anchor = this.firstSentence();
+    this.layout();
+    const e = this.article.querySelector(`.s[data-s="${anchor}"]`);
+    if (e) this.showElement(e, false);
+  }
+
+  setSpread(pref) {
+    this.spreadPref = pref;
+    this.relayout();
   }
 
   get width() {
     return this.book.clientWidth;
   }
 
+  // Two facing pages when asked to, or (auto) when the window is wide and not tall.
+  wantsSpread() {
+    if (this.spreadPref === "two") return true;
+    if (this.spreadPref === "one") return false;
+    const room = (this.book.parentElement || this.book).clientWidth;
+    return room >= 980 && room > this.book.clientHeight * 1.25;
+  }
+
   layout() {
+    this.spread = this.wantsSpread();
+    this.book.classList.toggle("spread", this.spread);
     const w = this.width;
-    const pad = Math.round(Math.min(56, Math.max(22, w * 0.07)));
-    this.article.style.setProperty("--page-w", `${w}px`);
+    const pageW = this.spread ? w / 2 : w;
+    const pad = Math.round(Math.min(56, Math.max(22, pageW * 0.08)));
     this.article.style.setProperty("--page-pad", `${pad}px`);
-    this.article.style.columnWidth = `${w - 2 * pad}px`;
+    // A fixed count (not a width) so rounding can't drop a column; overflow continues to the right.
+    this.article.style.columnWidth = "auto";
+    this.article.style.columnCount = this.spread ? "2" : "1";
     this.article.style.columnGap = `${2 * pad}px`;
     this.pages = Math.max(1, Math.round(this.book.scrollWidth / w));
     // Columns can leave a sliver; trust the last element's position too.
     const last = this.article.lastElementChild;
-    if (last) this.pages = Math.max(this.pages, this.pageOf(last) + 1);
+    if (last) this.pages = Math.max(this.pages, this.pageOf(last, true) + 1);
     this.page = Math.min(this.page, this.pages - 1);
     this.place(this.article, this.page);
     this.report();
@@ -178,11 +201,11 @@ class Pager {
     article.style.transform = `translateX(${-page * this.width}px)`;
   }
 
-  pageOf(el) {
+  pageOf(el, unclamped) {
     const a = this.article.getBoundingClientRect();
     const r = el.getBoundingClientRect();
-    const x = r.left - a.left + 1;
-    return Math.max(0, Math.min(this.pages - 1, Math.floor(x / this.width)));
+    const p = Math.floor((r.left - a.left + 1) / this.width);
+    return unclamped ? Math.max(0, p) : Math.max(0, Math.min(this.pages - 1, p));
   }
 
   firstSentence() {
@@ -195,7 +218,7 @@ class Pager {
   }
 
   report() {
-    if (this.h.onPage) this.h.onPage(this.page + 1, this.pages);
+    if (this.h.onPage) this.h.onPage(this.page + 1, this.pages, this.spread);
   }
 
   showElement(el, animate) {
@@ -231,48 +254,69 @@ class Pager {
     else if (this.h.onPrev) this.h.onPrev();
   }
 
-  // A leaf: a copy of one page that rotates around the left edge like a page of a book.
-  makeLeaf(page) {
+  // A copy of the laid-out chapter, shifted so `offset` px of it sits at the left edge.
+  copy(offset) {
+    const c = this.article.cloneNode(true);
+    c.classList.remove("synced");
+    c.style.width = `${this.width}px`;
+    c.style.transform = `translateX(${-offset}px)`;
+    return c;
+  }
+
+  face(cls, offset) {
+    const f = document.createElement("div");
+    f.className = cls;
+    if (offset !== null) f.appendChild(this.copy(offset));
+    return f;
+  }
+
+  // A turning leaf over [x, x + w), hinged on its left or right edge. The front shows the text
+  // at `front` px into the chapter, the back the text at `back` (or blank paper when null).
+  makeLeaf({ x, w, hinge, front, back }) {
     const leaf = document.createElement("div");
     leaf.className = "leaf";
-    const front = document.createElement("div");
-    front.className = "leaf-front";
-    const copy = this.article.cloneNode(true);
-    copy.classList.remove("synced");
-    copy.removeAttribute("id");
-    this.place(copy, page);
-    front.appendChild(copy);
+    leaf.style.left = `${x}px`;
+    leaf.style.width = `${w}px`;
+    leaf.style.transformOrigin = `${hinge} center`;
+    const f = this.face("leaf-front", front);
     const shade = document.createElement("div");
     shade.className = "leaf-shade";
-    front.appendChild(shade);
-    const back = document.createElement("div");
-    back.className = "leaf-back";
-    leaf.append(front, back);
-    const shadow = document.createElement("div");
-    shadow.className = "turn-shadow";
-    this.book.append(shadow, leaf);
-    return { leaf, shade, shadow };
+    shade.style.background = `linear-gradient(to ${hinge === "left" ? "left" : "right"}, rgba(0,0,0,0.38), rgba(0,0,0,0.06) 30%, rgba(255,255,255,0.12) 55%, rgba(0,0,0,0) 80%)`;
+    f.appendChild(shade);
+    leaf.append(f, this.face("leaf-back", back));
+    return { leaf, shade };
   }
 
-  // Sets the leaf's angle: 0 = lying flat over the page, 1 = turned all the way over.
-  pose(parts, t) {
-    const angle = -180 * t;
+  // A still copy of half a spread, kept on top until the turning leaf lands on it.
+  makeStatic(x, w, offset) {
+    const s = document.createElement("div");
+    s.className = "leaf-static";
+    s.style.left = `${x}px`;
+    s.style.width = `${w}px`;
+    s.appendChild(this.copy(offset));
+    return s;
+  }
+
+  // Sets the leaf's turn: 0 = flat where it started, 1 = turned all the way over.
+  pose(t, x) {
+    const p = t.parts;
+    const angle = t.sign * 180 * x;
     // A slight lift and skew in mid-turn reads as paper bending rather than a rigid card.
-    const lift = Math.sin(Math.PI * t);
+    const lift = Math.sin(Math.PI * x);
     // Perspective lives on the leaf, not the book, so the book still clips what's outside it.
-    parts.leaf.style.transform = `perspective(2400px) rotateY(${angle}deg) skewY(${(-3 * lift).toFixed(2)}deg)`;
-    parts.shade.style.opacity = (0.55 * lift).toFixed(3);
-    parts.shadow.style.opacity = (0.45 * (1 - t)).toFixed(3);
-    parts.shadow.style.transform = `translateX(${(-this.width * t * 0.6).toFixed(1)}px)`;
+    p.leaf.style.transform = `perspective(2400px) rotateY(${angle}deg) skewY(${(t.sign * 3 * lift).toFixed(2)}deg)`;
+    p.shade.style.opacity = (0.55 * lift).toFixed(3);
+    p.shadow.style.opacity = (0.4 * (t.spread ? lift : 1 - x)).toFixed(3);
+    if (!t.spread) p.shadow.style.transform = `translateX(${(-this.width * x * 0.6).toFixed(1)}px)`;
   }
 
-  animate(parts, from, to, ms) {
+  animate(t, from, to, ms) {
     return new Promise((resolve) => {
       const start = performance.now();
       const ease = (x) => 1 - Math.pow(1 - x, 3);
       const step = (now) => {
         const x = Math.min(1, (now - start) / ms);
-        this.pose(parts, from + (to - from) * ease(x));
+        this.pose(t, from + (to - from) * ease(x));
         if (x < 1) requestAnimationFrame(step);
         else resolve();
       };
@@ -280,41 +324,63 @@ class Pager {
     });
   }
 
-  // dir 1: the current page lifts away to reveal the next; dir -1: the previous page falls back.
+  // Sets up a turn. dir 1 shows the next page (spread), dir -1 the previous one.
+  // Returns where the leaf starts and where it ends when the turn completes.
   begin(dir) {
     this.busy = true;
+    const W = this.width;
+    const half = W / 2;
+    const cur = this.page * W;
     const target = this.page + dir;
-    let parts;
-    if (dir > 0) {
-      parts = this.makeLeaf(this.page);
+    const next = target * W;
+    const shadow = document.createElement("div");
+    shadow.className = "turn-shadow";
+    const t = { dir, target, spread: this.spread, extra: [shadow] };
+    if (!this.spread) {
+      // One page: the current page lifts off to the left, or the previous one falls back.
+      t.sign = -1;
+      t.parts = this.makeLeaf({ x: 0, w: W, hinge: "left", front: dir > 0 ? cur : next, back: null });
+      [t.start, t.end] = dir > 0 ? [0, 1] : [1, 0];
+      if (dir > 0) this.place(this.article, target);
+    } else if (dir > 0) {
+      // Two pages: the right page turns over the spine; its back is the next left page.
+      t.sign = -1;
+      t.parts = this.makeLeaf({ x: half, w: half, hinge: "left", front: cur + half, back: next });
+      t.extra.push(this.makeStatic(0, half, cur));
+      [t.start, t.end] = [0, 1];
+      shadow.style.left = `${half}px`;
+      shadow.style.width = `${half}px`;
       this.place(this.article, target);
-      this.pose(parts, 0);
     } else {
-      parts = this.makeLeaf(target);
-      this.pose(parts, 1);
+      // Two pages, backwards: the left page turns over to the right; its back is the previous right page.
+      t.sign = 1;
+      t.parts = this.makeLeaf({ x: 0, w: half, hinge: "right", front: cur, back: next + half });
+      t.extra.push(this.makeStatic(half, half, cur + half));
+      [t.start, t.end] = [0, 1];
+      shadow.style.width = `${half}px`;
+      shadow.style.background = "linear-gradient(to right, rgba(0,0,0,0.3), rgba(0,0,0,0) 40%)";
+      this.place(this.article, target);
     }
-    return { parts, dir, target };
+    t.parts.shadow = shadow;
+    this.book.append(...t.extra, t.parts.leaf);
+    this.pose(t, t.start);
+    return t;
   }
 
   async finish(t, from, complete) {
-    const { parts, dir, target } = t;
-    const done = dir > 0 ? (complete ? 1 : 0) : (complete ? 0 : 1);
-    await this.animate(parts, from, done, TURN_MS * Math.max(0.35, Math.abs(done - from)));
-    if (complete) {
-      this.page = target;
-      this.place(this.article, target);
-      this.report();
-    } else {
-      this.place(this.article, this.page);
-    }
-    parts.leaf.remove();
-    parts.shadow.remove();
+    const to = complete ? t.end : t.start;
+    await this.animate(t, from, to, TURN_MS * Math.max(0.35, Math.abs(to - from)));
+    if (complete) this.page = t.target;
+    this.place(this.article, this.page);
+    if (complete) this.report();
+    t.parts.leaf.remove();
+    t.extra.forEach((e) => e.remove());
     this.busy = false;
   }
 
   async turn(dir) {
     const t = this.begin(dir);
-    await this.finish(t, dir > 0 ? 0 : 1, true);
+    await this.finish(t, t.start, true);
   }
 
   bindPointer() {
@@ -335,16 +401,16 @@ class Pager {
         drag = this.begin(dir);
         this.book.setPointerCapture(e.pointerId);
       }
-      const p = Math.max(0, Math.min(1, Math.abs(dx) / (this.width * 0.85)));
-      this.pose(drag.parts, drag.dir > 0 ? p : 1 - p);
+      const reach = this.spread ? this.width * 0.7 : this.width * 0.85;
+      const p = Math.max(0, Math.min(1, Math.abs(dx) / reach));
+      this.pose(drag, drag.start + (drag.end - drag.start) * p);
       drag.p = p;
     });
-    const release = (e) => {
+    const release = () => {
       if (drag) {
         const fast = performance.now() - start.time < 250;
         const p = drag.p || 0;
-        const from = drag.dir > 0 ? p : 1 - p;
-        this.finish(drag, from, p > 0.3 || (fast && p > 0.05));
+        this.finish(drag, drag.start + (drag.end - drag.start) * p, p > 0.3 || (fast && p > 0.05));
         // The click that follows a drag isn't a tap.
         this.swallowClick = true;
         setTimeout(() => (this.swallowClick = false), 50);
@@ -365,17 +431,23 @@ class Pager {
         }
         if (e.target.closest("a[data-href]") || String(window.getSelection()) !== "") return;
         const x = (e.clientX - this.book.getBoundingClientRect().left) / this.width;
-        if (x < 0.22) { e.stopPropagation(); this.prev(); }
-        else if (x > 0.78) { e.stopPropagation(); this.next(); }
+        const edge = this.spread ? 0.12 : 0.22;
+        if (x < edge) { e.stopPropagation(); this.prev(); }
+        else if (x > 1 - edge) { e.stopPropagation(); this.next(); }
       },
       true,
     );
   }
 }
 
-export function pagerInit(book, article, onNext, onPrev, onPage) {
+export function pagerInit(book, article, onNext, onPrev, onPage, spread) {
   if (book.__pager) book.__pager.destroy();
-  book.__pager = new Pager(book, article, { onNext, onPrev, onPage });
+  book.__pager = new Pager(book, article, { onNext, onPrev, onPage }, spread);
+}
+
+// "one", "two" or "auto" (two facing pages on wide windows).
+export function pagerSetSpread(book, spread) {
+  if (book && book.__pager) book.__pager.setSpread(spread);
 }
 
 export function pagerDestroy(book) {

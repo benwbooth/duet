@@ -367,6 +367,8 @@ pub struct ReaderSettings {
     pub follow_audio: bool,
     /// "pages" (turn pages like a book) or "scroll"
     pub layout: String,
+    /// Pages at a time: "one", "two" (facing pages) or "auto" (two on wide windows)
+    pub spread: String,
 }
 
 impl Default for ReaderSettings {
@@ -379,6 +381,7 @@ impl Default for ReaderSettings {
             playback_rate: 1.0,
             follow_audio: true,
             layout: "pages".into(),
+            spread: "auto".into(),
         }
     }
 }

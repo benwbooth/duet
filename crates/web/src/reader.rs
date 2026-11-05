@@ -141,6 +141,8 @@ pub fn Reader(id: i64) -> impl IntoView {
     let paged = move || prefs.with(|p| p.layout != "scroll");
     // (page, pages) within the chapter, in the paged layout.
     let page_info = RwSignal::new((1u32, 1u32));
+    // Whether two facing pages are showing right now.
+    let spread_on = RwSignal::new(false);
     // Coming back from the next chapter opens this one on its last page.
     let start_at_end = RwSignal::new(false);
     let audio = NodeRef::<leptos::html::Audio>::new();
@@ -202,14 +204,17 @@ pub fn Reader(id: i64) -> impl IntoView {
     })
     .into_js_value()
     .unchecked_into::<js_sys::Function>();
-    let pager_page = Closure::<dyn Fn(u32, u32)>::new(move |p, n| page_info.set((p, n)))
+    let pager_page = Closure::<dyn Fn(u32, u32, bool)>::new(move |p, n, two| {
+        page_info.set((p, n));
+        spread_on.set(two);
+    })
         .into_js_value()
         .unchecked_into::<js_sys::Function>();
     // Lays the chapter out as pages (or a scrolling column) and goes to the wanted place.
     let lay_out = StoredValue::new_local(move || {
         let (Some(el), Some(b)) = (page.get_untracked(), book.get_untracked()) else { return };
         if paged() {
-            crate::pager_init(&b, &el, &pager_next, &pager_prev, &pager_page);
+            crate::pager_init(&b, &el, &pager_next, &pager_prev, &pager_page, &prefs.get_untracked().spread);
         } else {
             crate::pager_destroy(&b);
             el.set_attribute("style", "").ok();
@@ -234,6 +239,20 @@ pub fn Reader(id: i64) -> impl IntoView {
             crate::pager_destroy(&b);
         }
     });
+    // One page or two facing pages; remembered in Settings.
+    let toggle_spread = move |_| {
+        let choice = if spread_on.get_untracked() { "one" } else { "two" };
+        prefs.update(|p| p.spread = choice.into());
+        if let Some(b) = book.get_untracked() {
+            crate::pager_set_spread(&b, choice);
+        }
+        spawn_local(async move {
+            if let Ok(mut s) = api::get::<Settings>("/api/settings").await {
+                s.reader.spread = choice.into();
+                let _ = api::put::<_, Settings>("/api/settings", &s).await;
+            }
+        });
+    };
     let toggle_layout = move |_| {
         let keep = page.get_untracked().map(|el| crate::visible_sentence(&el)).unwrap_or(0);
         prefs.update(|p| p.layout = if p.layout == "scroll" { "pages".into() } else { "scroll".into() });
@@ -480,6 +499,11 @@ pub fn Reader(id: i64) -> impl IntoView {
                         layout.get().and_then(|l| l.toc.iter().rev().find(|t| t.chapter <= c).map(|t| t.title.clone()))
                     }}</small>
                 </div>
+                <Show when=paged>
+                    <button class="icon-button" title="One page or two facing pages" on:click=toggle_spread>
+                        {move || if spread_on.get() { "1 page" } else { "2 pages" }}
+                    </button>
+                </Show>
                 <button class="icon-button" title="Switch between turning pages and scrolling" on:click=toggle_layout>
                     {move || if paged() { "Scroll" } else { "Pages" }}
                 </button>
