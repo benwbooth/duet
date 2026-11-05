@@ -314,6 +314,8 @@ pub struct AiSettings {
     pub tts_url: String,
     pub tts_model: String,
     pub narrator_voice: String,
+    /// How the plain reading companion sounds, described in words (cast by VoiceDesign).
+    pub assistant_voice: String,
     /// Python used to run the workers in ./workers (a venv with their requirements).
     pub python: String,
     /// Directory holding align.py, full_cast.py and transcribe.py.
@@ -330,11 +332,13 @@ impl Default for AiSettings {
             llm_url: "http://localhost:11434/v1".into(),
             llm_api_key: String::new(),
             llm_model: "qwen3:14b".into(),
-            stt_url: "http://localhost:8000/v1".into(),
-            stt_model: "Systran/faster-whisper-large-v3".into(),
-            tts_url: "http://localhost:8880/v1".into(),
+            // The local voice server also does speech recognition (faster-whisper).
+            stt_url: "http://127.0.0.1:8880/v1".into(),
+            stt_model: "large-v3-turbo".into(),
+            tts_url: "http://127.0.0.1:8880/v1".into(),
             tts_model: "qwen3-tts".into(),
-            narrator_voice: "narrator".into(),
+            narrator_voice: "assistant".into(),
+            assistant_voice: "A warm, clear, friendly voice, relaxed and conversational.".into(),
             python: "python3".into(),
             workers_dir: "workers".into(),
             device: "auto".into(),

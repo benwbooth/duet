@@ -166,21 +166,7 @@ pub fn SettingsPage() -> impl IntoView {
                 <button on:click=add_indexer>"Add indexer"</button>
             </section>
 
-            <section>
-                <h2>"AI"</h2>
-                <p class="hint">"Any OpenAI-compatible servers: llama.cpp, vLLM or Ollama for chat; speaches/faster-whisper-server for speech to text; workers/tts_server.py (Fish Audio acting, Qwen3-TTS voice design) for speech."</p>
-                {text(s, "Chat model URL", "", |x| x.ai.llm_url.clone(), |x, v| x.ai.llm_url = v)}
-                {text(s, "Chat model", "", |x| x.ai.llm_model.clone(), |x, v| x.ai.llm_model = v)}
-                {secret(s, "API key (if needed)", |x| x.ai.llm_api_key.clone(), |x, v| x.ai.llm_api_key = v)}
-                {text(s, "Speech-to-text URL", "", |x| x.ai.stt_url.clone(), |x, v| x.ai.stt_url = v)}
-                {text(s, "Speech-to-text model", "Also used by the sync and transcription jobs.", |x| x.ai.stt_model.clone(), |x, v| x.ai.stt_model = v)}
-                {text(s, "Text-to-speech URL", "", |x| x.ai.tts_url.clone(), |x, v| x.ai.tts_url = v)}
-                {text(s, "Text-to-speech model", "", |x| x.ai.tts_model.clone(), |x, v| x.ai.tts_model = v)}
-                {text(s, "Narrator voice", "Used for the plain assistant.", |x| x.ai.narrator_voice.clone(), |x, v| x.ai.narrator_voice = v)}
-                {text(s, "Python for workers", "A venv with workers/requirements.txt installed.", |x| x.ai.python.clone(), |x, v| x.ai.python = v)}
-                {text(s, "Workers folder", "", |x| x.ai.workers_dir.clone(), |x, v| x.ai.workers_dir = v)}
-                {text(s, "Device", "auto, cuda or cpu", |x| x.ai.device.clone(), |x, v| x.ai.device = v)}
-            </section>
+            <AiSection s/>
 
             <section>
                 <h2>"Reading"</h2>
@@ -304,6 +290,178 @@ fn VoicesSetup(s: RwSignal<Settings>) -> impl IntoView {
                 }
             })}
             {toggle(s, "Start the voice server with duet", |x| x.ai.auto_start_voices, |x, v| x.ai.auto_start_voices = v)}
+        </section>
+    }
+}
+
+const CHAT_PRESETS: [(&str, &str); 4] = [
+    ("Ollama", "http://127.0.0.1:11434/v1"),
+    ("LM Studio", "http://127.0.0.1:1234/v1"),
+    ("llama.cpp server", "http://127.0.0.1:8080/v1"),
+    ("vLLM", "http://127.0.0.1:8000/v1"),
+];
+
+const WHISPER_MODELS: [(&str, &str); 4] = [
+    ("large-v3-turbo", "Large v3 Turbo: accurate and reasonably quick (recommended)"),
+    ("large-v3", "Large v3: most accurate, slowest"),
+    ("medium", "Medium: quicker, a little less accurate"),
+    ("small", "Small: fastest, for slow computers"),
+];
+
+/// "http://localhost:11434/v1/" and "http://127.0.0.1:11434/v1" are the same server.
+fn same_host(url: &str) -> String {
+    url.trim().trim_end_matches('/').replace("://localhost", "://127.0.0.1")
+}
+
+/// The likeliest general chat model in a server's list: not an OCR, embedding, translation or
+/// speech model, and the biggest of the rest ("qwen3.5:9b" over "qwen3.5:4b").
+fn best_chat_model(models: &[String]) -> Option<String> {
+    const SPECIALISED: [&str; 7] = ["ocr", "embed", "translate", "whisper", "tts", "rerank", "guard"];
+    let size = |m: &str| -> f64 {
+        m.to_lowercase()
+            .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == 'b'))
+            .filter_map(|p| p.strip_suffix('b')?.parse::<f64>().ok())
+            .fold(0.0, f64::max)
+    };
+    models
+        .iter()
+        .filter(|m| !SPECIALISED.iter().any(|w| m.to_lowercase().contains(w)))
+        .max_by(|a, b| size(a).total_cmp(&size(b)))
+        .or_else(|| models.first())
+        .cloned()
+}
+
+/// The chat model, speech recognition and the companion's voice, in plain terms; the plumbing
+/// lives under Advanced.
+#[component]
+fn AiSection(s: RwSignal<Settings>) -> impl IntoView {
+    let models = RwSignal::new(Vec::<String>::new());
+    let check = RwSignal::new(None::<Result<usize, String>>);
+    let checking = RwSignal::new(false);
+    let probe = move || {
+        let (url, key) = s.with_untracked(|x| (x.ai.llm_url.clone(), x.ai.llm_api_key.clone()));
+        if url.trim().is_empty() {
+            return;
+        }
+        checking.set(true);
+        spawn_local(async move {
+            match api::post::<_, Vec<String>>("/api/ai/models", &serde_json::json!({ "url": url, "key": key })).await {
+                Ok(list) => {
+                    check.set(Some(Ok(list.len())));
+                    // Pick something sensible when the saved model isn't there.
+                    if !list.contains(&s.with_untracked(|x| x.ai.llm_model.clone())) {
+                        if let Some(best) = best_chat_model(&list) {
+                            s.update(|x| x.ai.llm_model = best);
+                        }
+                    }
+                    models.set(list);
+                }
+                Err(e) => {
+                    models.set(Vec::new());
+                    check.set(Some(Err(e.0)));
+                }
+            }
+            checking.set(false);
+        });
+    };
+    // Check once the saved settings have loaded, and whenever the address changes.
+    Effect::new(move |prev: Option<String>| {
+        let url = s.with(|x| x.ai.llm_url.clone());
+        if prev.as_deref() != Some(url.as_str()) {
+            probe();
+        }
+        url
+    });
+    let preset = move || {
+        let url = same_host(&s.with(|x| x.ai.llm_url.clone()));
+        CHAT_PRESETS.iter().find(|(_, u)| same_host(u) == url).map(|(n, _)| n.to_string()).unwrap_or_else(|| "other".into())
+    };
+
+    view! {
+        <section class="ai">
+            <h2>"AI"</h2>
+            <p class="hint">"Everything runs on this computer. A chat model answers your questions, directs the full-cast recordings and tidies up transcripts. Voices and speech recognition come from the Voices section above."</p>
+
+            <h3>"Chat model"</h3>
+            <label class="field">
+                <span>"Runs in"</span>
+                <select on:change=move |ev| {
+                    let v = event_target_value(&ev);
+                    if let Some((_, url)) = CHAT_PRESETS.iter().find(|(n, _)| *n == v) {
+                        s.update(|x| x.ai.llm_url = url.to_string());
+                    }
+                }>
+                    {CHAT_PRESETS.map(|(name, _)| view! { <option value=name selected=move || preset() == name>{name}</option> })}
+                    <option value="other" selected=move || preset() == "other">"Somewhere else"</option>
+                </select>
+            </label>
+            <label class="field">
+                <span>"Address"</span>
+                <input type="text" prop:value=move || s.with(|x| x.ai.llm_url.clone())
+                    on:change=move |ev| s.update(|x| x.ai.llm_url = event_target_value(&ev))/>
+            </label>
+            <div class="field">
+                <span>"Model"</span>
+                {move || {
+                    let list = models.get();
+                    if list.is_empty() {
+                        view! {
+                            <input type="text" placeholder="e.g. qwen3:14b" prop:value=move || s.with(|x| x.ai.llm_model.clone())
+                                on:input=move |ev| s.update(|x| x.ai.llm_model = event_target_value(&ev))/>
+                        }.into_any()
+                    } else {
+                        view! {
+                            <select on:change=move |ev| s.update(|x| x.ai.llm_model = event_target_value(&ev))>
+                                {list.into_iter().map(|m| {
+                                    let (value, label, current) = (m.clone(), m.clone(), m);
+                                    view! { <option value=value selected=move || s.with(|x| x.ai.llm_model == current)>{label}</option> }
+                                }).collect_view()}
+                            </select>
+                        }.into_any()
+                    }
+                }}
+                <div class="status-line">
+                    {move || match check.get() {
+                        _ if checking.get() => view! { <span class="muted">"Checking…"</span> }.into_any(),
+                        Some(Ok(n)) => view! { <span class="ok">{format!("✓ Connected, {n} model{} available", if n == 1 { "" } else { "s" })}</span> }.into_any(),
+                        Some(Err(e)) => view! { <span class="warn">{format!("Not reachable: {e}. Is it running?")}</span> }.into_any(),
+                        None => view! { <span></span> }.into_any(),
+                    }}
+                    <button class="small" on:click=move |_| probe()>"Check again"</button>
+                </div>
+                <small>"A model around 14B parameters is a good fit next to the voices on a 24 GB card."</small>
+            </div>
+
+            <h3>"Speech recognition"</h3>
+            <label class="field">
+                <span>"Accuracy"</span>
+                <select on:change=move |ev| s.update(|x| x.ai.stt_model = event_target_value(&ev))>
+                    {WHISPER_MODELS.map(|(id, label)| view! {
+                        <option value=id selected=move || s.with(|x| x.ai.stt_model == id)>{label}</option>
+                    })}
+                </select>
+                <small>"Used for the microphone, for syncing books with their audiobooks, and for turning audiobooks into ebooks."</small>
+            </label>
+
+            <h3>"Reading companion's voice"</h3>
+            <label class="field">
+                <span>"Describe it"</span>
+                <textarea rows="2" placeholder="e.g. A calm Scottish woman in her forties, warm and a little wry"
+                    prop:value=move || s.with(|x| x.ai.assistant_voice.clone())
+                    on:input=move |ev| s.update(|x| x.ai.assistant_voice = event_target_value(&ev))></textarea>
+                <small>"The voice is created from this description the first time it speaks. Characters get their own voices from the book."</small>
+            </label>
+
+            <details class="advanced">
+                <summary>"Advanced"</summary>
+                {secret(s, "Chat model API key (only if your server needs one)", |x| x.ai.llm_api_key.clone(), |x, v| x.ai.llm_api_key = v)}
+                {text(s, "Speech recognition address", "", |x| x.ai.stt_url.clone(), |x, v| x.ai.stt_url = v)}
+                {text(s, "Voice server address", "", |x| x.ai.tts_url.clone(), |x, v| x.ai.tts_url = v)}
+                {text(s, "Voice name for the companion", "Change it to recast the voice from a new description.", |x| x.ai.narrator_voice.clone(), |x, v| x.ai.narrator_voice = v)}
+                {text(s, "Python for background jobs", "Set automatically when the voices are installed.", |x| x.ai.python.clone(), |x, v| x.ai.python = v)}
+                {text(s, "Workers folder", "", |x| x.ai.workers_dir.clone(), |x, v| x.ai.workers_dir = v)}
+                {text(s, "Device for jobs", "auto, cuda or cpu", |x| x.ai.device.clone(), |x, v| x.ai.device = v)}
+            </details>
         </section>
     }
 }

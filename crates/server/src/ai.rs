@@ -156,7 +156,7 @@ pub async fn ask(state: &State, req: AskRequest) -> anyhow::Result<AskReply> {
     let audio = if req.speak {
         let (voice, instructions) = match &persona {
             Some(p) => (p.voice.clone().unwrap_or_else(|| ai.narrator_voice.clone()), Some(p.description.clone())),
-            None => (ai.narrator_voice.clone(), None),
+            None => (ai.narrator_voice.clone(), Some(ai.assistant_voice.clone())),
         };
         match speak(state, &spoken, &voice, instructions.as_deref()).await {
             Ok(a) => Some(a),
@@ -169,4 +169,23 @@ pub async fn ask(state: &State, req: AskRequest) -> anyhow::Result<AskReply> {
         None
     };
     Ok(AskReply { question: req.question, answer, audio, speaker })
+}
+
+/// Model names an OpenAI-compatible server offers (GET {url}/models), for the settings picker.
+pub async fn list_models(http: &reqwest::Client, url: &str, key: &str) -> anyhow::Result<Vec<String>> {
+    let resp: serde_json::Value = http
+        .get(format!("{}/models", url.trim_end_matches('/')))
+        .bearer_auth(key)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .context("nothing answered at that address")?
+        .error_for_status()?
+        .json()
+        .await
+        .context("that address isn't an OpenAI-compatible API")?;
+    let mut names: Vec<String> =
+        resp["data"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
+    names.sort();
+    Ok(names)
 }

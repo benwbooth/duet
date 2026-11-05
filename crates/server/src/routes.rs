@@ -55,6 +55,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/setup/voices/log", get(voices_log))
         .route("/search", get(search))
         .route("/downloads", get(list_downloads).post(new_download))
+        .route("/ai/models", post(ai_models))
         .route("/assistant/ask", post(ask))
         .route("/assistant/transcribe", post(transcribe))
         // Positions, sync maps and job status change under the browser; covers and book
@@ -325,4 +326,15 @@ async fn voices_log(AxState(s): AxState<State>) -> ApiResult<Json<Vec<String>>> 
     let text = tokio::fs::read_to_string(setup::log_path(&s.data_dir)).await.unwrap_or_default();
     let lines: Vec<String> = text.lines().rev().take(80).map(str::to_string).collect();
     Ok(Json(lines.into_iter().rev().collect()))
+}
+
+#[derive(Deserialize)]
+struct ModelsQuery {
+    url: String,
+    #[serde(default)]
+    key: String,
+}
+
+async fn ai_models(AxState(s): AxState<State>, Json(q): Json<ModelsQuery>) -> ApiResult<Json<Vec<String>>> {
+    Ok(Json(ai::list_models(&s.http, &q.url, &q.key).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?))
 }

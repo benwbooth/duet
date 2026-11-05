@@ -2,6 +2,8 @@
 """An OpenAI-compatible text-to-speech server for duet.
 
 POST /v1/audio/speech {"input", "voice", "instructions"?, "response_format"?}
+POST /v1/audio/transcriptions (multipart "file"): speech recognition with faster-whisper, so the
+microphone works without a separate server.
 
 Two jobs, two models:
   * Casting. The first time a voice name is used, Qwen3-TTS VoiceDesign creates the voice from
@@ -188,6 +190,36 @@ def synthesize(text, voice, description, language):
     return wavs[0], sr
 
 
+whisper = {}
+
+
+def transcribe(audio, model_name):
+    """faster-whisper on the GPU when CTranslate2 has one (NVIDIA), otherwise the CPU."""
+    import tempfile
+
+    from faster_whisper import WhisperModel
+
+    if model_name not in whisper:
+        try:
+            whisper[model_name] = WhisperModel(model_name, device="cuda", compute_type="float16")
+        except Exception:
+            whisper[model_name] = WhisperModel(model_name, device="cpu", compute_type="int8")
+    with tempfile.NamedTemporaryFile(suffix=".audio") as f:
+        f.write(audio)
+        f.flush()
+        segments, _ = whisper[model_name].transcribe(f.name, vad_filter=True)
+        return " ".join(seg.text.strip() for seg in segments).strip()
+
+
+def multipart(content_type, body):
+    """Fields of a multipart/form-data body: name -> bytes."""
+    from email.parser import BytesParser
+    from email.policy import HTTP
+
+    msg = BytesParser(policy=HTTP).parsebytes(f"Content-Type: {content_type}\r\n\r\n".encode() + body)
+    return {part.get_param("name", header="content-disposition"): part.get_payload(decode=True) for part in msg.iter_parts()}
+
+
 def encode(wav, sr, fmt):
     import soundfile as sf
 
@@ -211,7 +243,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.rstrip("/")
         try:
-            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            if path in ("/v1/audio/transcriptions", "/audio/transcriptions"):
+                fields = multipart(self.headers.get("Content-Type", ""), raw)
+                model_name = (fields.get("model") or b"large-v3-turbo").decode()
+                text = transcribe(fields["file"], model_name.rsplit("/", 1)[-1].removeprefix("faster-whisper-"))
+                return self.reply(200, json.dumps({"text": text}).encode(), "application/json")
+            body = json.loads(raw)
             language = body.get("language", "English")
             if path in ("/v1/voices", "/voices"):
                 # Cast voices ahead of time, so a long recording never switches models midway.
