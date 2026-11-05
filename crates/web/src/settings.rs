@@ -57,6 +57,9 @@ pub fn settings_store() -> (RwSignal<Settings>, RwSignal<bool>) {
 
     let edits = RwSignal::new(0u64);
     let saved = RwSignal::new(0u64);
+    // Adjustments the page makes by itself right after loading (e.g. picking an installed model)
+    // are saved quietly; the toast is for your own changes.
+    let quiet_until = RwSignal::new(0.0f64);
     let save_now = move || {
         let n = edits.get_untracked();
         if n == saved.get_untracked() {
@@ -66,11 +69,17 @@ pub fn settings_store() -> (RwSignal<Settings>, RwSignal<bool>) {
         let v = s.get_untracked();
         spawn_local(async move {
             match api::put::<_, Settings>("/api/settings", &v).await {
+                Ok(_) if js_sys::Date::now() < quiet_until.get_untracked() => {}
                 Ok(_) => toast.show("Saved"),
                 Err(e) => toast.show(format!("Couldn't save: {}", e.0)),
             }
         });
     };
+    Effect::new(move |_| {
+        if loaded.get() {
+            quiet_until.set(js_sys::Date::now() + 3000.0);
+        }
+    });
     Effect::new(move |seen: Option<bool>| {
         s.track();
         let ready = loaded.get();

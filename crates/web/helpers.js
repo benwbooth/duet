@@ -171,6 +171,8 @@ class Pager {
 
   // Two facing pages when asked to, or (auto) when the window is wide and not tall.
   wantsSpread() {
+    // Never two pages on a phone-sized screen, whatever the setting.
+    if (this.book.clientWidth < 640 && (this.book.parentElement || this.book).clientWidth < 640) return false;
     if (this.spreadPref === "two") return true;
     if (this.spreadPref === "one") return false;
     const room = (this.book.parentElement || this.book).clientWidth;

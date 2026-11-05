@@ -120,6 +120,7 @@ pub fn Reader(id: i64) -> impl IntoView {
     let pairs = RwSignal::new(Vec::<(i64, i64)>::new());
     let prefs = RwSignal::new(Settings::default().reader);
     let editions_open = RwSignal::new(false);
+    let view_open = RwSignal::new(false);
 
     let chapter = RwSignal::new(usize::MAX);
     let html = RwSignal::new(String::new());
@@ -499,16 +500,7 @@ pub fn Reader(id: i64) -> impl IntoView {
                         layout.get().and_then(|l| l.toc.iter().rev().find(|t| t.chapter <= c).map(|t| t.title.clone()))
                     }}</small>
                 </div>
-                <Show when=paged>
-                    <button class="icon-button" title="One page or two facing pages" on:click=toggle_spread>
-                        {move || if spread_on.get() { "1 page" } else { "2 pages" }}
-                    </button>
-                </Show>
-                <button class="icon-button" title="Switch between turning pages and scrolling" on:click=toggle_layout>
-                    {move || if paged() { "Scroll" } else { "Pages" }}
-                </button>
-                <button class="icon-button" title="Smaller text" on:click=move |_| font_size.update(|f| *f = (*f - 1).max(12))>"A−"</button>
-                <button class="icon-button" title="Larger text" on:click=move |_| font_size.update(|f| *f = (*f + 1).min(32))>"A+"</button>
+                <button class="icon-button" title="Text and page view" on:click=move |_| view_open.update(|o| *o = !*o)>"Aa"</button>
                 <Show when=move || work.get().is_some_and(|w| w.assets.len() > 1)>
                     <button class="icon-button" title="Editions" on:click=move |_| editions_open.update(|o| *o = !*o)>"Editions"</button>
                 </Show>
@@ -516,6 +508,34 @@ pub fn Reader(id: i64) -> impl IntoView {
                     <button class="icon-button" title="Contents" on:click=move |_| toc_open.update(|o| *o = !*o)>"☰"</button>
                 </Show>
             </header>
+
+            <Show when=move || view_open.get()>
+                <div class="editions-panel view-panel">
+                    <div class="view-row">
+                        <span>"Text size"</span>
+                        <div class="segmented">
+                            <button title="Smaller text" on:click=move |_| font_size.update(|f| *f = (*f - 1).max(12))>"A−"</button>
+                            <button title="Larger text" on:click=move |_| font_size.update(|f| *f = (*f + 1).min(32))>"A+"</button>
+                        </div>
+                    </div>
+                    <div class="view-row">
+                        <span>"Layout"</span>
+                        <div class="segmented">
+                            <button class:active=paged on:click=move |ev| if !paged() { toggle_layout(ev) }>"Pages"</button>
+                            <button class:active=move || !paged() on:click=move |ev| if paged() { toggle_layout(ev) }>"Scroll"</button>
+                        </div>
+                    </div>
+                    <Show when=paged>
+                        <div class="view-row">
+                            <span>"Pages at a time"</span>
+                            <div class="segmented">
+                                <button class:active=move || !spread_on.get() on:click=move |ev| if spread_on.get_untracked() { toggle_spread(ev) }>"One"</button>
+                                <button class:active=move || spread_on.get() on:click=move |ev| if !spread_on.get_untracked() { toggle_spread(ev) }>"Two"</button>
+                            </div>
+                        </div>
+                    </Show>
+                </div>
+            </Show>
 
             <Show when=move || editions_open.get()>
                 <div class="editions-panel">
@@ -762,6 +782,15 @@ fn Assistant(
         }
     };
 
+    // "Define" shows only while some text is selected.
+    let has_selection = RwSignal::new(false);
+    let on_select = Closure::<dyn Fn()>::new(move || has_selection.set(!crate::selected_text().is_empty()));
+    let _ = document().add_event_listener_with_callback("selectionchange", on_select.as_ref().unchecked_ref());
+    let on_select = on_select.into_js_value();
+    on_cleanup(move || {
+        let _ = document().remove_event_listener_with_callback("selectionchange", on_select.unchecked_ref());
+    });
+
     let numbered = move || messages.get().into_iter().enumerate().collect::<Vec<(usize, Message)>>();
 
     let define = move |_| {
@@ -776,7 +805,9 @@ fn Assistant(
 
     view! {
         <div class="assistant-buttons">
-            <button class="fab secondary" title="Define the selected words" on:mousedown=|ev| ev.prevent_default() on:click=define>"Define"</button>
+            <Show when=move || has_selection.get()>
+                <button class="fab secondary" title="Define the selected words" on:mousedown=|ev| ev.prevent_default() on:click=define>"Define"</button>
+            </Show>
             <button class="fab" title="Ask about the book" on:click=move |_| open.update(|o| *o = !*o)>"Ask"</button>
         </div>
         <Show when=move || open.get()>
