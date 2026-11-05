@@ -1,7 +1,7 @@
 //! The settings page: library folders, downloads (qBittorrent, indexers, free sources), AI
 //! services and reading preferences.
 
-use duet_common::{ChatSetup, ChatTest, DetectedServer, Indexer, Settings, VoiceSetup};
+use duet_common::{ChatSetup, ChatTest, DetectedServer, FolderListing, Indexer, Settings, VoiceSetup};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -39,12 +39,9 @@ fn toggle(s: RwSignal<Settings>, label: &'static str, get: Getter<bool>, set: Se
     }
 }
 
-fn lines(v: &[String]) -> String {
-    v.join("\n")
-}
-
-#[component]
-pub fn SettingsPage() -> impl IntoView {
+/// The settings, loaded from the server and saved automatically shortly after each change
+/// (with a "Saved" toast), and on leaving the page.
+pub fn settings_store() -> (RwSignal<Settings>, RwSignal<bool>) {
     let s = RwSignal::new(Settings::default());
     let loaded = RwSignal::new(false);
     let toast = toast();
@@ -58,7 +55,6 @@ pub fn SettingsPage() -> impl IntoView {
         }
     });
 
-    // Autosave: every change is saved shortly after the last edit (typing doesn't save per key).
     let edits = RwSignal::new(0u64);
     let saved = RwSignal::new(0u64);
     let save_now = move || {
@@ -92,6 +88,13 @@ pub fn SettingsPage() -> impl IntoView {
         ready
     });
     on_cleanup(save_now);
+    (s, loaded)
+}
+
+#[component]
+pub fn SettingsPage() -> impl IntoView {
+    let (s, _) = settings_store();
+    let toast = toast();
     let test_qbit = move |_| {
         let q = s.get_untracked().qbittorrent;
         spawn_local(async move {
@@ -118,19 +121,17 @@ pub fn SettingsPage() -> impl IntoView {
         <header class="page-head">
             <h1>"Settings"</h1>
             <span class="hint">"Changes save automatically."</span>
+            <a class="button" href="#/setup">"Setup guide"</a>
         </header>
         <div class="settings">
             <VoicesSetup s/>
             <section>
                 <h2>"Library"</h2>
-                <label class="field">
+                <div class="field">
                     <span>"Book folders"</span>
-                    <textarea rows="3" placeholder="/home/you/Books\n/home/you/Audiobooks"
-                        prop:value=move || s.with(|x| lines(&x.library_dirs))
-                        on:change=move |ev| s.update(|x| x.library_dirs = event_target_value(&ev).lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect())>
-                    </textarea>
-                    <small>"One per line. Ebooks and audiobooks are matched into one book by title and author."</small>
-                </label>
+                    <FolderPicker s/>
+                    <small>"Ebooks and audiobooks are matched into one book by title and author."</small>
+                </div>
                 {text(s, "Import folder", "Downloads and generated audiobooks/ebooks go here. Empty: the data directory.",
                     |x| x.import_dir.clone(), |x, v| x.import_dir = v)}
             </section>
@@ -218,7 +219,7 @@ pub fn SettingsPage() -> impl IntoView {
 
 /// Installs and runs the local voice stack: Fish Audio S2-Pro for acting, Qwen3-TTS for casting.
 #[component]
-fn VoicesSetup(s: RwSignal<Settings>) -> impl IntoView {
+pub fn VoicesSetup(s: RwSignal<Settings>) -> impl IntoView {
     let status = RwSignal::new(None::<VoiceSetup>);
     let busy = RwSignal::new(false);
     let show_log = RwSignal::new(false);
@@ -402,7 +403,7 @@ const SUGGESTED: [(&str, &str, f64, &str); 3] = [
 
 /// Walks through getting a chat model running: a model server, a model, and a test question.
 #[component]
-fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
+pub fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
     let setup = RwSignal::new(None::<ChatSetup>);
     let scanning = RwSignal::new(false);
     let testing = RwSignal::new(false);
@@ -616,6 +617,106 @@ fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
                             }.into_any()
                         }
                         Err(e) => view! { <div class="test-result warn">{format!("That didn't work: {e}")}</div> }.into_any(),
+                    })}
+                </div>
+            </Show>
+        </div>
+    }
+}
+
+/// The chosen book folders, plus a browser for adding more without typing paths.
+#[component]
+pub fn FolderPicker(s: RwSignal<Settings>) -> impl IntoView {
+    let browsing = RwSignal::new(false);
+    let listing = RwSignal::new(None::<FolderListing>);
+    let toast = toast();
+    let open = move |path: Option<String>| {
+        spawn_local(async move {
+            let url = match &path {
+                Some(p) => format!("/api/folders?path={}", js_sys::encode_uri_component(p)),
+                None => "/api/folders".into(),
+            };
+            match api::get::<FolderListing>(&url).await {
+                Ok(l) => listing.set(Some(l)),
+                Err(e) => toast.show(e.0),
+            }
+        });
+    };
+    let add = move |path: String| {
+        s.update(|x| {
+            if !x.library_dirs.contains(&path) {
+                x.library_dirs.push(path);
+            }
+        });
+        browsing.set(false);
+    };
+    let books = |n: usize| match n {
+        0 => String::new(),
+        n if n >= 2000 => "2000+ books here".into(),
+        1 => "1 book here".into(),
+        n => format!("{n} books here"),
+    };
+
+    view! {
+        <div class="folders">
+            {move || {
+                let dirs = s.with(|x| x.library_dirs.clone());
+                if dirs.is_empty() {
+                    view! { <p class="muted">"No folders yet."</p> }.into_any()
+                } else {
+                    view! {
+                        <ul class="folder-list">
+                            {dirs.into_iter().map(|d| {
+                                let d2 = d.clone();
+                                view! {
+                                    <li>
+                                        <span class="path">{d}</span>
+                                        <button class="small" on:click=move |_| s.update(|x| x.library_dirs.retain(|p| *p != d2))>"Remove"</button>
+                                    </li>
+                                }
+                            }).collect_view()}
+                        </ul>
+                    }.into_any()
+                }
+            }}
+            <Show when=move || !browsing.get()>
+                <button on:click=move |_| { browsing.set(true); open(None) }>"Add a folder…"</button>
+            </Show>
+            <Show when=move || browsing.get()>
+                <div class="browser">
+                    {move || listing.get().map(|l| {
+                        let here = l.path.clone();
+                        view! {
+                            {(!l.suggestions.is_empty()).then(|| view! {
+                                <div class="suggestions">
+                                    <span class="muted">"Found on this computer:"</span>
+                                    {l.suggestions.iter().map(|f| {
+                                        let p = f.path.clone();
+                                        view! { <button class="small" on:click=move |_| add(p.clone())>{format!("+ {}", f.name)}</button> }
+                                    }).collect_view()}
+                                </div>
+                            })}
+                            <div class="browser-head">
+                                {l.parent.clone().map(|p| view! { <button class="small" on:click=move |_| open(Some(p.clone()))>"↑ Up"</button> })}
+                                <span class="path">{l.path.clone()}</span>
+                            </div>
+                            <ul class="browser-list">
+                                {l.folders.iter().map(|f| {
+                                    let p = f.path.clone();
+                                    view! {
+                                        <li>
+                                            <a href="#" on:click=move |ev| { ev.prevent_default(); open(Some(p.clone())) }>{format!("📁 {}", f.name)}</a>
+                                            <span class="muted">{books(f.books)}</span>
+                                        </li>
+                                    }
+                                }).collect_view()}
+                                {l.folders.is_empty().then(|| view! { <li class="muted">"No folders inside."</li> })}
+                            </ul>
+                            <div class="row">
+                                <button class="primary" on:click=move |_| add(here.clone())>"Use this folder"</button>
+                                <button on:click=move |_| browsing.set(false)>"Cancel"</button>
+                            </div>
+                        }
                     })}
                 </div>
             </Show>

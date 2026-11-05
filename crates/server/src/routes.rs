@@ -33,6 +33,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
     let api = Router::new()
         .route("/library", get(list_works))
         .route("/library/scan", post(scan))
+        .route("/folders", get(folders))
         .route("/works/{id}", get(work).patch(edit_work))
         .route("/works/{id}/cover", get(cover))
         .route("/works/{id}/position", get(get_position).put(put_position))
@@ -367,4 +368,60 @@ async fn ai_pull(AxState(s): AxState<State>, Json(r): Json<PullReq>) -> ApiResul
 
 async fn ai_test(AxState(s): AxState<State>) -> ApiResult<Json<duet_common::ChatTest>> {
     Ok(Json(ai_setup::test(&s).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?))
+}
+
+#[derive(Deserialize)]
+struct FolderQuery {
+    path: Option<String>,
+}
+
+/// Lists sub-folders for the folder picker. Starts in the home folder with suggestions.
+async fn folders(Query(q): Query<FolderQuery>) -> ApiResult<Json<duet_common::FolderListing>> {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()));
+    let start = q.path.is_none();
+    let path = q.path.map(PathBuf::from).unwrap_or_else(|| home.clone());
+    tokio::task::spawn_blocking(move || {
+        let books_in = |dir: &FsPath| {
+            std::fs::read_dir(dir)
+                .map(|d| {
+                    d.flatten()
+                        .take(2000)
+                        .filter(|e| {
+                            let ext = library::ext_of(&e.path());
+                            library::EBOOK_EXTS.contains(&ext.as_str()) || library::AUDIO_EXTS.contains(&ext.as_str())
+                        })
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+        let entry = |p: PathBuf| duet_common::FolderEntry {
+            name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string_lossy().into_owned()),
+            books: books_in(&p),
+            path: p.to_string_lossy().into_owned(),
+        };
+        let mut folders: Vec<duet_common::FolderEntry> = std::fs::read_dir(&path)
+            .map_err(|e| ApiError::bad_request(format!("can't open {}: {e}", path.display())))?
+            .flatten()
+            .filter(|e| e.path().is_dir() && !e.file_name().to_string_lossy().starts_with('.'))
+            .map(|e| entry(e.path()))
+            .collect();
+        folders.sort_by_key(|f| f.name.to_lowercase());
+        let suggestions = if start {
+            ["Books", "Ebooks", "eBooks", "Audiobooks", "Documents/Books", "Music/Audiobooks", "Calibre Library", "Downloads"]
+                .iter()
+                .map(|d| home.join(d))
+                .filter(|p| p.is_dir())
+                .map(entry)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Ok(Json(duet_common::FolderListing {
+            parent: path.parent().map(|p| p.to_string_lossy().into_owned()),
+            path: path.to_string_lossy().into_owned(),
+            folders,
+            suggestions,
+        }))
+    })
+    .await?
 }

@@ -5,6 +5,7 @@ mod api;
 mod discover;
 mod reader;
 mod settings;
+mod setup;
 
 use duet_common::{Asset, AssetKind, Job, JobKind, NewJob, ScanReport, WorkDetail, WorkSummary};
 use leptos::prelude::*;
@@ -51,6 +52,7 @@ enum Route {
     Discover,
     Jobs,
     Settings,
+    Setup,
 }
 
 impl Route {
@@ -63,6 +65,7 @@ impl Route {
             Some("discover") => Route::Discover,
             Some("jobs") => Route::Jobs,
             Some("settings") => Route::Settings,
+            Some("setup") => Route::Setup,
             _ => Route::Library,
         }
     }
@@ -72,7 +75,7 @@ impl Route {
             Route::Library | Route::Work(_) | Route::Read(_) => "library",
             Route::Discover => "discover",
             Route::Jobs => "jobs",
-            Route::Settings => "settings",
+            Route::Settings | Route::Setup => "settings",
         }
     }
 }
@@ -151,6 +154,7 @@ fn App() -> impl IntoView {
                     Route::Discover => view! { <discover::Discover/> }.into_any(),
                     Route::Jobs => view! { <discover::Jobs/> }.into_any(),
                     Route::Settings => view! { <settings::SettingsPage/> }.into_any(),
+                    Route::Setup => view! { <setup::SetupPage/> }.into_any(),
                 }}
             </main>
             <Show when=move || toast_sig.get().is_some()>
@@ -177,6 +181,16 @@ fn cover(url: Option<String>, title: String) -> impl IntoView {
 #[component]
 fn Library() -> impl IntoView {
     let works = LocalResource::new(|| api::get::<Vec<WorkSummary>>("/api/library"));
+    // First run: the setup guide, until it's finished or skipped.
+    let setup_done = RwSignal::new(true);
+    spawn_local(async move {
+        if let Ok(s) = api::get::<duet_common::Settings>("/api/settings").await {
+            if !s.setup_done && s.library_dirs.is_empty() {
+                go("/setup");
+            }
+            setup_done.set(s.setup_done);
+        }
+    });
     let filter = RwSignal::new(String::new());
     let scanning = RwSignal::new(false);
     let toast = toast();
@@ -218,6 +232,12 @@ fn Library() -> impl IntoView {
                 {move || if scanning.get() { "Scanning…" } else { "Scan folders" }}
             </button>
         </header>
+        <Show when=move || !setup_done.get()>
+            <div class="banner">
+                <span>"duet isn't fully set up yet."</span>
+                <a class="button primary" href="#/setup">"Continue setup"</a>
+            </div>
+        </Show>
         <Suspense fallback=|| view! { <p class="empty">"Loading…"</p> }>
             {move || {
                 let list = shown();

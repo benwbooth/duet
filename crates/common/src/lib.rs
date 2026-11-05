@@ -239,6 +239,8 @@ pub struct Settings {
     pub free_sources: FreeSources,
     pub ai: AiSettings,
     pub reader: ReaderSettings,
+    /// The first-run guide was finished or skipped.
+    pub setup_done: bool,
 }
 
 
@@ -519,4 +521,22 @@ pub struct ChatTest {
     pub answer: String,
     pub seconds: f64,
     pub tokens_per_second: Option<f64>,
+}
+
+/// A folder on the server, for the folder picker.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct FolderListing {
+    pub path: String,
+    pub parent: Option<String>,
+    pub folders: Vec<FolderEntry>,
+    /// Likely book folders that exist on this computer (only for the starting listing).
+    pub suggestions: Vec<FolderEntry>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct FolderEntry {
+    pub name: String,
+    pub path: String,
+    /// Ebooks and audio files directly inside (capped), to show what's there.
+    pub books: usize,
 }
