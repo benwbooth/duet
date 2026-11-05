@@ -431,3 +431,48 @@ mod tests {
         assert_eq!(v[0], PathBuf::from("a/Track 2.mp3"));
     }
 }
+
+/// Folds one work into another: its editions, place, sync maps and cast move over.
+pub async fn merge_works(db: &SqlitePool, from: i64, into: i64) -> anyhow::Result<()> {
+    if from == into {
+        return Ok(());
+    }
+    let mut tx = db.begin().await?;
+    sqlx::query("UPDATE assets SET work_id = ? WHERE work_id = ?").bind(into).bind(from).execute(&mut *tx).await?;
+    sqlx::query("UPDATE sync_maps SET work_id = ? WHERE work_id = ?").bind(into).bind(from).execute(&mut *tx).await?;
+    sqlx::query("UPDATE OR IGNORE cast_members SET work_id = ? WHERE work_id = ?").bind(into).bind(from).execute(&mut *tx).await?;
+    sqlx::query("UPDATE OR IGNORE positions SET work_id = ? WHERE work_id = ?").bind(into).bind(from).execute(&mut *tx).await?;
+    sqlx::query("UPDATE jobs SET work_id = ? WHERE work_id = ?").bind(into).bind(from).execute(&mut *tx).await?;
+    sqlx::query("UPDATE works SET cover_path = COALESCE(cover_path, (SELECT cover_path FROM works WHERE id = ?)) WHERE id = ?")
+        .bind(from)
+        .bind(into)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM works WHERE id = ?").bind(from).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// After a download is imported: put it in the book it was fetched for. If another work already
+/// has that title and author it joins that one; otherwise its work takes on that title, so the
+/// other half of an ebook + audiobook pair finds it.
+pub async fn adopt(db: &SqlitePool, work_id: i64, title: &str, author: Option<&str>) -> anyhow::Result<i64> {
+    let key = match_key(title, author);
+    let other: Option<(i64,)> = sqlx::query_as("SELECT id FROM works WHERE match_key = ? AND id != ? ORDER BY id LIMIT 1")
+        .bind(&key)
+        .bind(work_id)
+        .fetch_optional(db)
+        .await?;
+    if let Some((into,)) = other {
+        merge_works(db, work_id, into).await?;
+        return Ok(into);
+    }
+    sqlx::query("UPDATE works SET title = ?, author = COALESCE(?, author), match_key = ? WHERE id = ?")
+        .bind(title)
+        .bind(author)
+        .bind(&key)
+        .bind(work_id)
+        .execute(db)
+        .await?;
+    Ok(work_id)
+}

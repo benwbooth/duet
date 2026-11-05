@@ -672,6 +672,10 @@ fn WorkPage(id: i64) -> impl IntoView {
                                 </div>
                             </section>
 
+                            <section class="work-section">
+                                <CombineWith id title=w.title.clone()/>
+                            </section>
+
                             {(!w.cast.is_empty()).then(|| view! {
                                 <section class="work-section">
                                     <h2>"Cast"</h2>
@@ -696,5 +700,63 @@ fn WorkPage(id: i64) -> impl IntoView {
                 }
             })}
         </Suspense>
+    }
+}
+
+/// "This is the same book as…": folds another library entry (say, the audiobook that was
+/// titled differently) into this one.
+#[component]
+fn CombineWith(id: i64, title: String) -> impl IntoView {
+    let open = RwSignal::new(false);
+    let works = LocalResource::new(|| api::get::<Vec<WorkSummary>>("/api/library"));
+    let choice = RwSignal::new(None::<i64>);
+    let toast = toast();
+    let words = |t: &str| duet_common::text::normalize(t).split(' ').filter(|w| w.len() > 2).map(str::to_string).collect::<Vec<_>>();
+    let mine = StoredValue::new(words(&title));
+    // Other books, most similar title first.
+    let others = move || {
+        let mut list: Vec<(usize, WorkSummary)> = works
+            .get()
+            .and_then(|r| r.ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| w.id != id)
+            .map(|w| (mine.with_value(|m| words(&w.title).iter().filter(|x| m.contains(x)).count()), w))
+            .collect();
+        list.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.title.cmp(&b.1.title)));
+        list.into_iter().map(|(_, w)| w).collect::<Vec<_>>()
+    };
+    let combine = move |_| {
+        let Some(other) = choice.get_untracked() else { return };
+        spawn_local(async move {
+            match api::post::<_, WorkDetail>(&format!("/api/works/{other}/merge"), &serde_json::json!({ "into": id })).await {
+                Ok(_) => {
+                    toast.show("Combined into one book");
+                    // Reload this page with the editions it gained.
+                    let _ = window().location().reload();
+                }
+                Err(e) => toast.show(e.0),
+            }
+        });
+    };
+    view! {
+        <Show when=move || open.get() fallback=move || view! {
+            <button class="link" on:click=move |_| open.set(true)>"Same book as another entry in your library? Combine them"</button>
+        }>
+            <div class="combine">
+                <h2>"Combine with another entry"</h2>
+                <p class="hint">"Its editions, your place and its sync move into this book."</p>
+                <div class="row">
+                    <select on:change=move |ev| choice.set(event_target_value(&ev).parse().ok())>
+                        <option value="">"Choose a book"</option>
+                        {move || others().into_iter().map(|w| view! {
+                            <option value=w.id.to_string()>{format!("{}{}", w.title, w.author.map(|a| format!(" — {a}")).unwrap_or_default())}</option>
+                        }).collect_view()}
+                    </select>
+                    <button class="primary" disabled=move || choice.get().is_none() on:click=combine>"Combine"</button>
+                    <button on:click=move |_| open.set(false)>"Cancel"</button>
+                </div>
+            </div>
+        </Show>
     }
 }

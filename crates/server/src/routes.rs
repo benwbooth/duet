@@ -39,6 +39,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/works/{id}/position", get(get_position).put(put_position))
         .route("/works/{id}/sync", get(sync))
         .route("/works/{id}/cast", post(save_cast))
+        .route("/works/{id}/merge", post(merge_work))
         .route("/assets/{id}/file", get(asset_file))
         .route("/assets/{id}/layout", get(layout))
         .route("/assets/{id}/chapters/{n}", get(chapter))
@@ -523,4 +524,15 @@ async fn chat_proxy(AxState(s): AxState<State>, Json(body): Json<serde_json::Val
         "object": "chat.completion",
         "choices": [{ "index": 0, "message": { "role": "assistant", "content": answer }, "finish_reason": "stop" }],
     })))
+}
+
+#[derive(Deserialize)]
+struct MergeReq {
+    into: i64,
+}
+
+/// Combines two entries that are the same book (e.g. an ebook and audiobook titled differently).
+async fn merge_work(AxState(s): AxState<State>, Path(id): Path<i64>, Json(r): Json<MergeReq>) -> ApiResult<Json<WorkDetail>> {
+    library::merge_works(&s.db, id, r.into).await?;
+    work(AxState(s), Path(r.into)).await
 }

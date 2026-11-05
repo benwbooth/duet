@@ -81,12 +81,21 @@ fn FoundBook(g: BookGroup, download: impl Fn(SearchResult) + Copy + Send + Sync 
     let pick_e = RwSignal::new((!ebooks.is_empty()).then_some(0usize));
     let pick_a = RwSignal::new((!audio.is_empty()).then_some(0usize));
     let (e2, a2) = (ebooks.clone(), audio.clone());
+    let (book_title, book_author) = (g.title.clone(), g.author.clone());
+    // Both halves are filed under this book's title and author, so they end up as one book.
+    let as_this_book = move |mut r: SearchResult| {
+        r.title = book_title.clone();
+        if book_author.is_some() {
+            r.author = book_author.clone();
+        }
+        r
+    };
     let get = move |_| {
         if let Some(i) = pick_e.get_untracked() {
-            download(e2[i].clone());
+            download(as_this_book(e2[i].clone()));
         }
         if let Some(i) = pick_a.get_untracked() {
-            download(a2[i].clone());
+            download(as_this_book(a2[i].clone()));
         }
     };
     let label = move || match (pick_e.get().is_some(), pick_a.get().is_some()) {
@@ -216,7 +225,7 @@ pub fn Discover() -> impl IntoView {
     };
 
     let download = move |r: SearchResult| {
-        let req = NewDownload { kind: r.kind, title: r.title.clone(), target: r.download.clone() };
+        let req = NewDownload { kind: r.kind, title: r.title.clone(), target: r.download.clone(), author: r.author.clone() };
         spawn_local(async move {
             match api::post::<_, ()>("/api/downloads", &req).await {
                 Ok(()) => panel.opened(),

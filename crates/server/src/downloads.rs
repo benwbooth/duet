@@ -43,8 +43,9 @@ pub async fn start(state: &State, req: NewDownload) -> anyhow::Result<()> {
                 .execute(&state.db)
                 .await?;
             let (state, url, filename, kind) = (state.clone(), url.clone(), filename.clone(), req.kind);
+            let (title, author) = (req.title.clone(), req.author.clone());
             tokio::spawn(async move {
-                let result = direct(&state, &id, &url, &filename, kind).await;
+                let result = direct(&state, &id, &url, &filename, kind, &title, author.as_deref()).await;
                 let (st, path) = match &result {
                     Ok(p) => ("imported", Some(p.to_string_lossy().to_string())),
                     Err(e) => {
@@ -78,7 +79,15 @@ async fn resolve_archive(http: &reqwest::Client, url: &str) -> anyhow::Result<(S
     bail!("no EPUB, PDF or text file in this item")
 }
 
-async fn direct(state: &State, id: &str, url: &str, filename: &str, kind: AssetKind) -> anyhow::Result<PathBuf> {
+async fn direct(
+    state: &State,
+    id: &str,
+    url: &str,
+    filename: &str,
+    kind: AssetKind,
+    title: &str,
+    author: Option<&str>,
+) -> anyhow::Result<PathBuf> {
     let (url, filename) = if url.starts_with("https://archive.org/metadata/") {
         let (u, ext) = resolve_archive(&state.http, url).await?;
         (u, format!("{filename}.{ext}"))
@@ -119,7 +128,9 @@ async fn direct(state: &State, id: &str, url: &str, filename: &str, kind: AssetK
     } else {
         dest
     };
-    import_found(state, &target, "download").await?;
+    for work in import_found(state, &target, "download").await? {
+        library::adopt(&state.db, work, title, author).await?;
+    }
     Ok(target)
 }
 
@@ -140,17 +151,18 @@ fn unzip(zip_path: &Path, out: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Imports whatever books and audiobooks are at `path` (a file or a folder).
-pub async fn import_found(state: &State, path: &Path, origin: &str) -> anyhow::Result<usize> {
+/// Imports whatever books and audiobooks are at `path` (a file or a folder); returns the works
+/// they went into.
+pub async fn import_found(state: &State, path: &Path, origin: &str) -> anyhow::Result<Vec<i64>> {
     let p = path.to_path_buf();
     let found = tokio::task::spawn_blocking(move || library::walk(&p)).await?;
-    let mut n = 0;
+    let mut works = Vec::new();
     for (p, kind) in found {
-        if library::import_path(state, &p, kind, origin).await?.is_some() {
-            n += 1;
+        if let Some(w) = library::import_path(state, &p, kind, origin).await? {
+            works.push(w);
         }
     }
-    Ok(n)
+    Ok(works)
 }
 
 pub async fn list(state: &State) -> anyhow::Result<Vec<Download>> {
@@ -215,7 +227,7 @@ async fn import_finished(state: &State) -> anyhow::Result<()> {
             if done.is_some() {
                 continue;
             }
-            let n = import_found(state, Path::new(&t.content_path), "download").await?;
+            let n = import_found(state, Path::new(&t.content_path), "download").await?.len();
             tracing::info!("imported {n} item(s) from torrent {}", t.name);
             sqlx::query("INSERT INTO imported_torrents (hash) VALUES (?)").bind(&t.hash).execute(&state.db).await?;
         }

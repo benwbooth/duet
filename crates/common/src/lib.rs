@@ -433,6 +433,10 @@ pub struct NewDownload {
     pub kind: AssetKind,
     pub title: String,
     pub target: DownloadTarget,
+    /// The book this belongs to, so an ebook and audiobook fetched together land in one book
+    /// even when their files are titled differently.
+    #[serde(default)]
+    pub author: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
