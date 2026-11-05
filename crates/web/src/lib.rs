@@ -350,8 +350,6 @@ fn format_marks(w: &WorkSummary) -> impl IntoView + use<> {
     let w = w.clone();
     view! {
         <div class="marks">
-            {w.has_ebook.then(|| view! { <span class="mark" title="Ebook">{icon(icons::BOOK)}</span> })}
-            {w.has_audiobook.then(|| view! { <span class="mark" title="Audiobook">{icon(icons::HEADPHONES)}</span> })}
             {w.has_sync.then(|| view! { <span class="mark sync" title="Text and audio in sync">{icon(icons::SYNC)}</span> })}
         </div>
     }
@@ -369,6 +367,10 @@ fn book_card(w: WorkSummary) -> impl IntoView {
             </div>
             <div class="title">{w.title.clone()}</div>
             <div class="author">{w.author.clone().unwrap_or_default()}</div>
+            <div class="format-badges">
+                {w.has_ebook.then(|| view! { <span class="fbadge ebook">{icon(icons::BOOK)}"Ebook"</span> })}
+                {w.has_audiobook.then(|| view! { <span class="fbadge audio">{icon(icons::HEADPHONES)}"Audiobook"</span> })}
+            </div>
         </a>
     }
 }

@@ -807,3 +807,14 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .downloads-pane li.failed .dl-meta span:first-child { color: var(--danger); }
 .dl-open { font-size: 0.85rem; font-weight: 600; }
 @media (max-width: 760px) { .downloads-pane { right: 0.6rem; left: 0.6rem; width: auto; bottom: calc(72px + env(safe-area-inset-bottom)); } }
+
+/* Ebook / Audiobook badges under library books */
+.format-badges { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.15rem; }
+.fbadge {
+  display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.01em;
+  padding: 0.12rem 0.45rem 0.12rem 0.35rem; border-radius: 99px;
+}
+.fbadge .icon { width: 12px; height: 12px; }
+.fbadge.ebook { background: var(--accent-soft); color: var(--accent); }
+.fbadge.audio { background: color-mix(in srgb, hsl(210 60% 50%) 16%, transparent); color: hsl(210 55% 45%); }
+@media (prefers-color-scheme: dark) { .fbadge.audio { color: hsl(210 70% 72%); } }
