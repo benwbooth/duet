@@ -1,6 +1,6 @@
 //! Finding books (free sources and the user's own indexers), downloads, and background jobs.
 
-use duet_common::{AssetKind, Download, Job, NewDownload, SearchResult};
+use duet_common::{AssetKind, Download, Job, JobKind, NewDownload, SearchResult};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use serde::Deserialize;
@@ -111,7 +111,10 @@ pub fn Discover() -> impl IntoView {
 
     view! {
         <header class="page-head">
-            <h1>"Discover"</h1>
+            <div class="titles">
+                <h1>"Discover"</h1>
+                <p class="subtitle">"Free classics, plus anything your own indexers find."</p>
+            </div>
         </header>
         <form class="search-form" on:submit=move |ev| { ev.prevent_default(); search() }>
             <input type="search" placeholder="Title or author" prop:value=move || query.get()
@@ -203,21 +206,49 @@ pub fn Jobs() -> impl IntoView {
     let jobs = LocalResource::new(|| api::get::<Vec<Job>>("/api/jobs"));
     poll(2000, move || jobs.refetch());
     view! {
-        <header class="page-head"><h1>"Jobs"</h1></header>
-        <p class="hint">"Syncing, full-cast recording and transcription run here one at a time. They can take a while: hours for a long book on one GPU."</p>
+        <header class="page-head">
+            <div class="titles">
+                <h1>"Jobs"</h1>
+                <p class="subtitle">"Syncing, full-cast recording and transcription"</p>
+            </div>
+        </header>
+        <p class="hint">"Jobs run one at a time and can take a while: a long book can take hours on one graphics card."</p>
         {move || {
             let list = jobs.get().and_then(|r| r.ok()).unwrap_or_default();
             if list.is_empty() {
-                return view! { <p class="empty">"No jobs yet. Start one from a book's page."</p> }.into_any();
+                return view! {
+                    <div class="empty-state">
+                        <div class="empty-icon">{crate::icon(crate::icons::JOBS)}</div>
+                        <h2>"Nothing running"</h2>
+                        <p>"Syncing, full-cast audiobooks and transcriptions show up here. Start one from a book's page."</p>
+                    </div>
+                }.into_any();
             }
             view! {
                 <ul class="jobs">
-                    {list.into_iter().map(|j| view! {
-                        <li class=format!("job {}", j.status)>
-                            <div class="title"><a href=format!("#/work/{}", j.work_id)>{j.kind.label()}</a></div>
-                            <div class="meta"><span>{j.status.clone()}</span><span>{j.message.clone()}</span></div>
-                            <div class="progress"><div style=format!("width:{:.1}%", j.progress * 100.0)></div></div>
-                        </li>
+                    {list.into_iter().map(|j| {
+                        let path = match j.kind {
+                            JobKind::Align => crate::icons::SYNC,
+                            JobKind::FullCast => crate::icons::MASKS,
+                            JobKind::Transcribe => crate::icons::QUILL,
+                            JobKind::Convert => crate::icons::CONVERT,
+                        };
+                        let active = j.status == "running" || j.status == "queued";
+                        view! {
+                            <li class=format!("job {}", j.status)>
+                                <div class="job-row">
+                                    <div class="action-icon">{crate::icon(path)}</div>
+                                    <div class="grow">
+                                        <div class="title"><a href=format!("#/work/{}", j.work_id)>{j.kind.label()}</a></div>
+                                        <div class="meta"><span>{j.message.clone()}</span></div>
+                                    </div>
+                                    <span class=format!("status-pill {}", j.status)>{j.status.clone()}</span>
+                                </div>
+                                {active.then(|| view! {
+                                    <div class="progress"><div style=format!("width:{:.1}%", j.progress * 100.0)></div></div>
+                                })}
+                            </li>
+                        }
                     }).collect_view()}
                 </ul>
             }.into_any()

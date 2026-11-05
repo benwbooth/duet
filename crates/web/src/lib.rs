@@ -125,24 +125,62 @@ pub fn toast() -> Toast {
     expect_context::<Toast>()
 }
 
+/// Line icons (24×24, stroked), drawn for duet.
+pub mod icons {
+    pub const LIBRARY: &str = "M4 19V5a1 1 0 0 1 1-1h3v16H5a1 1 0 0 1-1-1zM8 4h3v16H8M13.5 5.2l3-.8 3.6 14.4-3 .8z";
+    pub const DISCOVER: &str = "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20.5 20.5 16 16";
+    pub const JOBS: &str = "M12 3l1.8 4.6L18.5 9l-4.7 1.6L12 15l-1.8-4.4L5.5 9l4.7-1.4zM18.5 15l.8 2 2 .7-2 .8-.8 2-.8-2-2-.8 2-.7z";
+    pub const SETTINGS: &str = "M4 7h10M18 7h2M4 17h4M12 17h8M14 4.5v5M8 14.5v5";
+    pub const BOOK: &str = "M4 5.5C6.5 4 9.5 4 12 6c2.5-2 5.5-2 8-.5V19c-2.5-1.5-5.5-1.5-8 .5-2.5-2-5.5-2-8-.5z M12 6v13.5";
+    pub const HEADPHONES: &str = "M4 15v-3a8 8 0 0 1 16 0v3M4 15a2 2 0 0 1 2-2h1v7H6a2 2 0 0 1-2-2zM20 15a2 2 0 0 0-2-2h-1v7h1a2 2 0 0 0 2-2z";
+    pub const SYNC: &str = "M4 12a8 8 0 0 1 13.7-5.6L20 9M20 4v5h-5M20 12a8 8 0 0 1-13.7 5.6L4 15M4 20v-5h5";
+    pub const SPARKLE: &str = "M12 3l1.8 4.6L18.5 9l-4.7 1.6L12 15l-1.8-4.4L5.5 9l4.7-1.4z";
+    pub const PLAY: &str = "M7 4.5v15l12-7.5z";
+    pub const MASKS: &str = "M4 5h7v6a3.5 3.5 0 0 1-7 0zM13 9h7v6a3.5 3.5 0 0 1-7 0zM6 9h.01M9 9h.01M15.5 13h.01M18 13h.01M6.5 12.5c.6.6 1.4.6 2 0M15.5 16.5c.6-.6 1.4-.6 2 0";
+    pub const QUILL: &str = "M20 4c-6 0-11 5-12.5 11.5L6 20M20 4c0 6-4 10-9.5 11.5M20 4l-6 6";
+    pub const CONVERT: &str = "M5 8h12l-3-3M19 16H7l3 3";
+    pub const SCAN: &str = "M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M7 12h10";
+    pub const DOWNLOAD: &str = "M12 4v11M7 10l5 5 5-5M5 20h14";
+    pub const CHECK: &str = "M5 12.5l4.5 4.5L19 7.5";
+    pub const CLOCK: &str = "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM12 8v4.5l3 2";
+    pub const ALERT: &str = "M12 4 3 20h18zM12 10v4M12 17h.01";
+    pub const PERSON: &str = "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM5 20a7 7 0 0 1 14 0";
+    pub const COMIC: &str = "M4 4h16v16H4zM4 11h9M13 4v16";
+}
+
 const TABS: [(&str, &str, &str); 4] = [
-    ("library", "Library", "M4 4h5v16H4zM10 4h4v16h-4zM15.5 4.5l4-1 3 15.5-4 1z"),
-    ("discover", "Discover", "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4"),
-    ("jobs", "Jobs", "M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"),
-    ("settings", "Settings", "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM4 12h2M18 12h2M12 4v2M12 18v2"),
+    ("library", "Library", icons::LIBRARY),
+    ("discover", "Discover", icons::DISCOVER),
+    ("jobs", "Jobs", icons::JOBS),
+    ("settings", "Settings", icons::SETTINGS),
 ];
 
 pub fn icon(path: &'static str) -> impl IntoView {
     view! {
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=path/></svg>
+    }
+}
+
+/// The app's mark: two pages, one with a sound wave.
+fn logo() -> impl IntoView {
+    view! {
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="var(--accent)"/>
+            <path d="M7 9.5c3-1.4 6-1 8.5 1v13c-2.5-2-5.5-2.4-8.5-1z" fill="var(--bg)"/>
+            <path d="M25 9.5c-3-1.4-6-1-8.5 1v13c2.5-2 5.5-2.4 8.5-1z" fill="var(--bg)" opacity="0.75"/>
+            <path d="M19.5 15v3.5M21.5 13.5v6.5M23.3 15.5v2.5" stroke="var(--accent)" stroke-width="1.3" stroke-linecap="round"/>
+        </svg>
     }
 }
 
 #[component]
 fn App() -> impl IntoView {
     let route = RwSignal::new(Route::parse(&current_hash()));
-    let handler = Closure::<dyn Fn()>::new(move || route.set(Route::parse(&current_hash())));
+    let handler = Closure::<dyn Fn()>::new(move || {
+        route.set(Route::parse(&current_hash()));
+        window().scroll_to_with_x_and_y(0.0, 0.0);
+    });
     let _ = window().add_event_listener_with_callback("hashchange", handler.as_ref().unchecked_ref());
     handler.forget();
     let toast_sig = RwSignal::new(None::<String>);
@@ -153,7 +191,7 @@ fn App() -> impl IntoView {
     view! {
         <div class="app" class:immersive=immersive>
             <nav class="tabs">
-                <a class="brand" href="#/">"duet"</a>
+                <a class="brand" href="#/">{logo()}<span>"duet"</span></a>
                 {TABS.map(|(id, label, path)| view! {
                     <a href=format!("#/{}", if id == "library" { "" } else { id })
                         class:active=move || route.get().tab() == id>
@@ -173,24 +211,67 @@ fn App() -> impl IntoView {
                 }}
             </main>
             <Show when=move || toast_sig.get().is_some()>
-                <div class="toast" on:click=move |_| toast_sig.set(None)>{move || toast_sig.get()}</div>
+                <div class="toast" role="status" on:click=move |_| toast_sig.set(None)>{move || toast_sig.get()}</div>
             </Show>
         </div>
     }
 }
 
-fn cover(url: Option<String>, title: String) -> impl IntoView {
+/// A stable hue for a string, for generated covers and avatars.
+pub fn hue_of(s: &str) -> u32 {
+    s.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) % 360
+}
+
+pub fn cover(url: Option<String>, title: String) -> impl IntoView {
     match url {
-        Some(u) => view! { <img class="cover" src=u alt="" loading="lazy"/> }.into_any(),
+        Some(u) => view! { <img class="cover" src=u alt="" loading="lazy" decoding="async"/> }.into_any(),
         None => {
-            // A generated cover: the title on a colour picked from it.
-            let hue = title.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) % 360;
+            // A generated cover: the title set like a cloth binding, in a colour picked from it.
+            let hue = hue_of(&title);
             view! {
-                <div class="cover placeholder" style=format!("--hue:{hue}")><span>{title}</span></div>
+                <div class="cover placeholder" style=format!("--hue:{hue}")>
+                    <span class="rule"></span><span class="ptitle">{title}</span><span class="rule"></span>
+                </div>
             }
             .into_any()
         }
     }
+}
+
+/// The small format marks on a library cover.
+fn format_marks(w: &WorkSummary) -> impl IntoView + use<> {
+    let w = w.clone();
+    view! {
+        <div class="marks">
+            {w.has_ebook.then(|| view! { <span class="mark" title="Ebook">{icon(icons::BOOK)}</span> })}
+            {w.has_audiobook.then(|| view! { <span class="mark" title="Audiobook">{icon(icons::HEADPHONES)}</span> })}
+            {w.has_sync.then(|| view! { <span class="mark sync" title="Text and audio in sync">{icon(icons::SYNC)}</span> })}
+        </div>
+    }
+}
+
+fn book_card(w: WorkSummary) -> impl IntoView {
+    view! {
+        <a class="card" href=format!("#/work/{}", w.id)>
+            <div class="cover-wrap">
+                {cover(w.cover_url.clone(), w.title.clone())}
+                {format_marks(&w)}
+                {w.progress.filter(|p| *p > 0.0).map(|p| view! {
+                    <div class="cover-progress"><div style=format!("width:{:.1}%", p * 100.0)></div></div>
+                })}
+            </div>
+            <div class="title">{w.title.clone()}</div>
+            <div class="author">{w.author.clone().unwrap_or_default()}</div>
+        </a>
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Shelf {
+    All,
+    Ebooks,
+    Audiobooks,
+    Synced,
 }
 
 #[component]
@@ -207,6 +288,7 @@ fn Library() -> impl IntoView {
         }
     });
     let filter = RwSignal::new(String::new());
+    let shelf = RwSignal::new(Shelf::All);
     let scanning = RwSignal::new(false);
     let toast = toast();
     let scan = move |_| {
@@ -214,7 +296,7 @@ fn Library() -> impl IntoView {
         spawn_local(async move {
             match api::post::<_, ScanReport>("/api/library/scan", &()).await {
                 Ok(r) => {
-                    let errors = if r.errors.is_empty() { String::new() } else { format!(", {} errors", r.errors.len()) };
+                    let errors = if r.errors.is_empty() { String::new() } else { format!(", {} couldn't be read", r.errors.len()) };
                     toast.show(format!("{} books: {} ebooks and {} audiobooks added{errors}", r.works, r.ebooks, r.audiobooks));
                 }
                 Err(e) => toast.show(e.0),
@@ -223,13 +305,18 @@ fn Library() -> impl IntoView {
             works.refetch();
         });
     };
+    let all = move || works.get().and_then(|r| r.ok()).unwrap_or_default();
     let shown = move || {
         let f = filter.get().to_lowercase();
-        works
-            .get()
-            .and_then(|r| r.ok())
-            .unwrap_or_default()
+        let sh = shelf.get();
+        all()
             .into_iter()
+            .filter(|w| match sh {
+                Shelf::All => true,
+                Shelf::Ebooks => w.has_ebook,
+                Shelf::Audiobooks => w.has_audiobook,
+                Shelf::Synced => w.has_sync,
+            })
             .filter(|w| {
                 f.is_empty()
                     || w.title.to_lowercase().contains(&f)
@@ -238,13 +325,26 @@ fn Library() -> impl IntoView {
             })
             .collect::<Vec<_>>()
     };
+    // Books in progress, most recent first (the server already orders by last read).
+    let reading = move || all().into_iter().filter(|w| w.progress.is_some_and(|p| p > 0.0 && p < 0.995)).take(8).collect::<Vec<_>>();
+
     view! {
         <header class="page-head">
-            <h1>"Library"</h1>
-            <input class="search" type="search" placeholder="Filter by title, author or series"
-                prop:value=move || filter.get() on:input=move |ev| filter.set(event_target_value(&ev))/>
-            <button on:click=scan disabled=move || scanning.get()>
-                {move || if scanning.get() { "Scanning…" } else { "Scan folders" }}
+            <div class="titles">
+                <h1>"Library"</h1>
+                <p class="subtitle">{move || match all().len() {
+                    0 => String::new(),
+                    1 => "1 book".into(),
+                    n => format!("{n} books"),
+                }}</p>
+            </div>
+            <div class="search-box">
+                {icon(icons::DISCOVER)}
+                <input type="search" placeholder="Title, author or series" aria-label="Filter the library"
+                    prop:value=move || filter.get() on:input=move |ev| filter.set(event_target_value(&ev))/>
+            </div>
+            <button class="ghost" on:click=scan disabled=move || scanning.get() title="Look for new books in your folders">
+                {icon(icons::SCAN)}{move || if scanning.get() { "Scanning…" } else { "Scan" }}
             </button>
         </header>
         <Show when=move || !setup_done.get()>
@@ -253,36 +353,58 @@ fn Library() -> impl IntoView {
                 <a class="button primary" href="#/setup">"Continue setup"</a>
             </div>
         </Show>
-        <Suspense fallback=|| view! { <p class="empty">"Loading…"</p> }>
+        <Suspense fallback=|| view! {
+            <div class="grid">{(0..10).map(|_| view! { <div class="card skeleton"><div class="cover"></div><div class="line"></div><div class="line short"></div></div> }).collect_view()}</div>
+        }>
             {move || {
-                let list = shown();
-                if works.get().is_some() && list.is_empty() && filter.get().is_empty() {
+                if works.get().is_some() && all().is_empty() {
                     return view! {
-                        <div class="empty">
-                            <p>"Your library is empty."</p>
-                            <p>"Add your book folders in "<a href="#/settings">"Settings"</a>
-                               " and scan them, or find free books in "<a href="#/discover">"Discover"</a>"."</p>
+                        <div class="empty-state">
+                            <div class="empty-icon">{icon(icons::LIBRARY)}</div>
+                            <h2>"Your library is empty"</h2>
+                            <p>"Add the folders where your books live, or start with a free classic."</p>
+                            <div class="row center">
+                                <a class="button primary" href="#/settings">"Add book folders"</a>
+                                <a class="button" href="#/discover">"Find free books"</a>
+                            </div>
                         </div>
                     }.into_any();
                 }
                 view! {
+                    <Show when=move || !reading().is_empty() && filter.get().is_empty() && shelf.get() == Shelf::All>
+                        <section class="shelf">
+                            <h2>"Continue"</h2>
+                            <div class="continue-row">
+                                {move || reading().into_iter().map(|w| {
+                                    let pct = (w.progress.unwrap_or(0.0) * 100.0).round();
+                                    view! {
+                                        <a class="continue-card" href=format!("#/read/{}", w.id)>
+                                            {cover(w.cover_url.clone(), w.title.clone())}
+                                            <div class="continue-info">
+                                                <div class="title">{w.title.clone()}</div>
+                                                <div class="author">{w.author.clone().unwrap_or_default()}</div>
+                                                <div class="progress"><div style=format!("width:{pct}%")></div></div>
+                                                <span class="pct">{format!("{pct}%")}</span>
+                                                <span class="resume">{icon(icons::PLAY)}"Resume"</span>
+                                            </div>
+                                        </a>
+                                    }
+                                }).collect_view()}
+                            </div>
+                        </section>
+                    </Show>
+                    <div class="shelf-head">
+                        <h2>"All books"</h2>
+                        <div class="chips" role="tablist">
+                            {[(Shelf::All, "All"), (Shelf::Ebooks, "Ebooks"), (Shelf::Audiobooks, "Audiobooks"), (Shelf::Synced, "Synced")].map(|(k, label)| view! {
+                                <button class="chip-button" class:active=move || shelf.get() == k on:click=move |_| shelf.set(k)>{label}</button>
+                            })}
+                        </div>
+                    </div>
+                    {move || shown().is_empty().then(|| view! { <p class="empty">"No books match."</p> })}
                     <div class="grid">
-                        <For each=move || shown() key=|w| (w.id, w.progress.map(|p| (p * 1000.0) as i64)) let:w>
-                            <a class="card" href=format!("#/work/{}", w.id)>
-                                {cover(w.cover_url.clone(), w.title.clone())}
-                                <div class="card-body">
-                                    <div class="title">{w.title.clone()}</div>
-                                    <div class="author">{w.author.clone().unwrap_or_default()}</div>
-                                    <div class="badges">
-                                        {w.has_ebook.then(|| view! { <span class="badge" title="Ebook">"Read"</span> })}
-                                        {w.has_audiobook.then(|| view! { <span class="badge" title="Audiobook">"Listen"</span> })}
-                                        {w.has_sync.then(|| view! { <span class="badge sync" title="Text and audio in sync">"Synced"</span> })}
-                                    </div>
-                                    {w.progress.map(|p| view! {
-                                        <div class="progress"><div style=format!("width:{:.1}%", p * 100.0)></div></div>
-                                    })}
-                                </div>
-                            </a>
+                        <For each=shown key=|w| (w.id, w.progress.map(|p| (p * 1000.0) as i64)) let:w>
+                            {book_card(w)}
                         </For>
                     </div>
                 }.into_any()
@@ -297,18 +419,15 @@ fn size_label(bytes: i64) -> String {
 }
 
 fn asset_label(a: &Asset) -> String {
-    let mut s = a.format.to_uppercase();
+    let mut parts = vec![a.format.to_uppercase()];
     if let Some(d) = a.duration_secs {
-        s.push_str(&format!(" · {}", format_time(d)));
+        parts.push(format_time(d));
     }
     if a.tracks.len() > 1 {
-        s.push_str(&format!(" · {} tracks", a.tracks.len()));
+        parts.push(format!("{} tracks", a.tracks.len()));
     }
-    s.push_str(&format!(" · {}", size_label(a.size)));
-    if a.origin == "generated" {
-        s.push_str(" · generated");
-    }
-    s
+    parts.push(size_label(a.size));
+    parts.join(" · ")
 }
 
 pub async fn start_job(kind: JobKind, work_id: i64) {
@@ -318,80 +437,153 @@ pub async fn start_job(kind: JobKind, work_id: i64) {
     }
 }
 
+/// One of the AI things duet can make from a book, as a card with a button.
+fn action_card(
+    path: &'static str,
+    title: &'static str,
+    about: &'static str,
+    button: &'static str,
+    busy: bool,
+    run: impl Fn() + 'static,
+) -> impl IntoView {
+    view! {
+        <div class="action-card">
+            <div class="action-icon">{icon(path)}</div>
+            <div class="action-text"><strong>{title}</strong><p>{about}</p></div>
+            <button disabled=busy on:click=move |_| run()>{if busy { "Working…" } else { button }}</button>
+        </div>
+    }
+}
+
 #[component]
 fn WorkPage(id: i64) -> impl IntoView {
     let work = LocalResource::new(move || async move { api::get::<WorkDetail>(&format!("/api/works/{id}")).await });
     let jobs = LocalResource::new(|| api::get::<Vec<Job>>("/api/jobs"));
+    let more = RwSignal::new(false);
     view! {
-        <Suspense fallback=|| view! { <p class="empty">"Loading…"</p> }>
+        <Suspense fallback=|| view! { <div class="work-skeleton skeleton"><div class="cover"></div><div class="lines"><div class="line"></div><div class="line short"></div></div></div> }>
             {move || work.get().map(|r| match r {
                 Err(e) => view! { <p class="empty">{e.0}</p> }.into_any(),
                 Ok(w) => {
                     let ebooks: Vec<Asset> = w.assets.iter().filter(|a| a.kind == AssetKind::Ebook).cloned().collect();
                     let audio: Vec<Asset> = w.assets.iter().filter(|a| a.kind == AssetKind::Audiobook).cloned().collect();
-                    let convertible = ebooks.iter().any(|a| ["mobi", "azw", "azw3", "fb2", "docx", "rtf", "odt", "lit"].contains(&a.format.as_str()));
                     let readable = ebooks.iter().any(|a| ["epub", "txt", "md", "html", "htm", "xhtml"].contains(&a.format.as_str()));
                     let running: Vec<Job> = jobs.get().and_then(|r| r.ok()).unwrap_or_default().into_iter()
                         .filter(|j| j.work_id == id && (j.status == "queued" || j.status == "running")).collect();
                     let busy = move |k: JobKind| running.iter().any(|j| j.kind == k);
                     let (has_e, has_a) = (!ebooks.is_empty(), !audio.is_empty());
                     let action = if has_e && has_a { "Read & listen" } else if has_a { "Listen" } else { "Read" };
+                    let progress = w.position.as_ref().map(|p| p.fraction).filter(|f| *f > 0.0);
+                    let backdrop = w.cover_url.clone().map(|u| format!("background-image:url('{u}')"));
+                    let long_description = w.description.as_ref().is_some_and(|d| d.len() > 420);
                     view! {
                         <div class="work">
-                            <div class="work-cover">{cover(w.cover_url.clone(), w.title.clone())}</div>
-                            <div class="work-info">
-                                <h1>{w.title.clone()}</h1>
-                                <p class="author">{w.author.clone().unwrap_or_default()}</p>
-                                {w.series.clone().map(|s| view! {
-                                    <p class="series">{s}{w.series_index.map(|i| format!(" #{i}")).unwrap_or_default()}</p>
-                                })}
-                                <div class="actions">
-                                    <a class="button primary" href=format!("#/read/{id}")>{action}</a>
-                                    {w.has_sync.then(|| view! { <span class="badge sync">"Text and audio in sync"</span> })}
-                                </div>
-                                {w.description.clone().map(|d| view! { <p class="description">{d}</p> })}
-
-                                <h2>"Editions"</h2>
-                                <ul class="editions">
-                                    {w.assets.iter().map(|a| view! {
-                                        <li>
-                                            <span class="kind">{if a.kind == AssetKind::Ebook { "Ebook" } else { "Audiobook" }}</span>
-                                            <span class="meta">{asset_label(a)}</span>
-                                            <span class="path" title=a.path.clone()>{a.path.rsplit('/').next().unwrap_or("").to_string()}</span>
-                                        </li>
-                                    }).collect_view()}
-                                </ul>
-
-                                <h2>"Make more of it"</h2>
-                                <div class="job-actions">
-                                    {(has_e && has_a).then(|| {
-                                        let b = busy(JobKind::Align);
-                                        view! {
-                                            <button disabled=b on:click=move |_| spawn_local(start_job(JobKind::Align, id))>
-                                                {if w.has_sync { "Re-sync text and audio" } else { "Sync text and audio" }}
-                                            </button>
-                                        }
+                            <div class="work-backdrop" style=backdrop.unwrap_or_default()></div>
+                            <div class="work-hero">
+                                <div class="work-cover">{cover(w.cover_url.clone(), w.title.clone())}</div>
+                                <div class="work-info">
+                                    {w.series.clone().map(|s| view! {
+                                        <p class="series">{s}{w.series_index.map(|i| format!(" · Book {i}")).unwrap_or_default()}</p>
                                     })}
-                                    {(has_e && !readable && convertible).then(|| view! {
-                                        <button on:click=move |_| spawn_local(start_job(JobKind::Convert, id))>"Convert to EPUB"</button>
-                                    })}
-                                    {(has_e && readable).then(|| view! {
-                                        <button on:click=move |_| spawn_local(start_job(JobKind::FullCast, id))>"Create full-cast audiobook"</button>
-                                    })}
-                                    {(has_a && !has_e).then(|| view! {
-                                        <button on:click=move |_| spawn_local(start_job(JobKind::Transcribe, id))>"Create ebook from audio"</button>
+                                    <h1>{w.title.clone()}</h1>
+                                    <p class="author">{w.author.clone().unwrap_or_default()}</p>
+                                    <div class="pills">
+                                        {has_e.then(|| view! { <span class="pill">{icon(icons::BOOK)}"Ebook"</span> })}
+                                        {has_a.then(|| view! { <span class="pill">{icon(icons::HEADPHONES)}"Audiobook"</span> })}
+                                        {w.has_sync.then(|| view! { <span class="pill good">{icon(icons::SYNC)}"In sync"</span> })}
+                                    </div>
+                                    <div class="actions">
+                                        <a class="button primary big" href=format!("#/read/{id}")>
+                                            {icon(icons::PLAY)}{if progress.is_some() { "Resume".to_string() } else { action.to_string() }}
+                                        </a>
+                                        {progress.map(|p| view! { <span class="muted">{format!("{:.0}% through", p * 100.0)}</span> })}
+                                    </div>
+                                    {w.description.clone().map(|d| view! {
+                                        <p class="description" class:clamped=move || long_description && !more.get()>{d}</p>
+                                        {long_description.then(|| view! {
+                                            <button class="link" on:click=move |_| more.update(|m| *m = !*m)>{move || if more.get() { "Less" } else { "More" }}</button>
+                                        })}
                                     })}
                                 </div>
-
-                                {(!w.cast.is_empty()).then(|| view! {
-                                    <h2>"Cast"</h2>
-                                    <ul class="cast">
-                                        {w.cast.iter().map(|c| view! {
-                                            <li><strong>{c.name.clone()}</strong><span>{c.description.clone()}</span></li>
-                                        }).collect_view()}
-                                    </ul>
-                                })}
                             </div>
+
+                            <section class="work-section">
+                                <h2>"Editions"</h2>
+                                <div class="edition-cards">
+                                    {w.assets.iter().map(|a| {
+                                        let ebook = a.kind == AssetKind::Ebook;
+                                        let name = reader::edition_label(a);
+                                        view! {
+                                            <div class="edition-card" class:generated=a.origin == "generated" title=a.path.clone()>
+                                                <div class="action-icon">{icon(if ebook { icons::BOOK } else { icons::HEADPHONES })}</div>
+                                                <div>
+                                                    <strong>{name}</strong>
+                                                    <p>{asset_label(a)}</p>
+                                                </div>
+                                                {(a.origin == "generated").then(|| view! { <span class="pill ai">{icon(icons::SPARKLE)}"AI"</span> })}
+                                            </div>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            </section>
+
+                            <section class="work-section">
+                                <h2>"Make more of it"</h2>
+                                <div class="action-cards">
+                                    {(has_e && has_a).then(|| action_card(
+                                        icons::SYNC,
+                                        if w.has_sync { "Text and audio are in sync" } else { "Sync text and audio" },
+                                        "Follow along as it's read: the sentence being spoken is highlighted, and tapping a sentence jumps the audio there.",
+                                        if w.has_sync { "Sync again" } else { "Sync" },
+                                        busy(JobKind::Align),
+                                        move || spawn_local(start_job(JobKind::Align, id)),
+                                    ))}
+                                    {(has_e && readable).then(|| action_card(
+                                        icons::MASKS,
+                                        "Full-cast audiobook",
+                                        "Every character gets their own voice, designed from how the book describes them, with the narrator in between.",
+                                        "Create",
+                                        busy(JobKind::FullCast),
+                                        move || spawn_local(start_job(JobKind::FullCast, id)),
+                                    ))}
+                                    {(has_a && !has_e).then(|| action_card(
+                                        icons::QUILL,
+                                        "Ebook from the audio",
+                                        "Transcribe the audiobook into a formatted ebook with chapters, synced to the recording.",
+                                        "Create",
+                                        busy(JobKind::Transcribe),
+                                        move || spawn_local(start_job(JobKind::Transcribe, id)),
+                                    ))}
+                                    {(has_e && !readable && !ebooks.iter().any(|a| ["pdf", "cbz", "cbr", "cb7", "cbt"].contains(&a.format.as_str()))).then(|| action_card(
+                                        icons::CONVERT,
+                                        "Convert to EPUB",
+                                        "Make a readable copy of this format with Calibre.",
+                                        "Convert",
+                                        busy(JobKind::Convert),
+                                        move || spawn_local(start_job(JobKind::Convert, id)),
+                                    ))}
+                                </div>
+                            </section>
+
+                            {(!w.cast.is_empty()).then(|| view! {
+                                <section class="work-section">
+                                    <h2>"Cast"</h2>
+                                    <p class="hint">"Talk to any of them from the reader's Ask button."</p>
+                                    <div class="cast-cards">
+                                        {w.cast.iter().map(|c| view! {
+                                            <div class="cast-card">
+                                                <div class="avatar" style=format!("--hue:{}", hue_of(&c.name))>
+                                                    {c.name.chars().next().map(|ch| ch.to_uppercase().to_string()).unwrap_or_default()}
+                                                </div>
+                                                <div>
+                                                    <strong>{if c.is_narrator { "Narrator".to_string() } else { c.name.clone() }}</strong>
+                                                    <p>{c.description.clone()}</p>
+                                                </div>
+                                            </div>
+                                        }).collect_view()}
+                                    </div>
+                                </section>
+                            })}
                         </div>
                     }.into_any()
                 }
