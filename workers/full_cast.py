@@ -20,6 +20,7 @@ import json
 import os
 import re
 import subprocess
+import urllib.error
 import urllib.request
 
 from common import chat_json, load, log, progress, save
@@ -31,7 +32,7 @@ CHUNK = 120  # sentences per attribution request
 
 
 def attribute(args, chapter, characters):
-    """Speaker for every sentence with dialogue in a chapter, plus new character descriptions."""
+    """(speaker, direction) for every sentence with dialogue in a chapter; adds new characters."""
     speakers = {}
     sentences = chapter["sentences"]
     for start in range(0, len(sentences), CHUNK):
@@ -42,17 +43,25 @@ def attribute(args, chapter, characters):
         known = "\n".join(f"- {n}: {d}" for n, d in characters.items()) or "(none yet)"
         reply = chat_json(args.llm_url, args.llm_model, args.llm_key, [
             {"role": "system", "content": (
-                "You prepare books for full-cast audiobook recording. For each numbered sentence containing quoted "
-                "speech, name the character speaking. Use one consistent name per character. For any character not "
-                "in the known list, write a voice description for a voice actor: gender, approximate age, accent, "
-                "pitch, pace and temperament, in one sentence. Reply with JSON: "
-                '{"speakers": {"<sentence number>": "<name>"}, "new_characters": {"<name>": "<voice description>"}}'
+                "You are the director of a full-cast audiobook. For each numbered sentence containing quoted "
+                "speech, name the character speaking (one consistent name per character) and give a short acting "
+                "direction for how the line is delivered, as an actor would want it: emotion, intensity, pace, "
+                "volume (e.g. 'barely holding back tears', 'dry, amused', 'shouting over the wind'). Use the "
+                "surrounding narration for cues. For any character not in the known list, write a voice "
+                "description for casting: gender, approximate age, accent, pitch, timbre, pace and temperament, "
+                "in one sentence. Reply with JSON: "
+                '{"lines": {"<sentence number>": {"speaker": "<name>", "direction": "<direction>"}}, '
+                '"new_characters": {"<name>": "<voice description>"}}'
             )},
             {"role": "user", "content": f"Book: {args.title} by {args.author}\nKnown characters:\n{known}\n\nSentences:\n{numbered}"},
         ])
-        for k, v in (reply.get("speakers") or {}).items():
-            if str(k).isdigit() and v:
-                speakers[int(k)] = v
+        for k, v in (reply.get("lines") or reply.get("speakers") or {}).items():
+            if not str(k).isdigit() or not v:
+                continue
+            if isinstance(v, str):
+                v = {"speaker": v}
+            if v.get("speaker"):
+                speakers[int(k)] = (v["speaker"], (v.get("direction") or "").strip())
         for n, d in (reply.get("new_characters") or {}).items():
             characters.setdefault(n, d)
     return speakers
@@ -83,17 +92,35 @@ def resample(wav, sr, target):
     return np.interp(x, np.arange(len(wav)), wav).astype("float32")
 
 
-def pieces(sentence, speaker):
-    """Splits a sentence into (text, who) parts: quotes by the speaker, the rest by the narrator."""
-    if speaker is None:
+def pieces(sentence, line):
+    """Splits a sentence into (text, who): quotes performed by the speaker with their direction,
+    the rest read by the narrator."""
+    if line is None:
         return [(sentence, None)]
+    speaker, direction = line
     out = []
     for part in QUOTE.split(sentence):
-        if not part.strip():
+        part = part.strip()
+        if not part:
             continue
-        quoted = QUOTE.fullmatch(part.strip()) is not None
-        out.append((part.strip().strip("“”\"").strip() if quoted else part.strip(), speaker if quoted else None))
+        if QUOTE.fullmatch(part):
+            spoken = part.strip("“”\"").strip()
+            out.append((f"[{direction}] {spoken}" if direction else spoken, speaker))
+        else:
+            out.append((part, None))
     return [p for p in out if re.search(r"\w", p[0])]
+
+
+def cast_voices(voices):
+    """Has the TTS server cast every voice up front (VoiceDesign), before any recording."""
+    url = os.environ.get("DUET_TTS_URL", "http://localhost:8880/v1").rstrip("/") + "/voices"
+    req = urllib.request.Request(url, data=json.dumps({"voices": voices}).encode(), headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=3600).read()
+    except urllib.error.HTTPError as e:
+        # Other OpenAI-compatible servers don't have this; voices get cast on first use instead.
+        if e.code != 404:
+            raise
 
 
 def main():
@@ -122,6 +149,25 @@ def main():
 
     chapters = [c for c in book["chapters"] if c["sentences"]]
     total = sum(len(c["sentences"]) for c in chapters) or 1
+
+    # Direct the whole book first: who says each line and how. Saved, so a restart resumes.
+    scripts = []
+    for track, ch in enumerate(chapters):
+        script_path = os.path.join(state_dir, f"script-{track:03d}.json")
+        if os.path.exists(script_path):
+            lines = {int(k): tuple(v) for k, v in load(script_path).items()}
+        else:
+            progress(0.1 * track / len(chapters), f"Directing {ch.get('title') or f'chapter {track + 1}'}")
+            lines = attribute(args, ch, characters)
+            save(script_path, {str(k): list(v) for k, v in lines.items()})
+            save(cast_path, {**characters, "Narrator": narrator})
+        scripts.append(lines)
+
+    # Then cast every voice before recording, so the TTS server never swaps models mid-book.
+    progress(0.1, f"Casting {len(characters) + 1} voices")
+    cast_voices([{"voice": f"{prefix}-narrator", "instructions": narrator}]
+                + [{"voice": f"{prefix}-{n}", "instructions": d} for n, d in characters.items()])
+
     done = 0
     sync = []
     for track, ch in enumerate(chapters):
@@ -133,9 +179,7 @@ def main():
             sync.extend(load(timing_path))
             done += len(ch["sentences"])
             continue
-        progress(done / total, f"Casting {title}")
-        speakers = attribute(args, ch, characters)
-        save(cast_path, {**characters, "Narrator": narrator})
+        speakers = scripts[track]
         audio, timings, sr, t = [], [], 24000, 0.0
         for si, sentence in enumerate(ch["sentences"]):
             start = t
@@ -152,7 +196,7 @@ def main():
             t += gap
             done += 1
             if si % 10 == 0:
-                progress(done / total, f"Recording {title}")
+                progress(0.1 + 0.9 * done / total, f"Recording {title}")
         buf = io.BytesIO()
         sf.write(buf, np.concatenate(audio) if audio else np.zeros(sr, dtype="float32"), sr, format="WAV")
         subprocess.run([

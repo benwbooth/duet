@@ -29,15 +29,30 @@ Everything talks to OpenAI-compatible HTTP endpoints, so any local server works:
 | --- | --- | --- |
 | Chat (assistant, casting, formatting) | `/chat/completions` | llama.cpp, vLLM, Ollama |
 | Speech to text (microphone) | `/audio/transcriptions` | speaches / faster-whisper-server |
-| Text to speech (voices) | `/audio/speech` | `workers/tts_server.py` (Qwen3-TTS) |
+| Text to speech (voices) | `/audio/speech` | `workers/tts_server.py` (Fish Audio + Qwen3-TTS VoiceDesign) |
 
 The long jobs run the Python workers in `workers/`. Set them up with `python -m venv .venv && .venv/bin/pip install -r workers/requirements.txt`, then set *Settings → AI → Python* to `.venv/bin/python`.
 
+### Voices
+
+Voices are split into two jobs. **Casting:** Qwen3-TTS *VoiceDesign* creates each character's voice from the description the director model wrote, and saves a reference clip in `voices/`. You can drop in your own clip to recast a character. **Acting:** every line is then performed by [Fish Audio](https://github.com/fishaudio/fish-speech), cloning that clip. The director model adds an acting direction to each line of dialogue (for example `[barely holding back tears]`), and Fish follows inline directions like that.
+
+| Acting model | Quality | Hardware |
+| --- | --- | --- |
+| Fish Audio **Drama 3** | #1 open-weights model on the Artificial Analysis TTS arena (Oct 2026), word-level direction | NVIDIA, 48 GB+ (no ROCm) |
+| Fish Audio **S2-Pro** | Next-best Fish model, same direction tags | 24 GB, NVIDIA or AMD ROCm |
+| Qwen3-TTS Base (`--engine qwen`) | Good, no directions | ~6 GB |
+
+Both Fish models are under the Fish Audio Community/Research license: free for personal and non-commercial use.
+
 ```bash
-.venv/bin/python workers/tts_server.py --port 8880   # VoiceDesign + Base + CustomVoice
+git clone https://github.com/fishaudio/fish-speech ~/src/fish-speech   # install per its docs
+hf download fishaudio/s2-pro --local-dir ~/src/fish-speech/checkpoints/s2-pro
+.venv/bin/python workers/tts_server.py --engine fish --fish-dir ~/src/fish-speech \
+    --fish-python ~/src/fish-speech/.venv/bin/python --fish-checkpoint checkpoints/s2-pro
 ```
 
-The first time a voice name is requested with an `instructions` description (for example "gravelly old sailor, Cornish accent, slow and warm"), the TTS server designs that voice and saves a reference clip to `voices/`. After that it clones the clip, so the character always sounds the same.
+Set up this way, the TTS server starts fish-speech itself and stops it while VoiceDesign is casting, because both won't fit on one 24 GB card at once. The full-cast job casts every voice before it records anything. To use Drama 3 on another machine, run its `tools/api_server.py` there and pass `--fish-url http://thatbox:8080` with no `--fish-dir`.
 
 ## Layout
 

@@ -167,7 +167,7 @@ pub fn SettingsPage() -> impl IntoView {
 
             <section>
                 <h2>"AI"</h2>
-                <p class="hint">"Any OpenAI-compatible servers: llama.cpp, vLLM or Ollama for chat; speaches/faster-whisper-server for speech to text; workers/tts_server.py (Qwen3-TTS voice design) for speech."</p>
+                <p class="hint">"Any OpenAI-compatible servers: llama.cpp, vLLM or Ollama for chat; speaches/faster-whisper-server for speech to text; workers/tts_server.py (Fish Audio acting, Qwen3-TTS voice design) for speech."</p>
                 {text(s, "Chat model URL", "", |x| x.ai.llm_url.clone(), |x, v| x.ai.llm_url = v)}
                 {text(s, "Chat model", "", |x| x.ai.llm_model.clone(), |x, v| x.ai.llm_model = v)}
                 {secret(s, "API key (if needed)", |x| x.ai.llm_api_key.clone(), |x, v| x.ai.llm_api_key = v)}

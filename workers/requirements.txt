@@ -1,6 +1,7 @@
 # Workers for duet's AI jobs. Install into a venv and point Settings → AI → Python at it.
 faster-whisper>=1.1      # align.py, transcribe.py
 soundfile>=0.12          # full_cast.py, tts_server.py
+ormsgpack>=1.5           # tts_server.py talking to fish-speech
 numpy>=1.26
 qwen-tts>=0.1            # tts_server.py (Qwen3-TTS VoiceDesign / Base / CustomVoice)
 torch>=2.4

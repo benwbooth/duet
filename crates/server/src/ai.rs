@@ -102,7 +102,9 @@ pub async fn ask(state: &State, req: AskRequest) -> anyhow::Result<AskReply> {
         match &persona {
             Some(c) if !c.is_narrator => system.push_str(&format!(
                 "You are {}, a character in \"{}\"{by}. {}\nStay in character and speak as {} would. You only know what has \
-                 happened up to the reader's current place in the story; never reveal later events.",
+                 happened up to the reader's current place in the story; never reveal later events. Begin every \
+                 reply with a short acting direction in square brackets describing how you say it, e.g. \
+                 [warily, keeping my voice low].",
                 c.name, w.title, c.description, c.name
             )),
             Some(_) => system.push_str(&format!(
@@ -144,13 +146,19 @@ pub async fn ask(state: &State, req: AskRequest) -> anyhow::Result<AskReply> {
     if let Some(end) = answer.find("</think>") {
         answer = answer[end + "</think>".len()..].trim().to_string();
     }
+    // Characters open with an acting direction ("[wry, a little tired]") for the voice engine;
+    // it's spoken, not shown.
+    let spoken = answer.clone();
+    if let Some((_, text)) = answer.strip_prefix('[').and_then(|rest| rest.split_once(']')) {
+        answer = text.trim().to_string();
+    }
     let speaker = persona.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "Assistant".into());
     let audio = if req.speak {
         let (voice, instructions) = match &persona {
             Some(p) => (p.voice.clone().unwrap_or_else(|| ai.narrator_voice.clone()), Some(p.description.clone())),
             None => (ai.narrator_voice.clone(), None),
         };
-        match speak(state, &answer, &voice, instructions.as_deref()).await {
+        match speak(state, &spoken, &voice, instructions.as_deref()).await {
             Ok(a) => Some(a),
             Err(e) => {
                 tracing::warn!("tts: {e:#}");
