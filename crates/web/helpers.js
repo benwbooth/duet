@@ -186,6 +186,10 @@ class Pager {
     const pageW = this.spread ? w / 2 : w;
     const pad = Math.round(Math.min(56, Math.max(22, pageW * 0.08)));
     this.article.style.setProperty("--page-pad", `${pad}px`);
+    // The height text can use on a page, so pictures can be sized to fit on one page.
+    const cs = getComputedStyle(this.article);
+    const colH = this.book.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    this.article.style.setProperty("--col-h", `${Math.max(120, colH)}px`);
     // A fixed count (not a width) so rounding can't drop a column; overflow continues to the right.
     this.article.style.columnWidth = "auto";
     this.article.style.columnCount = this.spread ? "2" : "1";

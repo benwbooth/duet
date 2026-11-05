@@ -389,11 +389,14 @@ pub struct ReaderSettings {
     pub spread: String,
 }
 
+/// The reader's default typeface: book faces where the system has them.
+pub const BOOK_FONT: &str = "\"Iowan Old Style\", \"Palatino Linotype\", Palatino, \"Book Antiqua\", Georgia, serif";
+
 impl Default for ReaderSettings {
     fn default() -> Self {
         ReaderSettings {
             font_size: 19,
-            font: "Georgia, serif".into(),
+            font: BOOK_FONT.into(),
             theme: "auto".into(),
             line_height: 1.6,
             playback_rate: 1.0,

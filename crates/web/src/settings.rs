@@ -204,7 +204,7 @@ pub fn SettingsPage() -> impl IntoView {
                 <label class="field">
                     <span>"Theme"</span>
                     <select on:change=move |ev| s.update(|x| x.reader.theme = event_target_value(&ev))>
-                        {["auto", "light", "sepia", "dark"].map(|t| view! {
+                        {["auto", "light", "sepia", "gray", "dark"].map(|t| view! {
                             <option value=t selected=move || s.with(|x| x.reader.theme == t)>{t}</option>
                         })}
                     </select>

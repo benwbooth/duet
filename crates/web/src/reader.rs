@@ -120,6 +120,8 @@ pub fn Reader(id: i64) -> impl IntoView {
     let pairs = RwSignal::new(Vec::<(i64, i64)>::new());
     let prefs = RwSignal::new(Settings::default().reader);
     let editions_open = RwSignal::new(false);
+    // Bars and buttons fade away while you read; tap the middle of the page to bring them back.
+    let chrome_hidden = RwSignal::new(false);
     let view_open = RwSignal::new(false);
 
     let chapter = RwSignal::new(usize::MAX);
@@ -206,8 +208,15 @@ pub fn Reader(id: i64) -> impl IntoView {
     .into_js_value()
     .unchecked_into::<js_sys::Function>();
     let pager_page = Closure::<dyn Fn(u32, u32, bool)>::new(move |p, n, two| {
+        let (before, _) = page_info.get_untracked();
         page_info.set((p, n));
         spread_on.set(two);
+        // Turning a page means you're reading: get the chrome out of the way.
+        if p != before {
+            chrome_hidden.set(true);
+            view_open.set(false);
+            editions_open.set(false);
+        }
     })
         .into_js_value()
         .unchecked_into::<js_sys::Function>();
@@ -347,7 +356,12 @@ pub fn Reader(id: i64) -> impl IntoView {
                     crate::highlight(&el, n as i32, false);
                 }
                 seek_to(span.track, span.start);
+                return;
             }
+        }
+        // A plain tap on the page shows or hides the bars.
+        if crate::selected_text().is_empty() {
+            chrome_hidden.update(|h| *h = !*h);
         }
     };
 
@@ -487,9 +501,21 @@ pub fn Reader(id: i64) -> impl IntoView {
     };
 
     view! {
-        <div class="reader" class:paged-mode=paged class:has-player=move || audio_asset.get().is_some() style=move || {
+        <div class="reader" class:paged-mode=paged class:has-player=move || audio_asset.get().is_some()
+            class:chrome-hidden=move || chrome_hidden.get()
+            on:mousemove=move |ev: web_sys::MouseEvent| {
+                // On a desktop, moving toward the top or bottom edge brings the bars back.
+                let h = window().inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(800.0);
+                let y = ev.client_y() as f64;
+                if chrome_hidden.get_untracked() && (y < 70.0 || y > h - 150.0) {
+                    chrome_hidden.set(false);
+                }
+            }
+            style=move || {
             let p = prefs.get();
-            format!("--font-size:{}px;--line-height:{};--font:{}", font_size.get(), p.line_height, p.font)
+            // Earlier versions saved plain Georgia as the default; read that as the book faces.
+            let font = if p.font == "Georgia, serif" { duet_common::BOOK_FONT.to_string() } else { p.font.clone() };
+            format!("--font-size:{}px;--line-height:{};--font:{}", font_size.get(), p.line_height, font)
         } data-theme=move || prefs.get().theme>
             <header class="reader-bar">
                 <a class="back" href=format!("#/work/{id}") aria-label="Back">"‹"</a>
@@ -516,6 +542,23 @@ pub fn Reader(id: i64) -> impl IntoView {
                         <div class="segmented">
                             <button title="Smaller text" on:click=move |_| font_size.update(|f| *f = (*f - 1).max(12))>"A−"</button>
                             <button title="Larger text" on:click=move |_| font_size.update(|f| *f = (*f + 1).min(32))>"A+"</button>
+                        </div>
+                    </div>
+                    <div class="view-row">
+                        <span>"Page"</span>
+                        <div class="swatches">
+                            {[("auto", "Match system"), ("light", "White"), ("sepia", "Sepia"), ("gray", "Gray"), ("dark", "Night")].map(|(t, label)| view! {
+                                <button class=format!("swatch swatch-{t}") class:active=move || prefs.with(|p| p.theme == t) title=label aria-label=label
+                                    on:click=move |_| {
+                                        prefs.update(|p| p.theme = t.into());
+                                        spawn_local(async move {
+                                            if let Ok(mut s) = api::get::<Settings>("/api/settings").await {
+                                                s.reader.theme = t.into();
+                                                let _ = api::put::<_, Settings>("/api/settings", &s).await;
+                                            }
+                                        });
+                                    }>{if t == "auto" { "A" } else { "" }}</button>
+                            })}
                         </div>
                     </div>
                     <div class="view-row">
@@ -615,6 +658,27 @@ pub fn Reader(id: i64) -> impl IntoView {
                     <div class="bookview" class:paged=paged class:images=l.mode == ReadMode::Images node_ref=book>
                         <article class="page" class:synced=move || !sync.get().is_empty() node_ref=page
                             inner_html=move || html.get() on:click=on_page_click></article>
+                    <Show when=move || paged() && l.mode != ReadMode::Images>
+                        <div class="running-head" aria-hidden="true">
+                            <span class="rh-book">{move || work.get().map(|w| w.title)}</span>
+                            <span class="rh-chapter">{move || {
+                                let c = chapter.get();
+                                layout.get().and_then(|l| l.toc.iter().rev().find(|t| t.chapter <= c).map(|t| t.title.clone()))
+                            }}</span>
+                        </div>
+                        <div class="folio" aria-hidden="true">
+                            {move || {
+                                let (p, n) = page_info.get();
+                                let left = n.saturating_sub(p);
+                                let rest = match left {
+                                    0 => "Last page in chapter".to_string(),
+                                    1 => "1 page left in chapter".to_string(),
+                                    k => format!("{k} pages left in chapter"),
+                                };
+                                format!("{p} of {n} · {rest}")
+                            }}
+                        </div>
+                    </Show>
                     </div>
                     <div class="chapter-nav">
                         <button disabled=move || chapter.get() == 0 || chapter.get() == usize::MAX

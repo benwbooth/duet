@@ -824,3 +824,90 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 @media (prefers-color-scheme: dark) {
   .reader[data-theme="auto"] .page img[class*="black-on-transparent"] { filter: invert(1) brightness(0.9); }
 }
+
+/* ---------------------------------------------------------------------------------------------
+   The page, set like a printed book. */
+.reader {
+  --page-bg: #fbf8f2; --page-text: #26211c; --page-muted: #8a7f73; --now: #fbe7a1;
+}
+.reader[data-theme="light"] { --page-bg: #ffffff; --page-text: #1f1f1f; --page-muted: #8c8c8c; --now: #ffeaa0; }
+.reader[data-theme="sepia"] { --page-bg: #f3e9d4; --page-text: #4a3a28; --page-muted: #9a8669; --now: #f0d28a; }
+.reader[data-theme="gray"] { --page-bg: #4a4a4c; --page-text: #e8e6e3; --page-muted: #a9a7a3; --now: #6b5d2f; }
+.reader[data-theme="dark"] { --page-bg: #121212; --page-text: #cfcac3; --page-muted: #777069; --now: #4b3e17; }
+@media (prefers-color-scheme: dark) {
+  .reader[data-theme="auto"] { --page-bg: #161412; --page-text: #d6cfc5; --page-muted: #7c736a; --now: #4b3e17; }
+}
+.reader .bookview { background: var(--page-bg); color: var(--page-text); }
+.reader.paged-mode { background: color-mix(in srgb, var(--page-bg) 82%, #000 18%); }
+@media (prefers-color-scheme: light) { .reader.paged-mode { background: color-mix(in srgb, var(--page-bg) 90%, #6b5a44 10%); } }
+
+.bookview .page {
+  font-family: var(--font, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif);
+  font-size: var(--font-size); line-height: var(--line-height); color: var(--page-text);
+  font-kerning: normal; font-variant-ligatures: common-ligatures; font-feature-settings: "kern", "liga", "onum";
+  text-rendering: optimizeLegibility; widows: 2; orphans: 2;
+}
+/* Book paragraphs: indented, no gaps, except the first after a heading or break. */
+.bookview .page p { margin: 0; text-indent: 1.4em; text-align: justify; hyphens: auto; }
+.bookview .page :is(h1, h2, h3, h4, h5, h6, hr, header, figure, blockquote, img, section > :first-child) + p,
+.bookview .page section > p:first-of-type, .bookview .page p:first-child { text-indent: 0; }
+.bookview .page blockquote { margin: 0.9em 1.6em; font-size: 0.96em; }
+.bookview .page blockquote p { text-indent: 0; }
+.bookview .page :is(h1, h2, h3, h4) {
+  font-family: inherit; text-align: center; font-weight: 500; letter-spacing: 0.04em; line-height: 1.25;
+  margin: 2.2em 0 1.4em; break-after: avoid; color: var(--page-text);
+}
+.bookview .page h1 { font-size: 1.6em; }
+.bookview .page h2 { font-size: 1.3em; font-variant: small-caps; letter-spacing: 0.08em; }
+.bookview .page h3 { font-size: 1.1em; font-variant: small-caps; }
+.bookview .page hr { border: 0; text-align: center; margin: 1.4em 0; }
+.bookview .page hr::after { content: "⁂"; color: var(--page-muted); letter-spacing: 0.3em; }
+.bookview .page img { display: block; margin: 1em auto; max-width: 100%; height: auto; }
+.bookview.paged .page img { max-height: calc(var(--col-h, 60vh) - 2.5em); width: auto; object-fit: contain; }
+.bookview.paged .page figure { max-height: var(--col-h, 60vh); margin: 0 0 0.6em; }
+.bookview.paged .page figure.full-page, .bookview.paged .page [epub\:type~="z3998:frontispiece"] { display: flex; flex-direction: column; justify-content: center; height: var(--col-h, 60vh); }
+.bookview .page figure { margin: 1.2em 0; text-align: center; break-inside: avoid; }
+.bookview .page figcaption { font-size: 0.85em; color: var(--page-muted); margin-top: 0.4em; }
+.bookview .page a { color: inherit; text-decoration-color: var(--page-muted); }
+.bookview .page abbr { text-decoration: none; }
+.bookview .page ::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+/* The first paragraph of a chapter opens with a drop cap. */
+.bookview .page :is(h1, h2, h3) + p::first-letter, .bookview .page header + p::first-letter {
+  float: left; font-size: 3.1em; line-height: 0.85; padding: 0.06em 0.08em 0 0; font-weight: 500; color: var(--page-text);
+}
+/* Title pages from Standard Ebooks and friends: centre everything. */
+.bookview .page section[epub\:type~="titlepage"], .bookview .page [id="titlepage"], .bookview .page [epub\:type~="halftitlepage"] {
+  text-align: center; display: flex; flex-direction: column; justify-content: center; min-height: 70%; break-after: column;
+}
+.bookview .page [id="titlepage"] img { max-height: min(55vh, calc(var(--col-h, 60vh) - 8em)); }
+.bookview .page .s.now { background: var(--now); box-shadow: 0 0 0 2px var(--now); border-radius: 3px; }
+
+/* Paged: wider margins, a running head and page numbers, like a printed page. */
+.bookview.paged .page { padding-top: 3.4rem; padding-bottom: 3rem; }
+.running-head, .folio {
+  position: absolute; left: 0; right: 0; z-index: 4; pointer-events: none; display: flex; justify-content: center; gap: 2rem;
+  font: 500 0.72rem/1 var(--sans); letter-spacing: 0.12em; text-transform: uppercase; color: var(--page-muted);
+}
+.running-head { top: 1.3rem; padding: 0 3rem; }
+.running-head span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+.running-head .rh-book { display: none; }
+.bookview.spread ~ .running-head .rh-book, .bookview.spread .running-head .rh-book { display: inline; }
+.bookview.spread .running-head { justify-content: space-between; padding: 0 4.5rem; }
+.folio { bottom: 1.1rem; text-transform: none; letter-spacing: 0.02em; font-size: 0.75rem; }
+
+/* Chrome that gets out of the way. */
+.reader-bar, .player, .assistant-buttons, .reader.paged-mode .chapter-nav {
+  transition: opacity 0.35s var(--ease-out), transform 0.35s var(--ease-out);
+}
+.reader.chrome-hidden .reader-bar { opacity: 0; transform: translateY(-100%); pointer-events: none; }
+.reader.chrome-hidden .player { opacity: 0; transform: translateY(100%); pointer-events: none; }
+.reader.chrome-hidden .assistant-buttons, .reader.chrome-hidden.paged-mode .chapter-nav { opacity: 0; pointer-events: none; }
+.reader-bar { border-bottom-color: transparent; background: color-mix(in srgb, var(--page-bg) 88%, transparent); }
+.reader-bar .reader-title { text-align: center; font-family: var(--serif); }
+.reader-bar .reader-title small { font-family: var(--sans); }
+
+.swatches { display: flex; gap: 0.4rem; }
+.swatch { width: 30px; height: 30px; min-height: 0; padding: 0; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.15); font-size: 0.7rem; }
+.swatch.active { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
+.swatch-auto { background: linear-gradient(135deg, #fbf8f2 50%, #161412 50%); color: #7b6f63; }
+.swatch-light { background: #ffffff; } .swatch-sepia { background: #f3e9d4; } .swatch-gray { background: #4a4a4c; } .swatch-dark { background: #121212; }
