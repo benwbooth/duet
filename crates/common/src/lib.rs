@@ -314,9 +314,18 @@ impl Default for FreeSources {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AiSettings {
+    /// Where the chat model runs: "local" (OpenAI-compatible server below), "anthropic",
+    /// "openai", "claude_cli" (Claude Code) or "codex_cli" (Codex).
+    pub llm_provider: String,
     pub llm_url: String,
     pub llm_api_key: String,
     pub llm_model: String,
+    pub anthropic_api_key: String,
+    pub anthropic_model: String,
+    pub openai_api_key: String,
+    pub openai_model: String,
+    /// Model for the Claude Code / Codex CLIs; empty uses the tool's own default.
+    pub cli_model: String,
     /// Speech to text: POST {stt_url}/audio/transcriptions
     pub stt_url: String,
     pub stt_model: String,
@@ -339,6 +348,12 @@ pub struct AiSettings {
 impl Default for AiSettings {
     fn default() -> Self {
         AiSettings {
+            llm_provider: "local".into(),
+            anthropic_api_key: String::new(),
+            anthropic_model: "claude-opus-5-5".into(),
+            openai_api_key: String::new(),
+            openai_model: String::new(),
+            cli_model: String::new(),
             llm_url: "http://localhost:11434/v1".into(),
             llm_api_key: String::new(),
             llm_model: "qwen3:14b".into(),
@@ -498,6 +513,9 @@ impl VoiceSetup {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ChatSetup {
     pub nixos: bool,
+    /// The Claude Code and Codex command-line tools are installed.
+    pub claude_cli: bool,
+    pub codex_cli: bool,
     pub gpu: Option<String>,
     pub gpu_vram_gb: Option<u64>,
     pub servers: Vec<DetectedServer>,

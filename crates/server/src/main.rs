@@ -11,6 +11,7 @@ mod free;
 mod images;
 mod jobs;
 mod library;
+mod llm;
 mod qbit;
 mod routes;
 mod setup;
@@ -46,6 +47,8 @@ pub struct AppState {
     pub qbit: qbit::Qbit,
     pub voices: setup::Voices,
     pub pull: ai_setup::Pull,
+    /// How the workers reach this server (for the chat proxy).
+    pub self_url: String,
 }
 
 pub type State = Arc<AppState>;
@@ -73,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         jobs_wake: Notify::new(),
         voices: setup::Voices::default(),
         pull: ai_setup::Pull::default(),
+        self_url: format!("http://127.0.0.1:{}", args.listen.port()),
     });
 
     tokio::spawn(jobs::run(state.clone()));

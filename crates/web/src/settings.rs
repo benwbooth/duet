@@ -378,7 +378,7 @@ fn AiSection(s: RwSignal<Settings>) -> impl IntoView {
     view! {
         <section class="ai">
             <h2>"AI"</h2>
-            <p class="hint">"Everything runs on this computer. A chat model answers your questions, directs the full-cast recordings and tidies up transcripts. Voices and speech recognition come from the Voices section above."</p>
+            <p class="hint">"A chat model answers your questions, plays the characters you talk to, directs the full-cast recordings and tidies up transcripts. Run it on this computer or plug in Claude or Codex. Voices and speech recognition always come from this computer (the Voices section above)."</p>
 
             <ChatModelSetup s/>
 
@@ -418,6 +418,26 @@ fn AiSection(s: RwSignal<Settings>) -> impl IntoView {
     }
 }
 
+/// Where the chat model can run.
+const PROVIDERS: [(&str, &str, &str); 5] = [
+    ("local", "On this computer", "Free and private: Ollama, LM Studio, llama.cpp or vLLM."),
+    ("anthropic", "Claude", "Anthropic's models, with an API key."),
+    ("openai", "OpenAI", "GPT and Codex models, with an API key."),
+    ("claude_cli", "Claude Code", "Your Claude subscription, through the `claude` command."),
+    ("codex_cli", "Codex", "Your ChatGPT subscription, through the `codex` command."),
+];
+
+const CLAUDE_MODELS: [(&str, &str); 4] = [
+    ("claude-opus-5-5", "Claude Opus 5.5 (recommended)"),
+    ("claude-sonnet-5-5", "Claude Sonnet 5.5 (faster, cheaper)"),
+    ("claude-haiku-5-5", "Claude Haiku 5.5 (fastest, cheapest)"),
+    ("claude-fable-5-1", "Claude Fable 5.1 (most capable, priciest)"),
+];
+
+fn provider_of(s: &Settings) -> &str {
+    if s.ai.llm_provider.is_empty() { "local" } else { &s.ai.llm_provider }
+}
+
 /// Models worth suggesting, best first for a 24 GB card that also runs the voices.
 const SUGGESTED: [(&str, &str, f64, &str); 3] = [
     ("qwen3.5:9b", "Recommended", 6.6, "Good, quick answers and a capable casting director. Leaves room on the graphics card for the voices."),
@@ -433,6 +453,21 @@ pub fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
     let testing = RwSignal::new(false);
     let test = RwSignal::new(None::<Result<ChatTest, String>>);
     let toast = toast();
+    let is_local = move || s.with(|x| provider_of(x) == "local");
+    let openai_models = RwSignal::new(Vec::<String>::new());
+    let load_openai = move || {
+        let key = s.with_untracked(|x| x.ai.openai_api_key.clone());
+        if key.is_empty() {
+            toast.show("Add your OpenAI API key first");
+            return;
+        }
+        spawn_local(async move {
+            match api::post::<_, Vec<String>>("/api/ai/models", &serde_json::json!({ "url": "https://api.openai.com/v1", "key": key })).await {
+                Ok(list) => openai_models.set(list),
+                Err(e) => toast.show(e.0),
+            }
+        });
+    };
 
     let scan = move || {
         scanning.set(true);
@@ -502,6 +537,89 @@ pub fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
         <div class="wizard">
             <h3>"Chat model"</h3>
 
+            <div class="choices providers">
+                {PROVIDERS.map(|(id, name, about)| {
+                    let on = move || s.with(|x| provider_of(x) == id);
+                    let missing = move || match id {
+                        "claude_cli" => setup.get().is_some_and(|v| !v.claude_cli),
+                        "codex_cli" => setup.get().is_some_and(|v| !v.codex_cli),
+                        _ => false,
+                    };
+                    view! {
+                        <label class="choice provider" class:on=on class:missing=missing>
+                            <input type="radio" name="llm-provider" prop:checked=on
+                                on:change=move |_| s.update(|x| x.ai.llm_provider = id.to_string())/>
+                            <span><strong>{name}</strong><small>{about}</small>
+                                {move || missing().then(|| view! { <small class="warn">"Not installed on this computer"</small> })}
+                            </span>
+                        </label>
+                    }
+                })}
+            </div>
+            <Show when=move || !is_local()>
+                <p class="hint">"Questions, the passage you're reading and character conversations are sent to this service. Voices still come from this computer."</p>
+            </Show>
+
+            <Show when=move || s.with(|x| x.ai.llm_provider == "anthropic")>
+                <div class="wizard-step">
+                    <div class="step-title"><span class="num">"1"</span>"Connect Claude"</div>
+                    {secret(s, "Anthropic API key", |x| x.ai.anthropic_api_key.clone(), |x, v| x.ai.anthropic_api_key = v)}
+                    <p class="hint">"Create one at "<a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">"console.anthropic.com"</a>"."</p>
+                    <label class="field">
+                        <span>"Model"</span>
+                        <select on:change=move |ev| s.update(|x| x.ai.anthropic_model = event_target_value(&ev))>
+                            {CLAUDE_MODELS.map(|(id, label)| view! {
+                                <option value=id selected=move || s.with(|x| x.ai.anthropic_model == id)>{label}</option>
+                            })}
+                        </select>
+                    </label>
+                </div>
+            </Show>
+
+            <Show when=move || s.with(|x| x.ai.llm_provider == "openai")>
+                <div class="wizard-step">
+                    <div class="step-title"><span class="num">"1"</span>"Connect OpenAI"</div>
+                    {secret(s, "OpenAI API key", |x| x.ai.openai_api_key.clone(), |x, v| x.ai.openai_api_key = v)}
+                    <p class="hint">"Create one at "<a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">"platform.openai.com"</a>"."</p>
+                    <div class="field">
+                        <span>"Model"</span>
+                        {move || {
+                            let list = openai_models.get();
+                            if list.is_empty() {
+                                view! {
+                                    <input type="text" placeholder="Model name" prop:value=move || s.with(|x| x.ai.openai_model.clone())
+                                        on:input=move |ev| s.update(|x| x.ai.openai_model = event_target_value(&ev))/>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <select on:change=move |ev| s.update(|x| x.ai.openai_model = event_target_value(&ev))>
+                                        <option value="" selected=move || s.with(|x| x.ai.openai_model.is_empty())>"Choose a model"</option>
+                                        {list.into_iter().map(|m| {
+                                            let (value, label, current) = (m.clone(), m.clone(), m);
+                                            view! { <option value=value selected=move || s.with(|x| x.ai.openai_model == current)>{label}</option> }
+                                        }).collect_view()}
+                                    </select>
+                                }.into_any()
+                            }
+                        }}
+                        <button class="small" on:click=move |_| load_openai()>"Load models"</button>
+                    </div>
+                </div>
+            </Show>
+
+            <Show when=move || s.with(|x| x.ai.llm_provider == "claude_cli" || x.ai.llm_provider == "codex_cli")>
+                <div class="wizard-step">
+                    <div class="step-title"><span class="num">"1"</span>"Use your subscription"</div>
+                    <p>{move || if s.with(|x| x.ai.llm_provider == "claude_cli") {
+                        "duet runs Claude Code (the `claude` command) with no tools, in an empty folder. Sign in once in a terminal with `claude` if you haven't."
+                    } else {
+                        "duet runs Codex (the `codex` command) read-only, in an empty folder. Sign in once in a terminal with `codex login` if you haven't."
+                    }}</p>
+                    {text(s, "Model (optional)", "Leave empty for the tool's default.", |x| x.ai.cli_model.clone(), |x, v| x.ai.cli_model = v)}
+                </div>
+            </Show>
+
+            <Show when=is_local>
             <div class="wizard-step">
                 <div class="step-title"><span class="num">"1"</span>"A program that runs the model"</div>
                 {move || match setup.get() {
@@ -555,7 +673,9 @@ pub fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
                 </button>
             </div>
 
-            <Show when=move || selected().is_some()>
+            </Show>
+
+            <Show when=move || is_local() && selected().is_some()>
                 <div class="wizard-step">
                     <div class="step-title"><span class="num">"2"</span>"Choose a model"</div>
                     {move || {
@@ -619,8 +739,11 @@ pub fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
                     }}
                 </div>
 
+            </Show>
+
+            <Show when=move || !is_local() || selected().is_some()>
                 <div class="wizard-step">
-                    <div class="step-title"><span class="num">"3"</span>"Try it"</div>
+                    <div class="step-title"><span class="num">"{move || if is_local() { "3" } else { "2" }}"</span>"Try it"</div>
                     <p class="muted">{move || format!("Asks {} a quick question to check it works and how fast it is. The first answer takes longer while the model loads.", s.with(|x| x.ai.llm_model.clone()))}</p>
                     <button class="primary" disabled=move || testing.get() on:click=run_test>
                         {move || if testing.get() { "Waiting for an answer…" } else { "Ask a test question" }}
@@ -628,7 +751,8 @@ pub fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
                     {move || test.get().map(|r| match r {
                         Ok(t) => {
                             // A token is roughly three quarters of a word.
-                            let verdict = match t.tokens_per_second.map(|tps| tps * 0.75) {
+                            // Speed only means something for a model on this computer; services and CLIs vary.
+                            let verdict = match t.tokens_per_second.map(|tps| tps * 0.75).filter(|_| is_local()) {
                                 Some(wps) if wps >= 10.0 => format!("About {wps:.0} words a second: quick enough for conversation."),
                                 Some(wps) => format!("About {wps:.0} words a second: usable, but a smaller model would feel snappier."),
                                 None => format!("Answered in {:.1} s.", t.seconds),

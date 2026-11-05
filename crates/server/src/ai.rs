@@ -2,7 +2,7 @@
 //! is, and text to speech in the narrator's or a character's voice. All three are
 //! OpenAI-compatible HTTP endpoints configured in settings.
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use base64::Engine;
 use duet_common::{AskReply, AskRequest, AssetKind, CastMember};
 use serde_json::json;
@@ -81,9 +81,6 @@ async fn recent_text(state: &State, work_id: i64, chapter: usize, sentence: usiz
 
 pub async fn ask(state: &State, req: AskRequest) -> anyhow::Result<AskReply> {
     let ai = state.settings.read().await.ai.clone();
-    if ai.llm_url.is_empty() {
-        bail!("No language model configured (Settings → AI)");
-    }
     let work = match req.work_id {
         Some(id) => db::work_detail(&state.db, id).await?,
         None => None,
@@ -125,27 +122,9 @@ pub async fn ask(state: &State, req: AskRequest) -> anyhow::Result<AskReply> {
     } else {
         system.push_str("You are a helpful reading companion. Be concise: answers are read aloud.");
     }
-    let mut messages = vec![json!({ "role": "system", "content": system })];
-    for turn in &req.history {
-        messages.push(json!({ "role": turn.role, "content": turn.content }));
-    }
-    messages.push(json!({ "role": "user", "content": req.question }));
-    let resp: serde_json::Value = state
-        .http
-        .post(format!("{}/chat/completions", ai.llm_url.trim_end_matches('/')))
-        .bearer_auth(&ai.llm_api_key)
-        .json(&json!({ "model": ai.llm_model, "messages": messages }))
-        .send()
-        .await
-        .context("language model unreachable")?
-        .error_for_status()?
-        .json()
-        .await?;
-    let mut answer = resp["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string();
-    // Reasoning models may include their thinking inline.
-    if let Some(end) = answer.find("</think>") {
-        answer = answer[end + "</think>".len()..].trim().to_string();
-    }
+    let mut turns: Vec<crate::llm::Turn> = req.history.iter().map(|t| (t.role.clone(), t.content.clone())).collect();
+    turns.push(("user".into(), req.question.clone()));
+    let mut answer = crate::llm::chat(state, &system, &turns).await?;
     // Characters open with an acting direction ("[wry, a little tired]") for the voice engine;
     // it's spoken, not shown.
     let spoken = answer.clone();

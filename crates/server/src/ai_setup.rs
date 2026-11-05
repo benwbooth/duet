@@ -65,6 +65,8 @@ pub async fn detect(state: &State) -> ChatSetup {
     let gpu = setup::gpu();
     ChatSetup {
         nixos: std::path::Path::new("/etc/NIXOS").exists(),
+        claude_cli: on_path("claude"),
+        codex_cli: on_path("codex"),
         gpu: gpu.as_ref().map(|g| g.0.clone()),
         gpu_vram_gb: gpu.map(|g| g.1),
         servers,
@@ -134,39 +136,18 @@ pub async fn pull(state: &State, url: &str, model: &str) -> anyhow::Result<()> {
 
 /// Asks the configured model one short question and times it.
 pub async fn test(state: &State) -> anyhow::Result<ChatTest> {
-    let ai = state.settings.read().await.ai.clone();
-    if ai.llm_model.trim().is_empty() {
-        bail!("Choose a model first");
-    }
     let started = std::time::Instant::now();
-    let resp: serde_json::Value = state
-        .http
-        .post(format!("{}/chat/completions", ai.llm_url.trim_end_matches('/')))
-        .bearer_auth(&ai.llm_api_key)
-        .timeout(Duration::from_secs(180))
-        .json(&json!({
-            "model": ai.llm_model,
-            "messages": [
-                { "role": "system", "content": "Answer in one short sentence. Do not think out loud." },
-                { "role": "user", "content": "Who wrote Treasure Island, and what is it about?" },
-            ],
-        }))
-        .send()
-        .await
-        .context("the model server isn't answering")?
-        .error_for_status()
-        .context("the model server refused the request (is the model name right?)")?
-        .json()
-        .await?;
+    let answer = crate::llm::chat(
+        state,
+        "Answer in one short sentence.",
+        &[("user".into(), "Who wrote Treasure Island, and what is it about?".into())],
+    )
+    .await?;
     let seconds = started.elapsed().as_secs_f64();
-    let mut answer = resp["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string();
-    if let Some(end) = answer.find("</think>") {
-        answer = answer[end + "</think>".len()..].to_string();
-    }
-    let tokens = resp["usage"]["completion_tokens"].as_f64();
-    Ok(ChatTest {
-        answer: answer.trim().to_string(),
-        seconds,
-        tokens_per_second: tokens.map(|t| t / seconds.max(0.01)),
-    })
+    // Roughly four characters to a token.
+    Ok(ChatTest { tokens_per_second: Some(answer.len() as f64 / 4.0 / seconds.max(0.01)), answer, seconds })
+}
+
+fn on_path(cmd: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()))
 }

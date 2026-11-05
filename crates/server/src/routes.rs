@@ -58,6 +58,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/search", get(search))
         .route("/downloads", get(list_downloads).post(new_download))
         .route("/ai/models", post(ai_models))
+        .route("/ai/v1/chat/completions", post(chat_proxy))
         .route("/ai/setup", get(ai_detect))
         .route("/ai/pull", post(ai_pull))
         .route("/ai/test", post(ai_test))
@@ -464,4 +465,23 @@ async fn page_image(
     .await?
     .map_err(|e| ApiError::not_found(&format!("page ({e:#})")))?;
     Ok(([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "max-age=604800".to_string())], bytes).into_response())
+}
+
+/// An OpenAI-compatible endpoint in front of whichever chat model is set up, so the Python
+/// workers can use Claude, OpenAI or the CLIs without knowing about them.
+async fn chat_proxy(AxState(s): AxState<State>, Json(body): Json<serde_json::Value>) -> ApiResult<Json<serde_json::Value>> {
+    let mut system = String::new();
+    let mut turns = Vec::new();
+    for m in body["messages"].as_array().into_iter().flatten() {
+        let content = m["content"].as_str().unwrap_or_default().to_string();
+        match m["role"].as_str().unwrap_or("user") {
+            "system" => system.push_str(&content),
+            role => turns.push((role.to_string(), content)),
+        }
+    }
+    let answer = crate::llm::chat(&s, &system, &turns).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+    Ok(Json(serde_json::json!({
+        "object": "chat.completion",
+        "choices": [{ "index": 0, "message": { "role": "assistant", "content": answer }, "finish_reason": "stop" }],
+    })))
 }

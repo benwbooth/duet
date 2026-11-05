@@ -158,6 +158,7 @@ async fn run_one(
             let ebook = readable(&work.assets, &state.data_dir).context("needs a readable ebook (EPUB/text); convert it first")?;
             write_book_json(state, ebook, &dir).await?;
             let s = state.settings.read().await.ai.clone();
+            let llm = llm_args(state, &s);
             let out = downloads::import_dir(state, AssetKind::Audiobook).await.join(sanitize(&format!(
                 "{} - {} (full cast)",
                 work.author.as_deref().unwrap_or("Unknown"),
@@ -168,7 +169,7 @@ async fn run_one(
             worker(state, id, "full_cast.py", &dir, &[
                 "--book", "book.json", "--title", &work.title, "--author", work.author.as_deref().unwrap_or(""),
                 "--out-dir", &out_s, "--cast", "cast.json", "--sync", "sync.json",
-                "--llm-url", &s.llm_url, "--llm-model", &s.llm_model, "--llm-key", &s.llm_api_key,
+                "--llm-url", &llm.0, "--llm-model", &llm.1, "--llm-key", &llm.2,
                 "--device", &s.device,
             ])
             .await?;
@@ -193,6 +194,7 @@ async fn run_one(
             let audio = first(&work.assets, AssetKind::Audiobook).context("needs an audiobook")?;
             write_audio_json(state, audio, &dir).await?;
             let s = state.settings.read().await.ai.clone();
+            let llm = llm_args(state, &s);
             let out = downloads::import_dir(state, AssetKind::Ebook)
                 .await
                 .join(sanitize(&format!("{} - {} (transcribed).epub", work.author.as_deref().unwrap_or("Unknown"), work.title)));
@@ -202,7 +204,7 @@ async fn run_one(
                 "--audio", "audio.json", "--out", &out_s, "--title", &work.title,
                 "--author", work.author.as_deref().unwrap_or(""), "--device", &s.device,
                 "--model", &whisper_model(&s.stt_model),
-                "--llm-url", &s.llm_url, "--llm-model", &s.llm_model, "--llm-key", &s.llm_api_key,
+                "--llm-url", &llm.0, "--llm-model", &llm.1, "--llm-key", &llm.2,
             ])
             .await?;
             if let Some(w) = library::import_path(state, &out, AssetKind::Ebook, "generated").await?
@@ -216,6 +218,16 @@ async fn run_one(
             enqueue_pair(state, JobKind::Align, work_id, Some(ebook_id), Some(audio.id)).await?;
             Ok("Ebook created; syncing queued".into())
         }
+    }
+}
+
+/// Chat model for the workers: a local server directly, anything else through duet's own
+/// OpenAI-compatible proxy (/api/ai/v1), which routes to Claude, OpenAI or the CLIs.
+fn llm_args(state: &State, ai: &duet_common::AiSettings) -> (String, String, String) {
+    if ai.llm_provider == "local" || ai.llm_provider.is_empty() {
+        (ai.llm_url.clone(), ai.llm_model.clone(), ai.llm_api_key.clone())
+    } else {
+        (format!("{}/api/ai/v1", state.self_url), "duet".into(), String::new())
     }
 }
 
