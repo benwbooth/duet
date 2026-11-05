@@ -71,52 +71,43 @@ fn group(results: Vec<SearchResult>) -> Vec<BookGroup> {
     groups
 }
 
-/// One column of results (ebooks or audiobooks), grouped by book.
+/// The ebook or audiobook options for one book.
 fn result_column(
     heading: &'static str,
     path: &'static str,
-    results: Vec<SearchResult>,
+    options: Vec<SearchResult>,
     download: impl Fn(SearchResult) + Copy + 'static,
 ) -> impl IntoView {
-    let groups = group(results);
-    let count = groups.len();
+    let count = options.len();
     view! {
-        <section class="result-column">
-            <h2>{crate::icon(path)}{heading}<span class="count">{count}</span></h2>
-            {(count == 0).then(|| view! { <p class="muted">"None found."</p> })}
-            <ul class="books">
-                {groups.into_iter().map(|g| view! {
-                    <li class="book">
-                        <div class="title">{g.title.clone()}</div>
-                        {g.author.clone().map(|a| view! { <div class="author">{a}</div> })}
-                        <ul class="options">
-                            {g.options.into_iter().map(|res| {
-                                let r2 = res.clone();
-                                // Archive items are separate scans/editions, and indexer releases have
-                                // their own names: show them so you know what you're getting.
-                                let label = if res.source == "Internet Archive" {
-                                    res.info_url.as_deref().and_then(|u| u.rsplit('/').next()).map(str::to_string)
-                                } else if res.author.is_none() {
-                                    Some(res.title.clone())
-                                } else {
-                                    None
-                                };
-                                view! {
-                                    <li>
-                                        <div class="meta">
-                                            <span class="source">{res.source.clone()}</span>
-                                            {res.format.clone().map(|f| view! { <span>{f.to_uppercase()}</span> })}
-                                            {res.size.map(|s| view! { <span>{size_label(s)}</span> })}
-                                            {res.seeders.map(|s| view! { <span>{format!("{s} seeders")}</span> })}
-                                            {label.map(|l| view! { <span class="release">{l}</span> })}
-                                            {res.info_url.clone().map(|u| view! { <a href=u target="_blank" rel="noopener">"Details"</a> })}
-                                        </div>
-                                        <button class="small" on:click=move |_| download(r2.clone())>{crate::icon(crate::icons::DOWNLOAD)}"Get"</button>
-                                    </li>
-                                }
-                            }).collect_view()}
-                        </ul>
-                    </li>
+        <section class="result-column" class:empty-col=count == 0>
+            <h3>{crate::icon(path)}{heading}{(count > 0).then(|| view! { <span class="count">{count}</span> })}</h3>
+            {(count == 0).then(|| view! { <p class="muted">"Not found"</p> })}
+            <ul class="options">
+                {options.into_iter().map(|res| {
+                    let r2 = res.clone();
+                    // Archive items are separate scans/editions, and indexer releases have their own
+                    // names: show them so you know what you're getting.
+                    let label = if res.source == "Internet Archive" {
+                        res.info_url.as_deref().and_then(|u| u.rsplit('/').next()).map(str::to_string)
+                    } else if res.author.is_none() {
+                        Some(res.title.clone())
+                    } else {
+                        None
+                    };
+                    view! {
+                        <li>
+                            <div class="meta">
+                                <span class="source">{res.source.clone()}</span>
+                                {res.format.clone().map(|f| view! { <span>{f.to_uppercase()}</span> })}
+                                {res.size.map(|s| view! { <span>{size_label(s)}</span> })}
+                                {res.seeders.map(|s| view! { <span>{format!("{s} seeders")}</span> })}
+                                {label.map(|l| view! { <span class="release">{l}</span> })}
+                                {res.info_url.clone().map(|u| view! { <a href=u target="_blank" rel="noopener">"Details"</a> })}
+                            </div>
+                            <button class="small" on:click=move |_| download(r2.clone())>{crate::icon(crate::icons::DOWNLOAD)}"Get"</button>
+                        </li>
+                    }
                 }).collect_view()}
             </ul>
         </section>
@@ -250,16 +241,24 @@ pub fn Discover() -> impl IntoView {
             {(r.results.is_empty() && searching()).then(|| view! {
                 <div class="search-wait"><span class="spinner big"></span><p>"Searching the libraries…"</p></div>
             })}
-            {(!r.results.is_empty()).then(|| {
-                let of = |k: AssetKind| r.results.iter().filter(|x| x.kind == k).cloned().collect::<Vec<_>>();
-                let (ebooks, audio) = (of(AssetKind::Ebook), of(AssetKind::Audiobook));
-                view! {
-                    <div class="result-columns">
-                        {result_column("Ebooks", crate::icons::BOOK, ebooks, download)}
-                        {result_column("Audiobooks", crate::icons::HEADPHONES, audio, download)}
-                    </div>
-                }
-            })}
+            <div class="found-books">
+                {group(r.results).into_iter().map(|g| {
+                    let of = |k: AssetKind| g.options.iter().filter(|o| o.kind == k).cloned().collect::<Vec<_>>();
+                    let (ebooks, audio) = (of(AssetKind::Ebook), of(AssetKind::Audiobook));
+                    view! {
+                        <article class="found-book">
+                            <header>
+                                <h2>{g.title.clone()}</h2>
+                                {g.author.clone().map(|a| view! { <p class="author">{a}</p> })}
+                            </header>
+                            <div class="result-columns">
+                                {result_column("Ebook", crate::icons::BOOK, ebooks, download)}
+                                {result_column("Audiobook", crate::icons::HEADPHONES, audio, download)}
+                            </div>
+                        </article>
+                    }
+                }).collect_view()}
+            </div>
         })}
 
         <h2>"Downloads"</h2>

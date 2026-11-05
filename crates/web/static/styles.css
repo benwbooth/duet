@@ -753,12 +753,22 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .big-search .icon { color: var(--muted); }
 .big-search input { flex: 1; border: 0; background: none; box-shadow: none !important; min-height: 52px; font-size: 1.1rem; padding-left: 0; }
 .big-search .spinner { color: var(--accent); }
-.result-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1.6rem; align-items: start; margin-top: 0.6rem; }
-@media (max-width: 900px) { .result-columns { grid-template-columns: 1fr; } }
-.result-column h2 { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.8rem; font-size: 1.15rem; }
-.result-column h2 .icon { color: var(--accent); }
-.result-column .count { font: 600 0.75rem var(--sans); background: var(--surface-2); color: var(--muted); border-radius: 99px; padding: 0.1rem 0.5rem; }
-.result-column .book .title { font-weight: 600; font-family: var(--serif); font-size: 1.02rem; }
-.result-column .book .author { color: var(--muted); font-size: 0.88rem; }
-.result-column .options li { justify-content: space-between; }
-.result-column .options .meta { flex: 1; }
+.found-books { display: grid; gap: 1.2rem; margin-top: 0.6rem; }
+.found-book {
+  padding: 1.1rem 1.2rem; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--line);
+  box-shadow: var(--shadow-sm); animation: rise 0.45s var(--ease-out) both;
+}
+.found-book header h2 { margin: 0; font-size: 1.3rem; }
+.found-book header .author { margin: 0.1rem 0 0.9rem; color: var(--muted); }
+.result-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; }
+@media (max-width: 760px) { .result-columns { grid-template-columns: 1fr; } }
+.result-column { padding: 0.8rem; border-radius: 11px; background: var(--bg-2); min-width: 0; }
+.result-column.empty-col { opacity: 0.6; }
+.result-column h3 { display: flex; align-items: center; gap: 0.45rem; margin: 0 0 0.5rem; font: 600 0.95rem var(--sans); }
+.result-column h3 .icon { color: var(--accent); width: 18px; height: 18px; }
+.result-column .count { font-size: 0.72rem; background: var(--surface); color: var(--muted); border-radius: 99px; padding: 0.05rem 0.45rem; }
+.result-column .muted { margin: 0; font-size: 0.88rem; }
+.result-column .options { margin: 0; }
+.result-column .options li { justify-content: space-between; border-top: 1px solid var(--line); }
+.result-column .options li:first-child { border-top: 0; }
+.result-column .options .meta { flex: 1; min-width: 0; }
