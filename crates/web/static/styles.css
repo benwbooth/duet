@@ -758,8 +758,9 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
   padding: 1.1rem 1.2rem; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--line);
   box-shadow: var(--shadow-sm); animation: rise 0.45s var(--ease-out) both;
 }
+.found-book header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.8rem; }
 .found-book header h2 { margin: 0; font-size: 1.3rem; }
-.found-book header .author { margin: 0.1rem 0 0.9rem; color: var(--muted); }
+.found-book header .author { margin: 0.1rem 0 0; color: var(--muted); }
 .result-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; }
 @media (max-width: 760px) { .result-columns { grid-template-columns: 1fr; } }
 .result-column { padding: 0.8rem; border-radius: 11px; background: var(--bg-2); min-width: 0; }
@@ -772,3 +773,9 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .result-column .options li { justify-content: space-between; border-top: 1px solid var(--line); }
 .result-column .options li:first-child { border-top: 0; }
 .result-column .options .meta { flex: 1; min-width: 0; }
+
+.result-column .option { cursor: pointer; gap: 0.6rem; padding: 0.5rem 0.4rem; border-radius: 8px; justify-content: flex-start !important; transition: background 0.15s; }
+.result-column .option:hover { background: var(--surface); }
+.result-column .option.picked { background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--accent); border-top-color: transparent; }
+.radio { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line); flex: none; transition: border 0.15s; }
+.option.picked .radio { border: 5px solid var(--accent); animation: pop 0.3s var(--ease-spring); }

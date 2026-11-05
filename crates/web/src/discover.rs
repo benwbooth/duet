@@ -21,6 +21,7 @@ fn poll(every_ms: u64, f: impl Fn() + Clone + 'static) {
 }
 
 /// One book in the search results, with every way to get it.
+#[derive(Clone)]
 struct BookGroup {
     key: String,
     title: String,
@@ -71,21 +72,57 @@ fn group(results: Vec<SearchResult>) -> Vec<BookGroup> {
     groups
 }
 
-/// The ebook or audiobook options for one book.
-fn result_column(
-    heading: &'static str,
-    path: &'static str,
-    options: Vec<SearchResult>,
-    download: impl Fn(SearchResult) + Copy + 'static,
-) -> impl IntoView {
+/// One book in the results: pick an ebook, an audiobook or both, then get them together.
+#[component]
+fn FoundBook(g: BookGroup, download: impl Fn(SearchResult) + Copy + Send + Sync + 'static) -> impl IntoView {
+    let of = |k: AssetKind| g.options.iter().filter(|o| o.kind == k).cloned().collect::<Vec<_>>();
+    let (ebooks, audio) = (of(AssetKind::Ebook), of(AssetKind::Audiobook));
+    // The best of each is picked to start with, so one click gets both.
+    let pick_e = RwSignal::new((!ebooks.is_empty()).then_some(0usize));
+    let pick_a = RwSignal::new((!audio.is_empty()).then_some(0usize));
+    let (e2, a2) = (ebooks.clone(), audio.clone());
+    let get = move |_| {
+        if let Some(i) = pick_e.get_untracked() {
+            download(e2[i].clone());
+        }
+        if let Some(i) = pick_a.get_untracked() {
+            download(a2[i].clone());
+        }
+    };
+    let label = move || match (pick_e.get().is_some(), pick_a.get().is_some()) {
+        (true, true) => "Get ebook and audiobook",
+        (true, false) => "Get ebook",
+        (false, true) => "Get audiobook",
+        (false, false) => "Pick an ebook or audiobook",
+    };
+    view! {
+        <article class="found-book">
+            <header>
+                <div>
+                    <h2>{g.title.clone()}</h2>
+                    {g.author.clone().map(|a| view! { <p class="author">{a}</p> })}
+                </div>
+                <button class="primary" disabled=move || pick_e.get().is_none() && pick_a.get().is_none() on:click=get>
+                    {crate::icon(crate::icons::DOWNLOAD)}{label}
+                </button>
+            </header>
+            <div class="result-columns">
+                {result_column("Ebook", crate::icons::BOOK, ebooks, pick_e)}
+                {result_column("Audiobook", crate::icons::HEADPHONES, audio, pick_a)}
+            </div>
+        </article>
+    }
+}
+
+/// The ebook or audiobook options for one book; click one to pick it, click again to drop it.
+fn result_column(heading: &'static str, path: &'static str, options: Vec<SearchResult>, pick: RwSignal<Option<usize>>) -> impl IntoView {
     let count = options.len();
     view! {
         <section class="result-column" class:empty-col=count == 0>
             <h3>{crate::icon(path)}{heading}{(count > 0).then(|| view! { <span class="count">{count}</span> })}</h3>
             {(count == 0).then(|| view! { <p class="muted">"Not found"</p> })}
             <ul class="options">
-                {options.into_iter().map(|res| {
-                    let r2 = res.clone();
+                {options.into_iter().enumerate().map(|(i, res)| {
                     // Archive items are separate scans/editions, and indexer releases have their own
                     // names: show them so you know what you're getting.
                     let label = if res.source == "Internet Archive" {
@@ -95,17 +132,21 @@ fn result_column(
                     } else {
                         None
                     };
+                    let on = move || pick.get() == Some(i);
                     view! {
-                        <li>
+                        <li class="option" class:picked=on role="radio" aria-checked=move || on().to_string()
+                            on:click=move |_| pick.update(|p| *p = if *p == Some(i) { None } else { Some(i) })>
+                            <span class="radio" aria-hidden="true"></span>
                             <div class="meta">
                                 <span class="source">{res.source.clone()}</span>
                                 {res.format.clone().map(|f| view! { <span>{f.to_uppercase()}</span> })}
                                 {res.size.map(|s| view! { <span>{size_label(s)}</span> })}
                                 {res.seeders.map(|s| view! { <span>{format!("{s} seeders")}</span> })}
                                 {label.map(|l| view! { <span class="release">{l}</span> })}
-                                {res.info_url.clone().map(|u| view! { <a href=u target="_blank" rel="noopener">"Details"</a> })}
+                                {res.info_url.clone().map(|u| view! {
+                                    <a href=u target="_blank" rel="noopener" on:click=|ev| ev.stop_propagation()>"Details"</a>
+                                })}
                             </div>
-                            <button class="small" on:click=move |_| download(r2.clone())>{crate::icon(crate::icons::DOWNLOAD)}"Get"</button>
                         </li>
                     }
                 }).collect_view()}
@@ -242,22 +283,7 @@ pub fn Discover() -> impl IntoView {
                 <div class="search-wait"><span class="spinner big"></span><p>"Searching the libraries…"</p></div>
             })}
             <div class="found-books">
-                {group(r.results).into_iter().map(|g| {
-                    let of = |k: AssetKind| g.options.iter().filter(|o| o.kind == k).cloned().collect::<Vec<_>>();
-                    let (ebooks, audio) = (of(AssetKind::Ebook), of(AssetKind::Audiobook));
-                    view! {
-                        <article class="found-book">
-                            <header>
-                                <h2>{g.title.clone()}</h2>
-                                {g.author.clone().map(|a| view! { <p class="author">{a}</p> })}
-                            </header>
-                            <div class="result-columns">
-                                {result_column("Ebook", crate::icons::BOOK, ebooks, download)}
-                                {result_column("Audiobook", crate::icons::HEADPHONES, audio, download)}
-                            </div>
-                        </article>
-                    }
-                }).collect_view()}
+                {group(r.results).into_iter().map(|g| view! { <FoundBook g download/> }).collect_view()}
             </div>
         })}
 
