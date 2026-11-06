@@ -436,8 +436,7 @@ async function snapshotPage(pager, article, offset) {
     pageCssText = await fetch("styles.css").then((r) => r.text()).catch(() => "");
   }
   const clone = article.cloneNode(true);
-  clone.classList.remove("synced");
-  clone.querySelectorAll(".s.now").forEach((e) => e.classList.remove("now"));
+  // (The read-along highlight stays: it's on the page, so it's on the picture.)
   clone.style.width = `${W}px`;
   // Pictures in the book, and blocks styled by EPUB markup (epub:type, which doesn't survive into
   // the picture's XML as something CSS can match), keep the size and layout they have live.
@@ -467,6 +466,17 @@ async function snapshotPage(pager, article, offset) {
       }
     }
   });
+  // Numbered lists keep their numbers (the items before the page are cut away).
+  for (const ol of clone.querySelectorAll("ol")) {
+    let n = ol.hasAttribute("start") ? parseInt(ol.getAttribute("start"), 10) || 1 : 1;
+    const step = ol.hasAttribute("reversed") ? -1 : 1;
+    for (const li of ol.children) {
+      if (li.tagName !== "LI") continue;
+      if (li.hasAttribute("value")) n = parseInt(li.getAttribute("value"), 10) || n;
+      li.setAttribute("value", String(n));
+      n += step;
+    }
+  }
   // Paragraph indents follow from what comes before them (first child, after a heading...), which
   // cutting the picture down to one page changes: each keeps its live indent.
   const liveP = article.querySelectorAll("p, li, dd, blockquote");
@@ -477,8 +487,9 @@ async function snapshotPage(pager, article, offset) {
   // The picture starts at the very word the live page starts with: laid out from the chapter's
   // beginning, small line-break differences would add up over the pages and the picture would
   // show a few lines more or less than the page.
-  // ...and stops a page later (only what can show; much quicker to draw).
-  const end = pageStart(article, offset + W);
+  // ...and stops two pages later: only what can show (much quicker to draw), but with the text
+  // carrying on past the page, so its last lines break as they do live (widows and orphans).
+  const end = pageStart(article, offset + 2 * W);
   if (end) {
     const node = end.path.reduce((n, i) => (n ? n.childNodes[i] : null), clone);
     if (node) {
@@ -877,7 +888,8 @@ class Pager {
   // What a page picture depends on besides its place: size, colours and type.
   snapKey() {
     const reader = this.book.closest(".reader");
-    return `${this.width}x${this.book.clientHeight}|${reader ? reader.dataset.theme : ""}|${reader ? reader.getAttribute("style") : ""}`;
+    const now = this.article.querySelector(".s.now");
+    return `${this.width}x${this.book.clientHeight}|${reader ? reader.dataset.theme : ""}|${reader ? reader.getAttribute("style") : ""}|${now ? now.dataset.s : ""}`;
   }
 
   // Which sentences the page at `offset` starts and ends with, as laid out right now: a picture
