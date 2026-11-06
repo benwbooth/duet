@@ -230,7 +230,7 @@ pub fn SettingsPage() -> impl IntoView {
                 <label class="field">
                     <span>"Pages at a time"</span>
                     <select on:change=move |ev| s.update(|x| x.reader.spread = event_target_value(&ev))>
-                        <option value="auto" selected=move || s.with(|x| x.reader.spread != "one" && x.reader.spread != "two")>"Two facing pages on wide screens"</option>
+                        <option value="auto" selected=move || s.with(|x| x.reader.spread != "one" && x.reader.spread != "two")>"Two facing pages, like a book (one on narrow screens)"</option>
                         <option value="one" selected=move || s.with(|x| x.reader.spread == "one")>"Always one page"</option>
                         <option value="two" selected=move || s.with(|x| x.reader.spread == "two")>"Always two facing pages"</option>
                     </select>

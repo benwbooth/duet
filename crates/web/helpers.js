@@ -189,14 +189,15 @@ class Pager {
     return this.book.clientWidth;
   }
 
-  // Two facing pages when asked to, or (auto) when the window is wide and not tall.
+  // Two facing pages, like an open book, whenever there's room for two readable pages (or when
+  // asked to); one page only on narrow screens or when chosen.
   wantsSpread() {
     // Never two pages on a phone-sized screen, whatever the setting.
     if (this.book.clientWidth < 640 && (this.book.parentElement || this.book).clientWidth < 640) return false;
     if (this.spreadPref === "two") return true;
     if (this.spreadPref === "one") return false;
     const room = (this.book.parentElement || this.book).clientWidth;
-    return room >= 980 && room > this.book.clientHeight * 1.25;
+    return room >= 720;
   }
 
   layout() {
