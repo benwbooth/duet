@@ -1145,3 +1145,18 @@ input, select { border-radius: 12px; }
 .reader-bar .bar-icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .reader-bar .icon-button.active { background: color-mix(in srgb, var(--page-text) 12%, transparent); }
 @media (max-width: 760px) { .reader-bar .icon-button[aria-label="Sidebar"] { display: none; } }
+
+/* Right-click menu on the page. */
+.context-menu {
+  position: fixed; z-index: 30; min-width: 220px; max-width: 260px; padding: 6px; display: grid; gap: 2px;
+  background: var(--glass-strong, var(--surface)); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-line, var(--line)); border-radius: 14px; box-shadow: var(--shadow-lg);
+  animation: panel-in 0.16s var(--ease-out); font-family: var(--sans); color: var(--text);
+}
+.context-menu button {
+  display: grid; justify-items: start; gap: 1px; width: 100%; min-height: 0; padding: 0.45rem 0.7rem; border: 0;
+  border-radius: 9px; background: transparent; box-shadow: none; text-align: left; font-size: 0.9rem;
+}
+.context-menu button:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.context-menu button:active:not(:disabled) { transform: none; }
+.context-menu small { color: var(--muted); font-size: 0.75rem; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -1724,3 +1724,33 @@ export function sentenceOnPage(container, n) {
     return r.width > 0 && r.right > b.left && r.left < b.right && r.bottom > b.top && r.top < b.bottom;
   });
 }
+
+// The word under the pointer, selected (so it's clear which one a right-click menu is about).
+export function wordAt(x, y) {
+  let node, offset;
+  if (document.caretPositionFromPoint) {
+    const p = document.caretPositionFromPoint(x, y);
+    if (p) { node = p.offsetNode; offset = p.offset; }
+  } else if (document.caretRangeFromPoint) {
+    const r = document.caretRangeFromPoint(x, y);
+    if (r) { node = r.startContainer; offset = r.startOffset; }
+  }
+  if (!node || node.nodeType !== 3) return "";
+  const text = node.data;
+  const isWord = (c) => /[\p{L}\p{N}'’-]/u.test(c);
+  let a = offset, b = offset;
+  while (a > 0 && isWord(text[a - 1])) a--;
+  while (b < text.length && isWord(text[b])) b++;
+  if (a === b) return "";
+  const range = document.createRange();
+  range.setStart(node, a);
+  range.setEnd(node, b);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  return text.slice(a, b).replace(/^['’-]+|['’-]+$/g, "");
+}
+
+export function copyText(text) {
+  if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
+}

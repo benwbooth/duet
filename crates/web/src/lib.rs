@@ -66,6 +66,10 @@ extern "C" {
     fn book_cover(book: &web_sys::Element, title: &str);
     #[wasm_bindgen(js_name = pagerTurn)]
     fn pager_turn(book: &web_sys::Element, dir: i32);
+    #[wasm_bindgen(js_name = wordAt)]
+    fn word_at(x: f64, y: f64) -> String;
+    #[wasm_bindgen(js_name = copyText)]
+    fn copy_text(text: &str);
     #[wasm_bindgen(js_name = sentenceOnPage)]
     fn sentence_on_page(container: &web_sys::Element, n: i32) -> bool;
     #[wasm_bindgen(js_name = sentenceText)]

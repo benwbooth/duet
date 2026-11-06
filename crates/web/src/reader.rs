@@ -1024,6 +1024,85 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         }
     };
     let chapters = move || layout.get().map(|l| l.chapters).unwrap_or(0);
+
+    // Starts the recording (or the full cast) at a sentence.
+    let play_from = move |c: usize, n: usize| {
+        let m = mode.get_untracked();
+        if m.cast() {
+            cast_go(c, n, true);
+            return;
+        }
+        let Some(a) = audio_el() else { return };
+        let target = sync.with_untracked(|x| x.of(c, n).map(|sp| (sp.track, sp.start)));
+        match target {
+            Some((tr, secs)) => {
+                sentence.set(n as i32);
+                book_pos.set((tr, secs));
+                if tr != track.get_untracked() {
+                    pending_seek.set(Some((secs, true)));
+                    track.set(tr);
+                } else {
+                    a.set_current_time(secs);
+                    let _ = a.play();
+                }
+            }
+            // Not matched to the recording yet: Play finds the page's place (and matching settles it).
+            None => {
+                let _ = a.pause();
+                set_timeout(move || { if let Some(b) = document().query_selector(".round.play").ok().flatten() { if let Ok(b) = b.dyn_into::<web_sys::HtmlElement>() { b.click(); } } }, std::time::Duration::ZERO);
+            }
+        }
+    };
+
+    // Right-click on the page: look up, explain or ask about the words there, or play from them.
+    let menu = RwSignal::new(None::<(f64, f64, String, Option<(usize, usize)>)>);
+    let assist = RwSignal::new(None::<(String, bool)>);
+    let on_context = move |ev: web_sys::MouseEvent| {
+        ev.prevent_default();
+        // The sentence first (selecting the word below would hide it).
+        let n = ev
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .and_then(|el| el.closest(".s").ok().flatten())
+            .and_then(|s| s.get_attribute("data-s"))
+            .and_then(|v| v.parse::<f64>().ok());
+        let mut text = crate::selected_text();
+        if text.is_empty() {
+            // Nothing selected: the word under the pointer (selected, so you can see which).
+            text = crate::word_at(ev.client_x() as f64, ev.client_y() as f64);
+        }
+        let at = n.map(|n| (chapter.get_untracked(), n as usize));
+        // Kept inside the window.
+        let (w, h) = (
+            window().inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(1000.0),
+            window().inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(800.0),
+        );
+        let x = (ev.client_x() as f64).min(w - 250.0).max(8.0);
+        let y = (ev.client_y() as f64).min(h - 260.0).max(8.0);
+        menu.set(Some((x, y, text.trim().to_string(), at)));
+    };
+    // Any click or key elsewhere closes it.
+    let close_menu = Closure::<dyn Fn(web_sys::Event)>::new(move |ev: web_sys::Event| {
+        if menu.get_untracked().is_none() {
+            return;
+        }
+        let inside = ev
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .is_some_and(|el| el.closest(".context-menu").ok().flatten().is_some());
+        if !inside {
+            menu.set(None);
+        }
+    });
+    for kind in ["pointerdown", "keydown", "wheel"] {
+        let _ = document().add_event_listener_with_callback(kind, close_menu.as_ref().unchecked_ref());
+    }
+    let close_menu = close_menu.into_js_value();
+    on_cleanup(move || {
+        for kind in ["pointerdown", "keydown", "wheel"] {
+            let _ = document().remove_event_listener_with_callback(kind, close_menu.unchecked_ref());
+        }
+    });
     // The recording's real waveform behind the scrub bar, filled in up to where it's playing.
     let wave = NodeRef::<leptos::html::Canvas>::new();
     let peaks = RwSignal::new(Vec::<f32>::new());
@@ -1296,7 +1375,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 (Some(_), Some(l)) => view! {
                     <div class="bookview" class:paged=paged class:images=l.mode == ReadMode::Images node_ref=book>
                         <article class="page" class:synced=move || !sync.get().is_empty() node_ref=page
-                            inner_html=move || html.get() on:click=on_page_click></article>
+                            inner_html=move || html.get() on:click=on_page_click on:contextmenu=on_context></article>
                     <Show when=move || paged() && l.mode != ReadMode::Images>
                         <div class="running-head" aria-hidden="true">
                             <span class="rh-book">{move || work.get().map(|w| w.title)}</span>
@@ -1489,7 +1568,48 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 </div>
             </Show>
 
-            <Assistant id work audio playing position/>
+            <Show when=move || menu.get().is_some()>
+                {move || menu.get().map(|(x, y, text, at)| {
+                    let short = if text.chars().count() > 28 { format!("{}…", text.chars().take(26).collect::<String>()) } else { text.clone() };
+                    let word = !text.contains(char::is_whitespace);
+                    let (t1, t2, t3, t4) = (text.clone(), text.clone(), text.clone(), text.clone());
+                    view! {
+                        <div class="context-menu" style=format!("left:{x}px;top:{y}px") on:contextmenu=|ev| ev.prevent_default()>
+                            {(!text.is_empty()).then(|| view! {
+                                <button on:click=move |_| { menu.set(None); assist.set(Some((
+                                    if word { format!("What does \"{t1}\" mean here?") } else { format!("What does \"{t1}\" mean in this passage?") }, true))); }>
+                                    <span>"Define"</span><small>{format!("“{short}”")}</small>
+                                </button>
+                                <button on:click=move |_| { menu.set(None); assist.set(Some((format!("Explain this passage: \"{t2}\""), true))); }>
+                                    <span>"Explain"</span><small>"in plain words, no spoilers"</small>
+                                </button>
+                                <button on:click=move |_| { menu.set(None); assist.set(Some((format!("About \"{t3}\": "), false))); }>
+                                    <span>"Ask AI about this…"</span>
+                                </button>
+                            })}
+                            {text.is_empty().then(|| view! {
+                                <button on:click=move |_| { menu.set(None); assist.set(Some((String::new(), false))); }>
+                                    <span>"Ask AI about the book…"</span>
+                                </button>
+                            })}
+                            {at.filter(|_| mode.get_untracked() != Mode::Read).map(|(c, n)| view! {
+                                <button on:click=move |_| { menu.set(None); play_from(c, n); }>
+                                    <span>"Play from here"</span>
+                                </button>
+                            })}
+                            {(!text.is_empty()).then(|| view! {
+                                <button on:click=move |_| {
+                                    menu.set(None);
+                                    crate::copy_text(&t4);
+                                }>
+                                    <span>"Copy"</span>
+                                </button>
+                            })}
+                        </div>
+                    }
+                })}
+            </Show>
+            <Assistant id work audio playing position request=assist/>
         </div>
     }
 }
@@ -1502,6 +1622,8 @@ fn Assistant(
     audio: NodeRef<leptos::html::Audio>,
     playing: RwSignal<bool>,
     position: impl Fn() -> Position + Copy + Send + Sync + 'static,
+    // Something to ask from elsewhere (the page's right-click menu): (text, ask now or just fill in).
+    request: RwSignal<Option<(String, bool)>>,
 ) -> impl IntoView {
     let open = RwSignal::new(false);
     let input = RwSignal::new(String::new());
@@ -1584,6 +1706,28 @@ fn Assistant(
     });
 
     let numbered = move || messages.get().into_iter().enumerate().collect::<Vec<(usize, Message)>>();
+
+    Effect::new(move |_| {
+        let Some((text, now)) = request.get() else { return };
+        request.set(None);
+        open.set(true);
+        if now {
+            ask(text);
+        } else {
+            input.set(text);
+            // Into the box, ready to finish the question.
+            set_timeout(
+                || {
+                    if let Some(el) = document().query_selector(".assistant form input").ok().flatten() {
+                        if let Ok(el) = el.dyn_into::<web_sys::HtmlElement>() {
+                            let _ = el.focus();
+                        }
+                    }
+                },
+                std::time::Duration::from_millis(50),
+            );
+        }
+    });
 
     let define = move |_| {
         let sel = crate::selected_text();
