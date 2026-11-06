@@ -349,9 +349,17 @@ async function snapshotPage(pager, article, offset) {
     if (src && !src.startsWith("data:")) img.setAttribute("src", await asDataUrl(new URL(src, location.href).href));
   }
   const bookCls = pager.book.className.replace(/\bgrab-edge\b/g, "");
+  // The page must break lines exactly as the live one does: same language (hyphenation), and
+  // the body's type settings the styles inherit from (kerning, ligatures, spacing).
+  const body = getComputedStyle(document.body);
+  const inherit = ["font-family", "font-size", "line-height", "letter-spacing", "text-rendering", "font-kerning",
+    "font-feature-settings", "font-variant-ligatures", "-webkit-font-smoothing"]
+    .map((k) => `${k}:${body.getPropertyValue(k)}`).join(";");
+  const lang = document.documentElement.lang || "en";
   const html =
-    `<div xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" class="${xmlAttr(reader.className)}" data-theme="${xmlAttr(reader.dataset.theme || "")}" ` +
-    `style="${xmlAttr(reader.getAttribute("style") || "")};position:relative;inset:auto;width:${W}px;height:${H}px;margin:0;padding:0;overflow:hidden;min-height:0">` +
+    `<div xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${xmlAttr(lang)}" xml:lang="${xmlAttr(lang)}" ` +
+    `class="${xmlAttr(reader.className)}" data-theme="${xmlAttr(reader.dataset.theme || "")}" ` +
+    `style="${xmlAttr(inherit)};${xmlAttr(reader.getAttribute("style") || "")};position:relative;inset:auto;width:${W}px;height:${H}px;margin:0;padding:0;overflow:hidden;min-height:0">` +
     `<style>${xmlText(pageCssText)}</style>` +
     `<div class="${xmlAttr(bookCls)}" style="position:relative;width:${W}px;height:${H}px;margin:0;max-width:none;box-shadow:none;border-radius:0;overflow:hidden">` +
     new XMLSerializer().serializeToString(clone) +
