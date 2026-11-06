@@ -1201,7 +1201,17 @@ class Pager {
       if (!drag) {
         if (!this.curl || this.busy || !start.grab || Math.abs(dx) < 6 || Math.abs(dx) < Math.abs(e.clientY - start.y)) return;
         const dir = dx < 0 ? 1 : -1;
-        if ((dir > 0 && this.page + 1 >= this.pages) || (dir < 0 && this.page === 0)) return;
+        if ((dir > 0 && this.page + 1 >= this.pages) || (dir < 0 && this.page === 0)) {
+          // At the chapter's edge the next page isn't laid out yet: a pull turns into the
+          // neighbouring chapter (animated), as a click would.
+          if (!start.crossed) {
+            start.crossed = true;
+            window.getSelection().removeAllRanges();
+            this.swallowClick = true;
+            dir > 0 ? this.next() : this.prev();
+          }
+          return;
+        }
         window.getSelection().removeAllRanges();
         if (!this.noGL && (!this.snap(this.page * this.width) || !this.snap((this.page + dir) * this.width))) {
           // Pictures still being made: take hold once they're ready (a moment).
