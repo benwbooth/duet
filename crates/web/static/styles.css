@@ -901,6 +901,9 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
   color: var(--page-muted); opacity: 0.55; transition: opacity 0.25s, background 0.25s, color 0.25s;
 }
 .page-arrow:hover { opacity: 1; background: color-mix(in srgb, var(--page-text) 8%, transparent); color: var(--page-text); }
+/* Pressed: keep the centring transform (the global button:active nudge would replace it, moving
+   the button half its height under the pointer, so the click never landed on it). */
+.page-arrow:active:not(:disabled) { transform: translateY(-50%) scale(0.94); }
 .page-arrow svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .page-arrow.prev { left: calc(var(--nav-w) + 0.6rem); }
 .page-arrow.next { right: 0.6rem; }
