@@ -123,6 +123,8 @@ function pagerOf(container) {
 const TURN_MS = 620;
 // Cross-fade between the live page and its picture at each end of a turn.
 const FADE_MS = 90;
+// For checking page turns frame by frame: window.__duetSlow = 10 plays them ten times slower.
+const slow = () => window.__duetSlow || 1;
 // Strips a turning page is made of (more bends more smoothly, but costs more to draw).
 const STRIPS = 14;
 
@@ -345,6 +347,7 @@ const xmlAttr = (s) => xmlText(s || "").replace(/"/g, "&quot;");
 // A picture of the book as it looks with `article` scrolled to `offset`: the page drawn through
 // an SVG foreignObject with the reader's own styles, so it matches the real page.
 async function snapshotPage(pager, article, offset) {
+  if (document.fonts) await document.fonts.ready;
   const W = pager.width, H = pager.book.clientHeight;
   const reader = pager.book.closest(".reader") || pager.book.parentElement;
   if (pageCssText === null) {
@@ -437,6 +440,12 @@ class Pager {
       if (!img.complete) img.addEventListener("load", () => this.relayoutSoon(), { once: true });
     }
     if (document.fonts) document.fonts.ready.then(() => this.relayoutSoon());
+    // Text size, typeface or theme changing reflows the pages: count them again.
+    const reader = book.closest(".reader");
+    if (reader) {
+      this.styleWatch = new MutationObserver(() => this.relayoutSoon());
+      this.styleWatch.observe(reader, { attributes: true, attributeFilter: ["style", "data-theme"] });
+    }
     // Arriving from the neighbouring chapter: finish the page turn that started there (after the
     // reader has gone to this chapter's first or last page).
     // (The reader may lay the chapter out twice; whichever pager is still alive plays it.)
@@ -456,6 +465,7 @@ class Pager {
     this.book.querySelectorAll(".curl-layer, .page3d, .page-gl, .page-warp").forEach((e) => e.remove());
     this.dead = true;
     clearTimeout(this.warmTimer);
+    if (this.styleWatch) this.styleWatch.disconnect();
     this.book.classList.remove("spread");
     delete this.book.__pager;
   }
@@ -633,9 +643,24 @@ class Pager {
     return `${this.width}x${this.book.clientHeight}|${reader ? reader.dataset.theme : ""}|${reader ? reader.getAttribute("style") : ""}`;
   }
 
+  // Which sentences the page at `offset` starts and ends with, as laid out right now: a picture
+  // made when this was different (text size changed, a picture loaded) shows the wrong text.
+  pageSig(offset) {
+    const a = this.article.getBoundingClientRect().left;
+    let first = -1, last = -1;
+    for (const e of this.article.querySelectorAll(".s")) {
+      const x = e.getBoundingClientRect().left - a;
+      if (x >= offset - 1 && x < offset + this.width - 1) {
+        if (first < 0) first = e.dataset.s;
+        last = e.dataset.s;
+      }
+    }
+    return `${first}-${last}`;
+  }
+
   snap(offset) {
     const s = this.snaps.get(offset);
-    return s && s.key === this.snapKey() && s.canvas ? s.canvas : null;
+    return s && s.key === this.snapKey() && s.canvas && s.sig === this.pageSig(offset) ? s.canvas : null;
   }
 
   // Pictures of these pages (by offset), making any that are missing.
@@ -644,8 +669,9 @@ class Pager {
     const out = [];
     for (const offset of offsets) {
       let entry = this.snaps.get(offset);
-      if (!entry || entry.key !== key) {
-        entry = { key, canvas: null };
+      const sig = this.pageSig(offset);
+      if (!entry || entry.key !== key || entry.sig !== sig) {
+        entry = { key, sig, canvas: null };
         entry.promise = snapshotPage(this, this.article, offset).then((c) => (entry.canvas = c));
         this.snaps.set(offset, entry);
       }
@@ -1066,7 +1092,7 @@ class Pager {
   // The next page goes under the turning one only once the turning one is drawn over it.
   revealUnder(t) {
     if (t.fadeStart !== undefined) {
-      const a = Math.min(1, (performance.now() - t.fadeStart) / FADE_MS);
+      const a = Math.min(1, (performance.now() - t.fadeStart) / (FADE_MS * slow()));
       this.gl.canvas.style.opacity = a.toFixed(3);
       if (a < 1) return;
       t.fadeStart = undefined;
@@ -1157,7 +1183,7 @@ class Pager {
     const [rest, landed] = this.ends(t, t.C.y);
     const to = complete === !t.reverse ? landed : rest;
     const left = Math.abs(to.x - from.x) / (Math.abs(landed.x - rest.x) || 1);
-    await this.animate(t, from, to, TURN_MS * Math.max(0.4, Math.min(1, left)), arc);
+    await this.animate(t, from, to, TURN_MS * slow() * Math.max(0.4, Math.min(1, left)), arc);
     t.done = true;
     const done = complete;
     if (done) this.page = t.target;
@@ -1171,7 +1197,7 @@ class Pager {
       await new Promise((resolve) => {
         const start = performance.now();
         const step = (now) => {
-          const a = Math.max(0, 1 - (now - start) / FADE_MS);
+          const a = Math.max(0, 1 - (now - start) / (FADE_MS * slow()));
           this.gl.canvas.style.opacity = a.toFixed(3);
           if (a > 0) frame(step);
           else resolve();
