@@ -66,6 +66,8 @@ extern "C" {
     fn book_cover(book: &web_sys::Element, url: &str);
     #[wasm_bindgen(js_name = pagerTurn)]
     fn pager_turn(book: &web_sys::Element, dir: i32);
+    #[wasm_bindgen(js_name = sentenceOnPage)]
+    fn sentence_on_page(container: &web_sys::Element, n: i32) -> bool;
     #[wasm_bindgen(js_name = sentenceText)]
     fn sentence_text(container: &web_sys::Element, n: i32) -> String;
     async fn prefetch(url: &str) -> JsValue;

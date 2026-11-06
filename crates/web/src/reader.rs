@@ -896,14 +896,57 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         });
     }
 
+    // Play starts from what you're reading: if the page on screen isn't where the recording is
+    // (you've turned pages, or jumped), the recording moves there first.
     let toggle = move |_| {
-        if let Some(a) = audio_el() {
-            if a.paused() {
-                let _ = a.play();
-            } else {
-                let _ = a.pause();
+        let Some(a) = audio_el() else { return };
+        if !a.paused() {
+            let _ = a.pause();
+            return;
+        }
+        let m = mode.get_untracked();
+        let c = chapter.get_untracked();
+        let el = page.get_untracked();
+        let showing = |s: usize| el.as_ref().is_some_and(|el| crate::sentence_on_page(el, s as i32));
+        if m == Mode::ReadAudiobook && c != usize::MAX {
+            let heard = sync.with_untracked(|x| x.at(track.get_untracked(), a.current_time()).cloned());
+            if !heard.as_ref().is_some_and(|h| h.chapter == c && showing(h.sentence)) {
+                let s = el.as_ref().map(|el| crate::visible_sentence(el) as usize).unwrap_or(0);
+                let target = sync.with_untracked(|x| x.of(c, s).map(|sp| (sp.track, sp.start))).or_else(|| {
+                    // Not matched yet: the same point through the book, roughly; matching as it
+                    // plays settles it on the right sentence.
+                    let asset = audio_asset.get_untracked()?;
+                    let chapters = layout.get_untracked()?.chapters.max(1);
+                    let n = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1).max(1);
+                    let f = (c as f64 + s as f64 / n as f64) / chapters as f64;
+                    let mut left = asset.duration_secs.unwrap_or(0.0) * f;
+                    for (i, t) in asset.tracks.iter().enumerate() {
+                        if left <= t.duration_secs {
+                            return Some((i, left));
+                        }
+                        left -= t.duration_secs;
+                    }
+                    None
+                });
+                if let Some((tr, secs)) = target {
+                    book_pos.set((tr, secs));
+                    if tr != track.get_untracked() {
+                        pending_seek.set(Some((secs, true)));
+                        track.set(tr);
+                        return;
+                    }
+                    a.set_current_time(secs);
+                }
+            }
+        } else if m == Mode::ReadCast {
+            let (cc, cs) = cast_at.get_untracked();
+            if !(cc == c && showing(cs)) && c != usize::MAX {
+                let s = el.as_ref().map(|el| crate::visible_sentence(el) as usize).unwrap_or(0);
+                cast_go(c, s, true);
+                return;
             }
         }
+        let _ = a.play();
     };
     let skip = move |d: f64| {
         if mode.get_untracked().cast() {
@@ -1404,22 +1447,6 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                         </button>
                     </div>
                     <div class="np-extra">
-                        <select title="Chapter" on:change=move |ev| {
-                            let Ok(v) = event_target_value(&ev).parse::<usize>() else { return };
-                            if mode.get_untracked().cast() { cast_go(v, 0, playing.get_untracked()) } else { seek_to(v, 0.0) }
-                        }>
-                            {move || if mode.get().cast() {
-                                layout.get().map(|l| l.toc.into_iter().map(|t| {
-                                    let c = t.chapter;
-                                    let name = format!("{}{}", "\u{2003}".repeat(t.depth), t.title);
-                                    view! { <option value=c.to_string() selected=move || chapter.get() == c>{name}</option> }
-                                }).collect_view().into_any())
-                            } else {
-                                audio_asset.get().map(|a| a.tracks.into_iter().enumerate().map(|(i, t)| view! {
-                                    <option value=i.to_string() selected=move || track.get() == i>{t.title}</option>
-                                }).collect_view().into_any())
-                            }}
-                        </select>
                         <select class="speed" title="Speed" on:change=move |ev| {
                             if let Ok(r) = event_target_value(&ev).parse::<f64>() {
                                 rate.set(r);

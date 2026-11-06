@@ -1538,3 +1538,14 @@ export async function toggleFullscreen() {
   } catch (_) {}
   return !!document.fullscreenElement;
 }
+
+// Whether sentence n is (at least partly) on the page or pages showing now.
+export function sentenceOnPage(container, n) {
+  const book = container && container.closest(".bookview");
+  if (!book || n < 0) return false;
+  const b = book.getBoundingClientRect();
+  return Array.from(container.querySelectorAll(`.s[data-s="${n}"]`)).some((e) => {
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && r.right > b.left && r.left < b.right && r.bottom > b.top && r.top < b.bottom;
+  });
+}
