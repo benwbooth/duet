@@ -382,6 +382,8 @@ pub struct ReaderSettings {
     pub layout: String,
     /// Pages at a time: "one", "two" (facing pages) or "auto" (two on wide windows)
     pub spread: String,
+    /// Animate page turns (the page curls over); off, pages change at once.
+    pub page_curl: bool,
 }
 
 /// The reader's default typeface: book faces where the system has them.
@@ -398,6 +400,7 @@ impl Default for ReaderSettings {
             follow_audio: true,
             layout: "pages".into(),
             spread: "auto".into(),
+            page_curl: true,
         }
     }
 }

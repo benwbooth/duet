@@ -635,7 +635,7 @@ class Pager {
 
   // Pictures this page and the ones either side, quietly, so a turn can start at once.
   warm() {
-    if (this.noGL) return;
+    if (this.noGL || !this.curl) return;
     clearTimeout(this.warmTimer);
     this.warmTimer = setTimeout(async () => {
       for (const p of [this.page, this.page + 1, this.page - 1]) {
@@ -693,7 +693,7 @@ class Pager {
   // chapter is laid out underneath, and the kept page turns away over it.
   async carryInto(dir, go) {
     this.busy = true;
-    if (!this.noGL) await Promise.race([this.pictures([this.page * this.width]), new Promise((r) => setTimeout(r, 800))]);
+    if (this.curl && !this.noGL) await Promise.race([this.pictures([this.page * this.width]), new Promise((r) => setTimeout(r, 800))]);
     this.busy = false;
     if (this.dead) return;
     this.book.__carry = {
@@ -1110,7 +1110,16 @@ class Pager {
     }
   }
 
+  get curl() {
+    return this.book.__curl !== false;
+  }
+
   async turn(dir, carry) {
+    if (!this.curl) {
+      // No animation: just show the page (a turn into the next chapter has already happened).
+      if (!carry) this.go(this.page + dir, false);
+      return;
+    }
     // Every turn is the same curl: wait (briefly) for the pictures it needs rather than fall
     // back to the strips mid-book.
     if (!this.noGL) {
@@ -1146,20 +1155,20 @@ class Pager {
     this.book.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       if (e.target.closest && e.target.closest("a[data-href]")) return;
-      start = { x: e.clientX, y: e.clientY, time: performance.now(), grab: grabZone(e) };
+      start = { x: e.clientX, y: e.clientY, time: performance.now(), grab: this.curl && grabZone(e) };
       this.selecting = !start.grab;
       // Holding the page, not selecting its words.
       if (start.grab && e.pointerType !== "touch") e.preventDefault();
     });
     this.book.addEventListener("pointermove", (e) => {
       if (!start) {
-        if (e.pointerType === "mouse") this.book.classList.toggle("grab-edge", !this.busy && grabZone(e));
+        if (e.pointerType === "mouse") this.book.classList.toggle("grab-edge", this.curl && !this.busy && grabZone(e));
         return;
       }
       const dx = e.clientX - start.x;
       const rect = this.book.getBoundingClientRect();
       if (!drag) {
-        if (this.busy || !start.grab || Math.abs(dx) < 6 || Math.abs(dx) < Math.abs(e.clientY - start.y)) return;
+        if (!this.curl || this.busy || !start.grab || Math.abs(dx) < 6 || Math.abs(dx) < Math.abs(e.clientY - start.y)) return;
         const dir = dx < 0 ? 1 : -1;
         if ((dir > 0 && this.page + 1 >= this.pages) || (dir < 0 && this.page === 0)) return;
         window.getSelection().removeAllRanges();
@@ -1262,6 +1271,12 @@ export function pagerInit(book, article, onNext, onPrev, onPage, spread) {
 }
 
 // "one", "two" or "auto" (two facing pages on wide windows).
+// Page turns animated (the curl) or instant.
+export function pagerSetCurl(book, on) {
+  if (!book) return;
+  book.__curl = !!on;
+}
+
 // Where this chapter sits in the book (for the thickness of the page stacks).
 export function pagerSetPlace(book, chapter, chapters) {
   if (!book) return;

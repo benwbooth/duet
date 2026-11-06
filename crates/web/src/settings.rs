@@ -235,6 +235,7 @@ pub fn SettingsPage() -> impl IntoView {
                         <option value="two" selected=move || s.with(|x| x.reader.spread == "two")>"Always two facing pages"</option>
                     </select>
                 </label>
+                {toggle(s, "Animate page turns (the page curls over)", |x| x.reader.page_curl, |x, v| x.reader.page_curl = v)}
                 {toggle(s, "Follow the audio (scroll and turn chapters)", |x| x.reader.follow_audio, |x, v| x.reader.follow_audio = v)}
             </section>
         </div>

@@ -398,6 +398,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             if let Some(url) = work.get_untracked().and_then(|w| w.cover_url) {
                 crate::book_cover(&b, &url);
             }
+            crate::pager_set_curl(&b, prefs.get_untracked().page_curl);
             crate::pager_init(&b, &el, &pager_next, &pager_prev, &pager_page, &prefs.get_untracked().spread);
         } else {
             crate::pager_destroy(&b);
@@ -435,6 +436,19 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         spawn_local(async move {
             if let Ok(mut s) = api::get::<Settings>("/api/settings").await {
                 s.reader.spread = choice.into();
+                let _ = api::put::<_, Settings>("/api/settings", &s).await;
+            }
+        });
+    };
+    // Page turns curl over, or change at once; remembered in Settings.
+    let set_curl = move |on: bool| {
+        prefs.update(|p| p.page_curl = on);
+        if let Some(b) = book.get_untracked() {
+            crate::pager_set_curl(&b, on);
+        }
+        spawn_local(async move {
+            if let Ok(mut s) = api::get::<Settings>("/api/settings").await {
+                s.reader.page_curl = on;
                 let _ = api::put::<_, Settings>("/api/settings", &s).await;
             }
         });
@@ -1042,6 +1056,15 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                             <button class:active=move || !paged() on:click=move |ev| if paged() { toggle_layout(ev) }>"Scroll"</button>
                         </div>
                     </div>
+                    <Show when=paged>
+                        <div class="view-row">
+                            <span>"Page turns"</span>
+                            <div class="segmented">
+                                <button class:active=move || prefs.with(|p| p.page_curl) on:click=move |_| set_curl(true)>"Curl"</button>
+                                <button class:active=move || prefs.with(|p| !p.page_curl) on:click=move |_| set_curl(false)>"Instant"</button>
+                            </div>
+                        </div>
+                    </Show>
                     <Show when=paged>
                         <div class="view-row">
                             <span>"Pages at a time"</span>
