@@ -69,3 +69,40 @@ def chat_json(url, model, key, messages):
     text = chat(url, model, key, messages, json_mode=True)
     match = re.search(r"\{.*\}|\[.*\]", text, re.S)
     return json.loads(match.group(0) if match else text)
+
+
+def whisper(model_name, dev):
+    """faster-whisper on the GPU when CTranslate2 supports it (NVIDIA), otherwise the CPU.
+
+    On the CPU the large models are slow for a whole audiobook, and alignment only needs word
+    timings for text we already have, so it steps down to a smaller model there.
+    """
+    from faster_whisper import WhisperModel
+
+    if dev == "cuda":
+        try:
+            return WhisperModel(model_name, device="cuda", compute_type="float16"), "cuda"
+        except Exception as e:  # ROCm torch reports a GPU that CTranslate2 can't use
+            log(f"faster-whisper can't use the GPU ({e}); using the CPU")
+    if model_name.startswith("large") or model_name.startswith("medium"):
+        log(f"using the 'small' speech model on the CPU instead of '{model_name}'")
+        model_name = "small"
+    return WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=0), "cpu"
+
+
+def load_audio(path, rate=16000):
+    """Decodes any audio file to 16 kHz mono float32 with ffmpeg, for faster-whisper.
+
+    Passing the samples directly avoids faster-whisper's own PyAV decoding, which breaks with
+    some PyAV versions.
+    """
+    import subprocess
+
+    import numpy as np
+
+    out = subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", path, "-f", "f32le", "-ac", "1", "-ar", str(rate), "pipe:1"],
+        capture_output=True,
+        check=True,
+    )
+    return np.frombuffer(out.stdout, dtype=np.float32)

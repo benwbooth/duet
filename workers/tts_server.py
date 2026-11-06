@@ -207,7 +207,9 @@ def transcribe(audio, model_name):
     with tempfile.NamedTemporaryFile(suffix=".audio") as f:
         f.write(audio)
         f.flush()
-        segments, _ = whisper[model_name].transcribe(f.name, vad_filter=True)
+        from common import load_audio
+
+        segments, _ = whisper[model_name].transcribe(load_audio(f.name), vad_filter=True)
         return " ".join(seg.text.strip() for seg in segments).strip()
 
 

@@ -12,7 +12,7 @@ import argparse
 import bisect
 import difflib
 
-from common import device, load, log, progress, save, words
+from common import device, load, load_audio, log, progress, save, whisper, words
 
 
 def book_words(book):
@@ -26,14 +26,13 @@ def book_words(book):
 
 
 def transcribe(tracks, model_name, dev):
-    from faster_whisper import WhisperModel
-
-    model = WhisperModel(model_name, device=dev, compute_type="float16" if dev == "cuda" else "int8")
+    model, used = whisper(model_name, dev)
+    progress(0.01, f"Listening on the {'graphics card' if used == 'cuda' else 'processor'}")
     total = sum(t["duration"] for t in tracks) or 1.0
     done = 0.0
     out = []  # (word, track, start, end)
     for t in tracks:
-        segments, _ = model.transcribe(t["path"], word_timestamps=True, vad_filter=True, language="en")
+        segments, _ = model.transcribe(load_audio(t["path"]), word_timestamps=True, vad_filter=True, language="en")
         for seg in segments:
             for w in seg.words or []:
                 for token in words(w.word):

@@ -15,7 +15,7 @@ import re
 import uuid
 import zipfile
 
-from common import chat, device, load, log, progress
+from common import chat, device, load, load_audio, log, progress
 
 PARAGRAPH_PAUSE = 1.2
 CHAPTER = re.compile(r"^(chapter|book|part)\s+([0-9]+|[a-z-]+)\b[.:]?", re.I)
@@ -24,12 +24,16 @@ CHAPTER = re.compile(r"^(chapter|book|part)\s+([0-9]+|[a-z-]+)\b[.:]?", re.I)
 def transcribe(tracks, model_name, dev):
     from faster_whisper import WhisperModel
 
-    model = WhisperModel(model_name, device=dev, compute_type="float16" if dev == "cuda" else "int8")
+    try:
+        model = WhisperModel(model_name, device=dev, compute_type="float16" if dev == "cuda" else "int8")
+    except Exception as e:  # ROCm torch reports a GPU that CTranslate2 can't use
+        log(f"faster-whisper can't use {dev} ({e}); using the CPU")
+        model = WhisperModel(model_name, device="cpu", compute_type="int8")
     total = sum(t["duration"] for t in tracks) or 1.0
     done = 0.0
     out = []  # per track: list of paragraphs
     for t in tracks:
-        segments, _ = model.transcribe(t["path"], vad_filter=True, language="en")
+        segments, _ = model.transcribe(load_audio(t["path"]), vad_filter=True, language="en")
         paras, cur, last_end = [], [], 0.0
         for seg in segments:
             if cur and seg.start - last_end > PARAGRAPH_PAUSE:

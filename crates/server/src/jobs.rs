@@ -309,6 +309,22 @@ pub async fn synced_pairs(state: &State, work_id: i64) -> anyhow::Result<Vec<(i6
         .await?)
 }
 
+/// The Python and workers folder to run jobs with. The voices installer's venv wins over the
+/// bare default (`python3` has none of the packages), and a relative workers folder that isn't
+/// there falls back to the one installed next to the binary.
+fn worker_env(state: &State, ai: &duet_common::AiSettings) -> (PathBuf, PathBuf) {
+    let venv = state.data_dir.join("venv/bin/python");
+    let python = if (ai.python.is_empty() || ai.python == "python3") && venv.exists() { venv } else { PathBuf::from(&ai.python) };
+    let mut workers = PathBuf::from(&ai.workers_dir);
+    if !workers.join("align.py").exists() {
+        let beside_binary = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.parent()?.join("share/duet/workers")));
+        if let Some(w) = beside_binary.filter(|w| w.join("align.py").exists()) {
+            workers = w;
+        }
+    }
+    (python, workers)
+}
+
 #[derive(Deserialize)]
 struct WorkerLine {
     progress: Option<f64>,
@@ -317,9 +333,9 @@ struct WorkerLine {
 
 async fn worker(state: &State, job: i64, script: &str, dir: &Path, args: &[&str]) -> anyhow::Result<()> {
     let ai = state.settings.read().await.ai.clone();
-    let workers = PathBuf::from(&ai.workers_dir);
+    let (python, workers) = worker_env(state, &ai);
     let script_path = std::path::absolute(workers.join(script))?;
-    let mut child = tokio::process::Command::new(&ai.python)
+    let mut child = tokio::process::Command::new(&python)
         .arg(&script_path)
         .args(args)
         .current_dir(dir)
@@ -331,7 +347,7 @@ async fn worker(state: &State, job: i64, script: &str, dir: &Path, args: &[&str]
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .with_context(|| format!("starting {} {}", ai.python, script_path.display()))?;
+        .with_context(|| format!("starting {} {}", python.display(), script_path.display()))?;
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
     let err_task = tokio::spawn(async move {
