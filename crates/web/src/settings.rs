@@ -357,14 +357,6 @@ pub fn VoicesSetup(s: RwSignal<Settings>) -> impl IntoView {
     }
 }
 
-
-const WHISPER_MODELS: [(&str, &str); 4] = [
-    ("large-v3-turbo", "Large v3 Turbo: accurate and reasonably quick (recommended)"),
-    ("large-v3", "Large v3: most accurate, slowest"),
-    ("medium", "Medium: quicker, a little less accurate"),
-    ("small", "Small: fastest, for slow computers"),
-];
-
 /// "http://localhost:11434/v1/" and "http://127.0.0.1:11434/v1" are the same server.
 fn same_host(url: &str) -> String {
     url.trim().trim_end_matches('/').replace("://localhost", "://127.0.0.1")
@@ -398,17 +390,6 @@ fn AiSection(s: RwSignal<Settings>) -> impl IntoView {
             <p class="hint">"A chat model answers your questions, plays the characters you talk to, directs the full-cast recordings and tidies up transcripts. Run it on this computer or plug in Claude or Codex. Voices and speech recognition always come from this computer (the Voices section above)."</p>
 
             <ChatModelSetup s/>
-
-            <h3>"Speech recognition"</h3>
-            <label class="field">
-                <span>"Accuracy"</span>
-                <select on:change=move |ev| s.update(|x| x.ai.stt_model = event_target_value(&ev))>
-                    {WHISPER_MODELS.map(|(id, label)| view! {
-                        <option value=id selected=move || s.with(|x| x.ai.stt_model == id)>{label}</option>
-                    })}
-                </select>
-                <small>"Used for the microphone, for syncing books with their audiobooks, and for turning audiobooks into ebooks."</small>
-            </label>
 
             <h3>"Reading companion's voice"</h3>
             <label class="field">

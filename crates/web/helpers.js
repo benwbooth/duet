@@ -7,23 +7,11 @@ export function micSupported() {
   return !!(navigator.mediaDevices && window.MediaRecorder);
 }
 
-export async function startRecording() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  chunks = [];
-  recorder = new MediaRecorder(stream);
-  recorder.ondataavailable = (e) => chunks.push(e.data);
-  recorder.start();
-}
+// Transcribes what's been said so far while recording, so the words appear as you talk:
+// every half second, the recording so far (if it's grown) goes to the server, one request at a time.
+let partial = null;
 
-// Stops recording and returns the transcript from the server.
-export async function stopRecording() {
-  if (!recorder) return "";
-  const done = new Promise((resolve) => (recorder.onstop = resolve));
-  recorder.stop();
-  await done;
-  recorder.stream.getTracks().forEach((t) => t.stop());
-  const type = recorder.mimeType || "audio/webm";
-  recorder = null;
+async function transcribeChunks(type) {
   const ext = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm";
   const form = new FormData();
   form.append("audio", new Blob(chunks, { type }), `speech.${ext}`);
@@ -31,6 +19,47 @@ export async function stopRecording() {
   const body = await resp.json();
   if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
   return body;
+}
+
+export async function startRecording(onPartial) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  chunks = [];
+  recorder = new MediaRecorder(stream);
+  recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  recorder.start(500);
+  const live = { busy: null, sent: 0, stopped: false };
+  partial = live;
+  const tick = async () => {
+    if (live.stopped) return;
+    if (chunks.length > live.sent && recorder) {
+      live.sent = chunks.length;
+      live.busy = transcribeChunks(recorder.mimeType || "audio/webm")
+        .then((text) => { if (!live.stopped && onPartial) onPartial(text); })
+        .catch(() => {});
+      await live.busy;
+      live.busy = null;
+    }
+    if (!live.stopped) live.timer = setTimeout(tick, 500);
+  };
+  live.timer = setTimeout(tick, 900);
+}
+
+// Stops recording and returns the whole transcript from the server.
+export async function stopRecording() {
+  if (!recorder) return "";
+  if (partial) {
+    partial.stopped = true;
+    clearTimeout(partial.timer);
+    if (partial.busy) await partial.busy;
+    partial = null;
+  }
+  const done = new Promise((resolve) => (recorder.onstop = resolve));
+  recorder.stop();
+  await done;
+  recorder.stream.getTracks().forEach((t) => t.stop());
+  const type = recorder.mimeType || "audio/webm";
+  recorder = null;
+  return transcribeChunks(type);
 }
 
 // Highlights sentence `n` in the reader and optionally brings it into view (scrolling, or

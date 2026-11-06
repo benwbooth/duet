@@ -1777,13 +1777,24 @@ fn Assistant(
             recording.set(false);
             spawn_local(async move {
                 match crate::stop_recording().await {
-                    Ok(text) => ask(text.as_string().unwrap_or_default()),
+                    Ok(text) => {
+                        let text = text.as_string().unwrap_or_default();
+                        input.set(text.clone());
+                        ask(text)
+                    }
                     Err(e) => toast.show(format!("Couldn't transcribe: {}", js_error(&e))),
                 }
             });
         } else {
+            // The words fill the box as you talk.
+            let on_partial = Closure::<dyn Fn(JsValue)>::new(move |text: JsValue| {
+                if recording.get_untracked() {
+                    input.set(text.as_string().unwrap_or_default());
+                }
+            })
+            .into_js_value();
             spawn_local(async move {
-                match crate::start_recording().await {
+                match crate::start_recording(on_partial.unchecked_ref()).await {
                     Ok(_) => recording.set(true),
                     Err(e) => toast.show(format!("Microphone unavailable: {}", js_error(&e))),
                 }

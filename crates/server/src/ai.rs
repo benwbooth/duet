@@ -12,6 +12,10 @@ use crate::{State, book, db};
 /// How much of the book before the reader's position goes into the prompt.
 const CONTEXT_SENTENCES: usize = 80;
 
+/// Talking to the companion is transcribed as you speak, so it uses a small, quick model: the
+/// accuracy setting's big models take tens of seconds a clip without a GPU CTranslate2 can use.
+const DICTATION_MODEL: &str = "Systran/faster-whisper-small.en";
+
 pub async fn transcribe(state: &State, audio: Vec<u8>, filename: String, mime: String) -> anyhow::Result<String> {
     let ai = state.settings.read().await.ai.clone();
     // The bundled voice server does speech recognition too, so it's the fallback when the
@@ -23,7 +27,7 @@ pub async fn transcribe(state: &State, audio: Vec<u8>, filename: String, mime: S
     let mut last = None;
     for url in urls {
         let part = reqwest::multipart::Part::bytes(audio.clone()).file_name(filename.clone()).mime_str(&mime)?;
-        let form = reqwest::multipart::Form::new().part("file", part).text("model", ai.stt_model.clone());
+        let form = reqwest::multipart::Form::new().part("file", part).text("model", DICTATION_MODEL);
         match state
             .http
             .post(format!("{}/audio/transcriptions", url.trim_end_matches('/')))

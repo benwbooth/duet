@@ -241,10 +241,9 @@ pub async fn start_server(state: &State) -> anyhow::Result<()> {
             return Ok(());
         }
     }
-    // One is already running (e.g. started before duet restarted): use it.
-    if alive(state).await {
-        return Ok(());
-    }
+    // A server still answering here may be one from before duet restarted, on its way down: start
+    // ours anyway, and it waits for the port. (One that isn't going away keeps serving, and ours
+    // gives up after a minute.)
     let script = std::path::absolute(scripts_dir().join("voices.sh"))?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(state.data_dir.join("voices.log"))?;
     let mut cmd = tokio::process::Command::new("bash");

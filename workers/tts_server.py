@@ -38,6 +38,7 @@ import os
 import re
 import subprocess
 import threading
+import errno
 import time
 import urllib.error
 import urllib.request
@@ -490,8 +491,17 @@ def main():
 
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, stop)
+    # When duet restarts, the old voice server may still be letting go of the port: wait for it.
+    for attempt in range(60):
+        try:
+            httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+            break
+        except OSError as e:
+            if e.errno != errno.EADDRINUSE or attempt == 59:
+                raise
+            time.sleep(1)
     try:
-        ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+        httpd.serve_forever()
     finally:
         fish.stop()
 
