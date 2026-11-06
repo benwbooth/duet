@@ -1154,7 +1154,8 @@ input, select { border-radius: 12px; }
   animation: panel-in 0.16s var(--ease-out); font-family: var(--sans); color: var(--text);
 }
 .context-menu button {
-  display: grid; justify-items: start; gap: 1px; width: 100%; min-height: 0; padding: 0.45rem 0.7rem; border: 0;
+  display: grid; grid-template-columns: 1fr; justify-content: stretch; justify-items: start; gap: 1px;
+  width: 100%; min-height: 0; padding: 0.45rem 0.7rem; border: 0;
   border-radius: 9px; background: transparent; box-shadow: none; text-align: left; font-size: 0.9rem;
 }
 .context-menu button:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
