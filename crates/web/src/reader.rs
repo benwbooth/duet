@@ -13,6 +13,15 @@ use crate::{api, format_time, toast};
 
 const READABLE: [&str; 6] = ["epub", "txt", "md", "html", "htm", "xhtml"];
 
+/// The page colour to use: light unless you've chosen otherwise ("auto" from older settings
+/// counts as light too).
+fn page_theme(t: &str) -> &str {
+    match t {
+        "sepia" | "gray" | "dark" => t,
+        _ => "light",
+    }
+}
+
 fn readable(a: &Asset) -> bool {
     READABLE.contains(&a.format.as_str())
 }
@@ -518,7 +527,7 @@ pub fn Reader(id: i64) -> impl IntoView {
             // Earlier versions saved plain Georgia as the default; read that as the book faces.
             let font = if p.font == "Georgia, serif" { duet_common::BOOK_FONT.to_string() } else { p.font.clone() };
             format!("--font-size:{}px;--line-height:{};--font:{}", font_size.get(), p.line_height, font)
-        } data-theme=move || prefs.get().theme>
+        } data-theme=move || page_theme(&prefs.get().theme).to_string()>
             <header class="reader-bar">
                 <a class="back" href=format!("#/work/{id}") aria-label="Back">"‹"</a>
                 <div class="reader-title">
@@ -528,6 +537,23 @@ pub fn Reader(id: i64) -> impl IntoView {
                         layout.get().and_then(|l| l.toc.iter().rev().find(|t| t.chapter <= c).map(|t| t.title.clone()))
                     }}</small>
                 </div>
+                <button class="icon-button theme-toggle" title="Light or dark pages" aria-label="Light or dark pages"
+                    on:click=move |_| {
+                        let next = if page_theme(&prefs.get_untracked().theme) == "dark" { "light" } else { "dark" };
+                        prefs.update(|p| p.theme = next.into());
+                        spawn_local(async move {
+                            if let Ok(mut s) = api::get::<Settings>("/api/settings").await {
+                                s.reader.theme = next.into();
+                                let _ = api::put::<_, Settings>("/api/settings", &s).await;
+                            }
+                        });
+                    }>
+                    {move || if page_theme(&prefs.get().theme) == "dark" {
+                        view! { <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg> }.into_any()
+                    } else {
+                        view! { <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg> }.into_any()
+                    }}
+                </button>
                 <button class="icon-button" title="Text and page view" on:click=move |_| view_open.update(|o| *o = !*o)>"Aa"</button>
                 <Show when=move || work.get().is_some_and(|w| w.assets.len() > 1)>
                     <button class="icon-button" title="Editions" on:click=move |_| editions_open.update(|o| *o = !*o)>"Editions"</button>
@@ -549,8 +575,8 @@ pub fn Reader(id: i64) -> impl IntoView {
                     <div class="view-row">
                         <span>"Page"</span>
                         <div class="swatches">
-                            {[("auto", "Match system"), ("light", "White"), ("sepia", "Sepia"), ("gray", "Gray"), ("dark", "Night")].map(|(t, label)| view! {
-                                <button class=format!("swatch swatch-{t}") class:active=move || prefs.with(|p| p.theme == t) title=label aria-label=label
+                            {[("light", "Light"), ("sepia", "Sepia"), ("gray", "Gray"), ("dark", "Dark")].map(|(t, label)| view! {
+                                <button class=format!("swatch swatch-{t}") class:active=move || prefs.with(|p| page_theme(&p.theme) == t) title=label aria-label=label
                                     on:click=move |_| {
                                         prefs.update(|p| p.theme = t.into());
                                         spawn_local(async move {
@@ -559,7 +585,7 @@ pub fn Reader(id: i64) -> impl IntoView {
                                                 let _ = api::put::<_, Settings>("/api/settings", &s).await;
                                             }
                                         });
-                                    }>{if t == "auto" { "A" } else { "" }}</button>
+                                    }></button>
                             })}
                         </div>
                     </div>
