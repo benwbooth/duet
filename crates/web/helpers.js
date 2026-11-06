@@ -137,6 +137,245 @@ function frame(cb) {
   }, 50);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Page curl on the graphics card, the way iBooks-style readers do it: each page is a picture
+// (a snapshot of the laid-out text) on a fine mesh, and the vertex shader rolls the mesh around a
+// cylinder whose axis follows the finger. Past the lift line the paper wraps over the cylinder,
+// and beyond it lies flat again, back side up. Everything stays one continuous sheet, so it can
+// peel diagonally from any corner, and the bound edge stays put.
+
+const CURL_VS = `
+attribute vec2 a_uv;
+uniform vec4 u_leaf;   // x0, width, height, hinge x
+uniform vec2 u_view;   // book width, height
+uniform vec2 u_L0;     // a point on the lift line
+uniform vec2 u_dir;    // across the lift line, toward the corner being pulled
+uniform float u_R;     // cylinder radius
+uniform float u_squash;
+varying vec2 v_pos;
+varying float v_theta;
+void main() {
+  vec2 X = vec2(u_leaf.x + a_uv.x * u_leaf.y, a_uv.y * u_leaf.z);
+  float s = dot(X - u_L0, u_dir);
+  vec3 P = vec3(X, 0.0);
+  float th = 0.0;
+  if (s > 0.0) {
+    float roll = 3.14159265 * u_R;
+    vec2 base = X - u_dir * s;
+    if (s < roll) {
+      th = s / u_R;
+      P = vec3(base + u_dir * u_R * sin(th), u_R * (1.0 - cos(th)));
+    } else {
+      th = 3.14159265;
+      P = vec3(base + u_dir * (roll - s), 2.0 * u_R);
+    }
+    P.x = u_leaf.w + (P.x - u_leaf.w) * u_squash;
+  }
+  v_pos = X;
+  v_theta = th;
+  float D = 2600.0;
+  vec2 c = u_view * 0.5;
+  vec2 scr = c + (P.xy - c) * D / (D - P.z);
+  gl_Position = vec4(scr.x / u_view.x * 2.0 - 1.0, 1.0 - scr.y / u_view.y * 2.0, -P.z / (8.0 * D), 1.0);
+}`;
+
+const CURL_FS = `
+precision highp float;
+uniform sampler2D u_front;
+uniform sampler2D u_back;
+uniform float u_ghost;
+uniform float u_flip;
+uniform vec2 u_view;
+uniform float u_hinge;
+uniform vec3 u_paper;
+varying vec2 v_pos;
+varying float v_theta;
+void main() {
+  vec2 uv = v_pos / u_view;
+  float c = cos(v_theta);
+  bool front = gl_FrontFacing == (u_flip < 0.5);
+  if (front) {
+    vec3 col = texture2D(u_front, uv).rgb;
+    float shade = 0.42 * pow(1.0 - max(c, 0.0), 1.5);
+    gl_FragColor = vec4(col * (1.0 - shade), 1.0);
+  } else {
+    vec3 col;
+    if (u_ghost > 0.5) {
+      // A single page's back: the page itself, faintly, through the paper.
+      col = mix(u_paper, texture2D(u_front, uv).rgb, 0.08);
+    } else {
+      col = texture2D(u_back, vec2((2.0 * u_hinge - v_pos.x) / u_view.x, uv.y)).rgb;
+    }
+    float dark = 0.4 * pow(max(0.0, 1.0 + c) / 2.0, 1.5);
+    float gloss = 0.3 * exp(-pow((v_theta - 2.2) / 0.41, 2.0));
+    gl_FragColor = vec4(col * (1.0 - dark) + gloss, 1.0);
+  }
+}`;
+
+class CurlGL {
+  constructor(book) {
+    this.canvas = document.createElement("canvas");
+    this.canvas.className = "page-gl";
+    const gl = this.canvas.getContext("webgl", { antialias: true, alpha: true, premultipliedAlpha: true });
+    if (!gl) throw new Error("no WebGL");
+    this.gl = gl;
+    const sh = (type, src) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+      return s;
+    };
+    const prog = gl.createProgram();
+    gl.attachShader(prog, sh(gl.VERTEX_SHADER, CURL_VS));
+    gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, CURL_FS));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    this.prog = prog;
+    gl.useProgram(prog);
+    // A fine grid over the sheet: fine enough that the roll looks round from any angle.
+    const NX = 72, NY = 48, verts = [], idx = [];
+    for (let j = 0; j <= NY; j++) for (let i = 0; i <= NX; i++) verts.push(i / NX, j / NY);
+    for (let j = 0; j < NY; j++)
+      for (let i = 0; i < NX; i++) {
+        const a = j * (NX + 1) + i, b = a + 1, c = a + NX + 1, d = c + 1;
+        idx.push(a, c, b, b, c, d);
+      }
+    this.count = idx.length;
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(prog, "a_uv");
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    this.u = {};
+    for (const n of ["u_leaf", "u_view", "u_L0", "u_dir", "u_R", "u_squash", "u_front", "u_back", "u_ghost", "u_flip", "u_hinge", "u_paper"])
+      this.u[n] = gl.getUniformLocation(prog, n);
+    gl.uniform1i(this.u.u_front, 0);
+    gl.uniform1i(this.u.u_back, 1);
+    gl.uniform1f(this.u.u_flip, 0);
+    this.tex = [gl.createTexture(), gl.createTexture()];
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    book.appendChild(this.canvas);
+  }
+
+  // Uploads a page picture (throws if the browser won't allow it, e.g. a tainted canvas).
+  texture(unit, source) {
+    const gl = this.gl;
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex[unit]);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+
+  size(W, H) {
+    const dpr = window.devicePixelRatio || 1;
+    this.canvas.style.width = `${W}px`;
+    this.canvas.style.height = `${H}px`;
+    if (this.canvas.width !== Math.round(W * dpr) || this.canvas.height !== Math.round(H * dpr)) {
+      this.canvas.width = Math.round(W * dpr);
+      this.canvas.height = Math.round(H * dpr);
+    }
+    this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+  }
+
+  draw(p) {
+    const gl = this.gl, u = this.u;
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.uniform4f(u.u_leaf, p.x0, p.w, p.H, p.hinge);
+    gl.uniform2f(u.u_view, p.W, p.H);
+    gl.uniform2f(u.u_L0, p.L0.x, p.L0.y);
+    gl.uniform2f(u.u_dir, p.dir.x, p.dir.y);
+    gl.uniform1f(u.u_R, p.R);
+    gl.uniform1f(u.u_squash, p.squash);
+    gl.uniform1f(u.u_ghost, p.ghost ? 1 : 0);
+    gl.uniform1f(u.u_hinge, p.hinge);
+    gl.uniform3f(u.u_paper, p.paper[0], p.paper[1], p.paper[2]);
+    gl.drawElements(gl.TRIANGLES, this.count, gl.UNSIGNED_SHORT, 0);
+  }
+}
+
+let pageCssText = null;
+const dataUrls = new Map();
+
+async function asDataUrl(src) {
+  if (!dataUrls.has(src)) {
+    dataUrls.set(src, fetch(src)
+      .then((r) => r.blob())
+      .then((b) => new Promise((res) => { const f = new FileReader(); f.onload = () => res(f.result); f.readAsDataURL(b); }))
+      .catch(() => ""));
+  }
+  return dataUrls.get(src);
+}
+
+const xmlText = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const xmlAttr = (s) => xmlText(s || "").replace(/"/g, "&quot;");
+
+// A picture of the book as it looks with `article` scrolled to `offset`: the page drawn through
+// an SVG foreignObject with the reader's own styles, so it matches the real page.
+async function snapshotPage(pager, article, offset) {
+  const W = pager.width, H = pager.book.clientHeight;
+  const reader = pager.book.closest(".reader") || pager.book.parentElement;
+  if (pageCssText === null) {
+    pageCssText = await fetch("styles.css").then((r) => r.text()).catch(() => "");
+  }
+  const clone = article.cloneNode(true);
+  clone.classList.remove("synced");
+  clone.querySelectorAll(".s.now").forEach((e) => e.classList.remove("now"));
+  clone.style.width = `${W}px`;
+  clone.style.transform = `translateX(${-offset}px)`;
+  // EPUB markup carries prefixed attributes (epub:type...) that an XML document must declare;
+  // epub: is declared below, anything else is dropped.
+  for (const el of clone.querySelectorAll("*")) {
+    for (const a of [...el.attributes]) {
+      if (a.name.includes(":") && !a.name.startsWith("epub:") && !a.name.startsWith("xml:")) el.removeAttribute(a.name);
+    }
+  }
+  for (const img of clone.querySelectorAll("img")) {
+    const src = img.getAttribute("src");
+    img.removeAttribute("srcset");
+    img.removeAttribute("loading");
+    if (src && !src.startsWith("data:")) img.setAttribute("src", await asDataUrl(new URL(src, location.href).href));
+  }
+  const bookCls = pager.book.className.replace(/\bgrab-edge\b/g, "");
+  const html =
+    `<div xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" class="${xmlAttr(reader.className)}" data-theme="${xmlAttr(reader.dataset.theme || "")}" ` +
+    `style="${xmlAttr(reader.getAttribute("style") || "")};position:relative;inset:auto;width:${W}px;height:${H}px;margin:0;padding:0;overflow:hidden;min-height:0">` +
+    `<style>${xmlText(pageCssText)}</style>` +
+    `<div class="${xmlAttr(bookCls)}" style="position:relative;width:${W}px;height:${H}px;margin:0;max-width:none;box-shadow:none;border-radius:0;overflow:hidden">` +
+    new XMLSerializer().serializeToString(clone) +
+    `</div></div>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><foreignObject x="0" y="0" width="${W}" height="${H}">${html}</foreignObject></svg>`;
+  const img = new Image();
+  img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  await img.decode();
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  ctx.getImageData(0, 0, 1, 1); // throws now, rather than mid-turn, if the browser taints it
+  return canvas;
+}
+
+// A linear gradient across a W×H box running along n, with stops given as signed distances
+// from the line through M perpendicular to n.
+function lineGradient(W, H, n, M, stops) {
+  const angle = (Math.atan2(n.x, -n.y) * 180) / Math.PI;
+  const len = Math.abs(W * n.x) + Math.abs(H * n.y);
+  const at0 = (M.x - W / 2) * n.x + (M.y - H / 2) * n.y + len / 2;
+  const s = stops.map(([d, c]) => `${c} ${(at0 + d).toFixed(1)}px`);
+  return `linear-gradient(${angle.toFixed(2)}deg, ${s.join(", ")})`;
+}
+
 class Pager {
   constructor(book, article, handlers, spreadPref) {
     this.book = book;
@@ -146,6 +385,8 @@ class Pager {
     this.page = 0;
     this.pages = 1;
     this.busy = false;
+    // Pictures of nearby pages for the curl, by offset; made in idle time after each turn.
+    this.snaps = new Map();
     this.layout();
     this.resize = new ResizeObserver(() => this.relayout());
     this.resize.observe(book.parentElement || book);
@@ -166,7 +407,8 @@ class Pager {
   destroy() {
     this.resize.disconnect();
     document.removeEventListener("keydown", this.onKey);
-    this.book.querySelectorAll(".curl-layer, .page3d").forEach((e) => e.remove());
+    this.book.querySelectorAll(".curl-layer, .page3d, .page-gl").forEach((e) => e.remove());
+    this.dead = true;
     this.book.classList.remove("spread");
     delete this.book.__pager;
   }
@@ -221,6 +463,7 @@ class Pager {
     if (last) this.pages = Math.max(this.pages, this.pageOf(last, true) + 1);
     this.page = Math.min(this.page, this.pages - 1);
     this.place(this.article, this.page);
+    this.snaps.clear();
     this.report();
   }
 
@@ -254,6 +497,44 @@ class Pager {
       }
     }
     if (this.h.onPage) this.h.onPage(this.page + 1, this.pages, this.spread);
+    this.warm();
+  }
+
+  // What a page picture depends on besides its place: size, colours and type.
+  snapKey() {
+    const reader = this.book.closest(".reader");
+    return `${this.width}x${this.book.clientHeight}|${reader ? reader.dataset.theme : ""}|${reader ? reader.getAttribute("style") : ""}`;
+  }
+
+  snap(offset) {
+    const s = this.snaps.get(offset);
+    return s && s.key === this.snapKey() && s.canvas ? s.canvas : null;
+  }
+
+  // Pictures this page and the ones either side, quietly, so a turn can start at once.
+  warm() {
+    if (this.noGL) return;
+    clearTimeout(this.warmTimer);
+    this.warmTimer = setTimeout(async () => {
+      const key = this.snapKey();
+      for (const p of [this.page, this.page + 1, this.page - 1]) {
+        if (this.dead || p < 0 || p >= this.pages) continue;
+        const offset = p * this.width;
+        const have = this.snaps.get(offset);
+        if (have && have.key === key) continue;
+        const entry = { key, canvas: null };
+        this.snaps.set(offset, entry);
+        try {
+          entry.canvas = await snapshotPage(this, this.article, offset);
+        } catch (e) {
+          // No pictures in this browser: page turns use the 3D strips instead.
+          console.warn("page pictures unavailable:", e);
+          this.noGL = true;
+          return;
+        }
+        await new Promise((r) => (window.requestIdleCallback ? requestIdleCallback(r, { timeout: 300 }) : setTimeout(r, 30)));
+      }
+    }, 150);
   }
 
   showElement(el, animate) {
@@ -292,7 +573,10 @@ class Pager {
   // Turning past the chapter's first or last page: the page on screen is kept, the neighbouring
   // chapter is laid out underneath, and the kept page turns away over it.
   carryInto(dir, go) {
-    this.book.__carry = { dir, snap: this.article.cloneNode(true), at: this.page * this.width, spread: this.spread };
+    this.book.__carry = {
+      dir, snap: this.article.cloneNode(true), at: this.page * this.width, spread: this.spread,
+      picture: this.snap(this.page * this.width), key: this.snapKey(),
+    };
     go();
   }
 
@@ -322,6 +606,89 @@ class Pager {
   // little further than the one before, so the page bends along its width as it swings over,
   // the free edge leading and the bound edge lying flat until the page has to lift from it.
   begin(dir, carry) {
+    const t = this.beginGL(dir, carry);
+    if (t) return t;
+    return this.begin3d(dir, carry);
+  }
+
+  // The curl on the graphics card, when pictures of both sides of the turning page are ready.
+  beginGL(dir, carry) {
+    if (this.noGL) return null;
+    const W = this.width, H = this.book.clientHeight, half = W / 2;
+    const target = carry ? this.page : this.page + dir;
+    const cur = carry ? carry.at : this.page * W;
+    const curPic = carry ? (carry.key === this.snapKey() ? carry.picture : null) : this.snap(cur);
+    const nextPic = this.snap(target * W);
+    if (!curPic || !nextPic) return null;
+    try {
+      if (!this.gl) this.gl = new CurlGL(this.book);
+    } catch (e) {
+      console.warn("no WebGL page curl:", e);
+      this.noGL = true;
+      return null;
+    }
+    this.busy = true;
+    const t = { dir, target, W, H, layers: [], gl: true };
+    let front, back;
+    if (!this.spread) {
+      t.leaf = [0, W];
+      t.hinge = 0;
+      t.single = true;
+      t.C0x = W;
+      t.ghost = true;
+      t.reverse = dir < 0;
+      if (dir > 0) {
+        front = curPic;
+        back = curPic;
+        if (!carry) this.place(this.article, target);
+      } else {
+        // The previous page is laid back down over this one.
+        front = nextPic;
+        back = nextPic;
+        if (carry) t.layers.push(this.layer("curl-under", this.copy(cur, carry.snap)));
+      }
+    } else if (dir > 0) {
+      t.leaf = [half, W];
+      t.hinge = half;
+      t.C0x = W;
+      front = curPic;
+      back = nextPic;
+      t.layers.push(this.halfLayer(0, this.copy(cur, carry ? carry.snap : null)));
+      if (!carry) this.place(this.article, target);
+    } else {
+      t.leaf = [0, half];
+      t.hinge = half;
+      t.C0x = 0;
+      front = curPic;
+      back = nextPic;
+      t.layers.push(this.halfLayer(half, this.copy(cur, carry ? carry.snap : null)));
+      if (!carry) this.place(this.article, target);
+    }
+    try {
+      this.gl.texture(0, front);
+      this.gl.texture(1, back);
+    } catch (e) {
+      console.warn("page pictures can't be drawn:", e);
+      this.noGL = true;
+      this.busy = false;
+      this.place(this.article, this.page);
+      return null;
+    }
+    // The paper colour, for the back of a single page.
+    const probe = document.createElement("canvas").getContext("2d");
+    probe.fillStyle = getComputedStyle(this.book).getPropertyValue("--page-bg").trim() || "#fff";
+    const hex = probe.fillStyle.startsWith("#") ? probe.fillStyle : "#ffffff";
+    t.paper = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+    t.under = this.layer("curl-shadow");
+    t.layers.push(t.under);
+    this.book.append(...t.layers);
+    this.gl.size(W, H);
+    this.gl.canvas.style.display = "block";
+    t.layers.push({ remove: () => { this.gl.canvas.style.display = "none"; } });
+    return t;
+  }
+
+  begin3d(dir, carry) {
     this.busy = true;
     const W = this.width, H = this.book.clientHeight, half = W / 2;
     const cur = carry ? carry.at : this.page * W;
@@ -433,12 +800,77 @@ class Pager {
   // Where the free edge rests (flat) and where it lands when the page has turned all the way.
   ends(t, y) {
     const C = { x: t.C0x, y };
-    const F = { x: 2 * t.hinge - t.C0x, y };
+    // On the graphics card a single page rolls up into the spine; otherwise it swings over it.
+    const F = { x: t.gl && t.single ? t.hinge : 2 * t.hinge - t.C0x, y };
     return t.reverse ? [F, C] : [C, F];
   }
 
-  // Turns the sheet so its free edge is over x = P.x (P.y is where it's held, which tips it).
   pose(t, P) {
+    if (t.gl) this.poseGL(t, P);
+    else this.pose3d(t, P);
+  }
+
+  // The curl: the corner of the sheet pulled to P. The sheet is flat up to a lift line, rolls
+  // over a cylinder of radius R, and lies flat again (back up) beyond it, so the corner (at
+  // s = (d + πR) / 2 past the line) lands exactly at P. The lift line never crosses the spine.
+  poseGL(t, P) {
+    const { W, H } = t;
+    const C = { x: t.C0x, y: t.C.y };
+    const w = t.leaf[1] - t.leaf[0];
+    // Paper doesn't stretch: the corner stays within a page's width of the spine.
+    const hp = { x: t.hinge, y: C.y };
+    let vx = P.x - hp.x, vy = P.y - hp.y;
+    const r = Math.hypot(vx, vy);
+    if (r > w) { vx *= w / r; vy *= w / r; }
+    P = { x: hp.x + vx, y: hp.y + vy };
+    let d = Math.hypot(P.x - C.x, P.y - C.y);
+    const flat = { x0: t.leaf[0], w, W, H, hinge: t.hinge, ghost: !!t.ghost, paper: t.paper, squash: 1 };
+    if (d < 0.5) {
+      this.gl.draw({ ...flat, L0: { x: -1e5, y: -1e5 }, dir: { x: 1, y: 0 }, R: 1 });
+      t.under.style.opacity = "0";
+      t.progress = 0;
+      return;
+    }
+    const n = { x: (P.x - C.x) / d, y: (P.y - C.y) / d };
+    const toSpine = Math.min((t.hinge - C.x) * n.x - C.y * n.y, (t.hinge - C.x) * n.x + (H - C.y) * n.y);
+    if (d > 2 * toSpine) d = Math.max(0.5, 2 * toSpine);
+    const span = (t.single ? Math.abs(t.hinge - C.x) : Math.abs(2 * t.hinge - 2 * C.x)) || W;
+    const turned = Math.min(1, d / span);
+    // Flex: a small curl at the corner, a wide soft bend mid-turn, more when moved quickly.
+    const now = performance.now();
+    if (t.lastP) {
+      const speed = Math.hypot(P.x - t.lastP.x, P.y - t.lastP.y) / Math.max(1, now - t.lastT);
+      t.flex = (t.flex || 0) * 0.8 + Math.min(w * 0.12, speed * 22) * 0.2;
+    }
+    t.lastP = P;
+    t.lastT = now;
+    const most = (2 * toSpine - d) / Math.PI;
+    let R = Math.min(w * 0.35, 8 + d * 0.12 + w * 0.18 * Math.sin(Math.PI * turned) + (t.flex || 0));
+    // One page, at the end: the sheet lifts off whole and rolls up against the spine...
+    const tail = t.single ? Math.max(0, Math.min(1, (turned - 0.7) / 0.3)) : 0;
+    R = Math.max(0.5, Math.min(most, R + (most - R) * tail));
+    const sC = (d + Math.PI * R) / 2;
+    const L0 = { x: C.x + n.x * sC, y: C.y + n.y * sC };
+    // ...and turns edge-on into it.
+    const upright = t.single ? Math.max(0, Math.min(1, (turned - 0.8) / 0.2)) : 0;
+    this.gl.draw({ ...flat, L0, dir: { x: -n.x, y: -n.y }, R, squash: 1 - 0.98 * upright });
+    const p = Math.min(1, Math.abs(P.x - C.x) / span);
+    t.progress = t.reverse ? 1 - p : p;
+    // The sheet's shadow on the page it uncovers, deepest just past the roll.
+    const lift = Math.sin(Math.PI * Math.min(1, turned));
+    const reach = Math.min(170, 30 + d * 0.5);
+    const edge = { x: L0.x - n.x * R, y: L0.y - n.y * R };
+    t.under.style.opacity = "1";
+    t.under.style.clipPath = `inset(0 ${W - t.leaf[1]}px 0 ${t.leaf[0]}px)`;
+    t.under.style.background = lineGradient(W, H, { x: -n.x, y: -n.y }, edge, [
+      [0, `rgba(0,0,0,${(0.4 * lift + 0.06).toFixed(3)})`],
+      [reach * 0.35, `rgba(0,0,0,${(0.12 * lift).toFixed(3)})`],
+      [reach, "rgba(0,0,0,0)"],
+    ]);
+  }
+
+  // Turns the sheet so its free edge is over x = P.x (P.y is where it's held, which tips it).
+  pose3d(t, P) {
     const { H } = t;
     const sigma = t.sigma, w = t.leaf[1] - t.leaf[0];
     const theta = Math.acos(Math.max(-1, Math.min(1, (sigma * (P.x - t.hinge)) / w)));
@@ -581,8 +1013,23 @@ class Pager {
         this.book.classList.add("grab-edge");
         try { this.book.setPointerCapture(e.pointerId); } catch (_) {}
       }
-      // The page's edge follows your finger, held at the height you took hold of it.
-      const P = { x: drag.from.x + dx, y: drag.from.y + (e.clientY - start.y) };
+      let P = { x: drag.from.x + dx, y: drag.from.y + (e.clientY - start.y) };
+      if (drag.gl && !drag.reverse) {
+        // The paper under your finger stays under it: the fold is halfway between where you
+        // took hold and where your finger is now, and the corner goes wherever that carries it.
+        const F = { x: e.clientX - rect.left, y: Math.max(-drag.H * 0.2, Math.min(drag.H * 1.2, e.clientY - rect.top)) };
+        const G = drag.G;
+        const gx = F.x - G.x, gy = F.y - G.y;
+        const gd = Math.hypot(gx, gy);
+        if (gd > 0.5) {
+          const n = { x: gx / gd, y: gy / gd };
+          const M = { x: (G.x + F.x) / 2, y: (G.y + F.y) / 2 };
+          const k = 2 * ((drag.C.x - M.x) * n.x + (drag.C.y - M.y) * n.y);
+          P = { x: drag.C.x - k * n.x, y: drag.C.y - k * n.y };
+        } else {
+          P = drag.from;
+        }
+      }
       drag.at = P;
       this.pose(drag, P);
     });
