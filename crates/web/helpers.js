@@ -357,7 +357,26 @@ async function snapshotPage(pager, article, offset) {
   clone.classList.remove("synced");
   clone.querySelectorAll(".s.now").forEach((e) => e.classList.remove("now"));
   clone.style.width = `${W}px`;
-  clone.style.transform = `translateX(${-offset}px)`;
+  // The picture starts at the very word the live page starts with: laid out from the chapter's
+  // beginning, small line-break differences would add up over the pages and the picture would
+  // show a few lines more or less than the page.
+  const start = offset > 0 ? pageStart(article, offset) : null;
+  if (start) {
+    const node = start.path.reduce((n, i) => (n ? n.childNodes[i] : null), clone);
+    if (node) {
+      const cut = document.createRange();
+      cut.setStart(clone, 0);
+      cut.setEnd(node, start.index);
+      cut.deleteContents();
+      // The block the page begins inside continues a paragraph: no indent, no drop cap.
+      let block = node.nodeType === 1 ? node : node.parentElement;
+      while (block && block !== clone && !/^(P|LI|BLOCKQUOTE|DIV|H\d|FIGCAPTION|DD|DT)$/.test(block.tagName)) block = block.parentElement;
+      if (block && block !== clone) block.style.textIndent = "0";
+    }
+    clone.style.transform = "none";
+  } else {
+    clone.style.transform = `translateX(${-offset}px)`;
+  }
   // EPUB markup carries prefixed attributes (epub:type...) that an XML document must declare;
   // epub: is declared below, anything else is dropped.
   for (const el of clone.querySelectorAll("*")) {
@@ -399,6 +418,51 @@ async function snapshotPage(pager, article, offset) {
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   ctx.getImageData(0, 0, 1, 1); // throws now, rather than mid-turn, if the browser taints it
   return canvas;
+}
+
+// Where the page at `offset` (px into the laid-out chapter) begins: the text node (as a path of
+// child indices from the article) and the character in it. Columns run left to right, so it's
+// the first character whose box lies at or past the page's left edge.
+function pageStart(article, offset) {
+  const left = article.getBoundingClientRect().left;
+  // Text, and pictures (a page can begin with one).
+  const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
+    acceptNode: (n) => (n.nodeType === 3 || /^(IMG|SVG|HR)$/i.test(n.nodeName) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP),
+  });
+  const range = document.createRange();
+  const x = (node, i) => {
+    range.setStart(node, i);
+    range.setEnd(node, i + 1);
+    const r = range.getClientRects()[0] || range.getBoundingClientRect();
+    return r ? r.left - left : -Infinity;
+  };
+  const pathTo = (n) => {
+    const path = [];
+    for (; n !== article; n = n.parentNode) path.unshift([...n.parentNode.childNodes].indexOf(n));
+    return path;
+  };
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.nodeType === 1) {
+      const r = node.getBoundingClientRect();
+      if (r.width && r.left - left >= offset - 1) {
+        const path = pathTo(node);
+        return { path: path.slice(0, -1), index: path[path.length - 1] };
+      }
+      continue;
+    }
+    const len = node.length;
+    if (!len || !node.data.trim()) continue;
+    if (x(node, len - 1) < offset - 1) continue;
+    // Binary search for the first character on this page.
+    let lo = 0, hi = len - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (x(node, mid) >= offset - 1) hi = mid;
+      else lo = mid + 1;
+    }
+    return { path: pathTo(node), index: lo };
+  }
+  return null;
 }
 
 // A linear gradient across a W×H box running along n, with stops given as signed distances
