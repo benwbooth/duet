@@ -1048,6 +1048,21 @@ class Pager {
     ]);
   }
 
+  fadeIn(t) {
+    return new Promise((resolve) => {
+      const step = () => {
+        this.revealUnder(t);
+        if (t.fadeStart === undefined) {
+          // Opaque; the page underneath is changed on the next frame.
+          frame(() => resolve());
+        } else {
+          frame(step);
+        }
+      };
+      step();
+    });
+  }
+
   // The next page goes under the turning one only once the turning one is drawn over it.
   revealUnder(t) {
     if (t.fadeStart !== undefined) {
@@ -1208,6 +1223,9 @@ class Pager {
     t.C = { x: t.C0x, y: H * 0.94 };
     const [rest] = this.ends(t, t.C.y);
     this.pose(t, rest);
+    // Fade the picture in over the page while it's still at rest, so the page underneath never
+    // shows through a lifting corner before it's been changed to the right one.
+    if (t.gl) await this.fadeIn(t);
     await this.finish(t, rest, true, H * 0.16);
   }
 
