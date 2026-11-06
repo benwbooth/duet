@@ -407,7 +407,7 @@ class Pager {
   destroy() {
     this.resize.disconnect();
     document.removeEventListener("keydown", this.onKey);
-    this.book.querySelectorAll(".curl-layer, .page3d, .page-gl").forEach((e) => e.remove());
+    this.book.querySelectorAll(".curl-layer, .page3d, .page-gl, .page-warp").forEach((e) => e.remove());
     this.dead = true;
     this.book.classList.remove("spread");
     delete this.book.__pager;
@@ -464,7 +464,47 @@ class Pager {
     this.page = Math.min(this.page, this.pages - 1);
     this.place(this.article, this.page);
     this.snaps.clear();
+    this.warp();
     this.report();
+  }
+
+  // Real pages aren't flat: they curve down into the spine and their corners lift a little. The
+  // page's outline is drawn that way over its very edge (the text, well inside the margins, stays
+  // flat): what lies outside the curved outline shows as the page beneath.
+  warp() {
+    let svg = this.book.querySelector(":scope > .page-warp");
+    const narrow = this.book.clientWidth < 640 && (this.book.parentElement || this.book).clientWidth < 700;
+    if (narrow) {
+      if (svg) svg.remove();
+      return;
+    }
+    const W = this.width, H = this.book.clientHeight;
+    const spine = this.spread ? W / 2 : 0;
+    const pageW = this.spread ? W / 2 : W;
+    // How far the edge sits inside the box at x along the top or bottom.
+    const dip = (x) => {
+      const u = this.spread ? (x < spine ? x / pageW : (x - spine) / pageW) : x / pageW;
+      return 6.5 * Math.exp(-Math.abs(x - spine) / 46) + 1.6 * (1 - Math.sin(Math.PI * Math.max(0, Math.min(1, u))));
+    };
+    const side = (y) => 2.4 * (1 - Math.sin((Math.PI * y) / H));
+    const pts = [];
+    for (let x = 0; x <= W; x += 6) pts.push([Math.max(x, side(0)), dip(x)]);
+    for (let y = 0; y <= H; y += 12) pts.push([W - side(y), dip(W) + (H - 2 * dip(W)) * (y / H)]);
+    for (let x = W; x >= 0; x -= 6) pts.push([Math.min(Math.max(x, side(H)), W - side(H)), H - dip(x)]);
+    for (let y = H; y >= 0; y -= 12) pts.push([side(y), dip(0) + (H - 2 * dip(0)) * (y / H)]);
+    const outline = "M" + pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("L") + "Z";
+    if (!svg) {
+      svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("class", "page-warp");
+      svg.setAttribute("aria-hidden", "true");
+      this.book.appendChild(svg);
+    }
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("width", W);
+    svg.setAttribute("height", H);
+    svg.innerHTML =
+      `<path class="warp-under" fill-rule="evenodd" d="M0,0H${W}V${H}H0Z${outline}"/>` +
+      `<path class="warp-edge" fill="none" d="${outline}"/>`;
   }
 
   place(article, page) {
