@@ -742,29 +742,42 @@ pub fn Reader(id: i64) -> impl IntoView {
                                 track.update(|t| *t += 1);
                             }
                         }></audio>
-                    <div class="scrub">
-                        <span>{move || format_time(time.get())}</span>
-                        <input type="range" min="0" step="1" prop:max=move || duration.get() prop:value=move || time.get()
-                            on:change=move |ev| {
-                                if let (Some(a), Ok(v)) = (audio_el(), event_target_value(&ev).parse::<f64>()) { a.set_current_time(v) }
-                            }/>
-                        <span>{move || format_time(duration.get())}</span>
+                    <div class="np">
+                        {move || work.get().map(|w| crate::cover(w.cover_url, w.title))}
+                        <div class="np-text">
+                            <strong>{move || work.get().map(|w| w.title)}</strong>
+                            <small>{move || {
+                                let name = audio_asset.get().and_then(|a| a.tracks.get(track.get()).map(|t| t.title.clone())).unwrap_or_default();
+                                let left = (duration.get() - time.get()).max(0.0);
+                                format!("{name} · −{}", format_time(left))
+                            }}</small>
+                        </div>
                     </div>
-                    <div class="controls">
-                        <select title="Track" on:change=move |ev| {
+                    <div class="transport">
+                        <button class="round" title="Back 30 seconds" on:click=move |_| skip(-30.0)>
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4"/></svg><span>"30"</span>
+                        </button>
+                        <button class="round play" class:playing=move || playing.get() title="Play or pause" on:click=toggle>
+                            {move || if playing.get() {
+                                view! { <svg viewBox="0 0 24 24" aria-hidden="true"><path class="fill" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg> }.into_any()
+                            } else {
+                                view! { <svg viewBox="0 0 24 24" aria-hidden="true"><path class="fill" d="M8 5.5v13l11-6.5z"/></svg> }.into_any()
+                            }}
+                            <span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+                        </button>
+                        <button class="round" title="Forward 30 seconds" on:click=move |_| skip(30.0)>
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/></svg><span>"30"</span>
+                        </button>
+                    </div>
+                    <div class="np-extra">
+                        <select title="Chapter of the recording" on:change=move |ev| {
                             if let Ok(t) = event_target_value(&ev).parse::<usize>() { seek_to(t, 0.0) }
                         }>
                             {move || audio_asset.get().map(|a| a.tracks.into_iter().enumerate().map(|(i, t)| view! {
                                 <option value=i.to_string() selected=move || track.get() == i>{t.title}</option>
                             }).collect_view())}
                         </select>
-                        <button class="round" title="Back 30 seconds" on:click=move |_| skip(-30.0)>"−30"</button>
-                        <button class="round play" class:playing=move || playing.get() title="Play or pause" on:click=toggle>
-                            {move || if playing.get() { "❚❚" } else { "▶" }}
-                            <span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-                        </button>
-                        <button class="round" title="Forward 30 seconds" on:click=move |_| skip(30.0)>"+30"</button>
-                        <select title="Speed" on:change=move |ev| {
+                        <select class="speed" title="Speed" on:change=move |ev| {
                             if let Ok(r) = event_target_value(&ev).parse::<f64>() {
                                 rate.set(r);
                                 if let Some(a) = audio_el() { a.set_playback_rate(r) }
@@ -774,6 +787,15 @@ pub fn Reader(id: i64) -> impl IntoView {
                                 <option value=r.to_string() selected=move || (rate.get() - r).abs() < 0.01>{format!("{r}×")}</option>
                             })}
                         </select>
+                    </div>
+                    <div class="scrub">
+                        <span>{move || format_time(time.get())}</span>
+                        <input type="range" min="0" step="1" prop:max=move || duration.get() prop:value=move || time.get()
+                            style=move || format!("--pct:{:.2}%", if duration.get() > 0.0 { time.get() / duration.get() * 100.0 } else { 0.0 })
+                            on:input=move |ev| {
+                                if let (Some(a), Ok(v)) = (audio_el(), event_target_value(&ev).parse::<f64>()) { a.set_current_time(v) }
+                            }/>
+                        <span>{move || format_time(duration.get())}</span>
                     </div>
                 </div>
             </Show>
