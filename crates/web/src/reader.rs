@@ -1713,6 +1713,9 @@ fn Assistant(
     let persona = RwSignal::new(None::<i64>);
     let speak = RwSignal::new(true);
     let recording = RwSignal::new(false);
+    // Asking for the microphone (a permission prompt may be up), and how loud it hears you.
+    let mic_starting = RwSignal::new(false);
+    let mic_level = RwSignal::new(0.0f64);
     let thinking = RwSignal::new(false);
     let speaking = RwSignal::new(false);
     let toast = toast();
@@ -1780,6 +1783,9 @@ fn Assistant(
                     Ok(text) => {
                         let text = text.as_string().unwrap_or_default();
                         input.set(text.clone());
+                        if text.trim().is_empty() {
+                            toast.show("Didn't catch any words. Is the right microphone selected?".to_string());
+                        }
                         ask(text)
                     }
                     Err(e) => toast.show(format!("Couldn't transcribe: {}", js_error(&e))),
@@ -1793,8 +1799,16 @@ fn Assistant(
                 }
             })
             .into_js_value();
+            let on_level = Closure::<dyn Fn(f64)>::new(move |l: f64| mic_level.set(l)).into_js_value();
+            if mic_starting.get_untracked() {
+                return;
+            }
+            mic_starting.set(true);
+            input.set(String::new());
             spawn_local(async move {
-                match crate::start_recording(on_partial.unchecked_ref()).await {
+                let started = crate::start_recording(on_partial.unchecked_ref(), on_level.unchecked_ref()).await;
+                mic_starting.set(false);
+                match started {
                     Ok(_) => recording.set(true),
                     Err(e) => toast.show(format!("Microphone unavailable: {}", js_error(&e))),
                 }
@@ -1883,10 +1897,12 @@ fn Assistant(
                     <Show when=move || speaking.get()><p class="hint thinking"><span class="spinner small"></span>"Getting the voice ready…"</p></Show>
                 </div>
                 <form on:submit=move |ev| { ev.prevent_default(); ask(input.get_untracked()) }>
-                    <input type="text" placeholder="Type a question" prop:value=move || input.get()
+                    <input type="text" prop:value=move || input.get()
+                        placeholder=move || if mic_starting.get() { "Waiting for the microphone…" } else if recording.get() { "Listening…" } else { "Type a question" }
                         on:input=move |ev| input.set(event_target_value(&ev))/>
                     <Show when=crate::mic_supported>
-                        <button type="button" class="mic" class:recording=move || recording.get() on:click=mic
+                        <button type="button" class="mic" class:recording=move || recording.get() class:starting=move || mic_starting.get() on:click=mic
+                            style:--level=move || format!("{:.2}", if recording.get() { mic_level.get() } else { 0.0 })
                             title=move || if recording.get() { "Stop and send" } else { "Talk" } aria-label="Talk">
                             {move || if recording.get() {
                                 view! { <svg viewBox="0 0 24 24" aria-hidden="true" class="mic-icon"><rect x="7" y="7" width="10" height="10" rx="2.5" class="fill"/></svg> }.into_any()

@@ -21,21 +21,43 @@ async function transcribeChunks(type) {
   return body;
 }
 
-export async function startRecording(onPartial) {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+export async function startRecording(onPartial, onLevel) {
+  // Waiting on a permission prompt nobody can see would look like the button doing nothing.
+  const stream = await Promise.race([
+    navigator.mediaDevices.getUserMedia({ audio: true }),
+    new Promise((_, no) => setTimeout(() => no(new Error("no answer from the microphone permission prompt")), 15000)),
+  ]);
   chunks = [];
   recorder = new MediaRecorder(stream);
   recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
   recorder.start(500);
-  const live = { busy: null, sent: 0, stopped: false };
+  const live = { busy: null, sent: 0, stopped: false, error: null };
   partial = live;
+  // How loud it is, for the button to show it's hearing you.
+  try {
+    const ctx = new AudioContext();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const buf = new Float32Array(analyser.fftSize);
+    live.ctx = ctx;
+    const meter = () => {
+      if (live.stopped) return;
+      analyser.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (const v of buf) sum += v * v;
+      if (onLevel) onLevel(Math.min(1, Math.sqrt(sum / buf.length) * 6));
+      requestAnimationFrame(meter);
+    };
+    meter();
+  } catch (_) {}
   const tick = async () => {
     if (live.stopped) return;
     if (chunks.length > live.sent && recorder) {
       live.sent = chunks.length;
       live.busy = transcribeChunks(recorder.mimeType || "audio/webm")
         .then((text) => { if (!live.stopped && onPartial) onPartial(text); })
-        .catch(() => {});
+        .catch((e) => { live.error = e; });
       await live.busy;
       live.busy = null;
     }
@@ -50,6 +72,7 @@ export async function stopRecording() {
   if (partial) {
     partial.stopped = true;
     clearTimeout(partial.timer);
+    if (partial.ctx) partial.ctx.close().catch(() => {});
     if (partial.busy) await partial.busy;
     partial = null;
   }

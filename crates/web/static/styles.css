@@ -1245,3 +1245,6 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 .p3-slice { left: 0; }
 /* Copies of the page show the highlight as it already is, not glowing in afresh. */
 .page3d .s, .curl-layer .s { animation: none !important; transition: none !important; }
+/* While recording, a ring around the mic swells with your voice: it's hearing you. */
+.assistant .mic.recording { animation: none; box-shadow: 0 0 0 calc(2px + var(--level, 0) * 10px) color-mix(in srgb, var(--danger) 35%, transparent); transition: box-shadow 0.08s linear; }
+.assistant .mic.starting { opacity: 0.6; }
