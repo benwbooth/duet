@@ -121,6 +121,8 @@ function pagerOf(container) {
 }
 
 const TURN_MS = 620;
+// Strips the rolling part of a turning page is drawn with.
+const STRIPS = 12;
 
 // The next animation frame, or a timer when frames aren't coming (a hidden or throttled page),
 // so a page turn always finishes.
@@ -370,18 +372,33 @@ class Pager {
     t.frontShade.className = "curl-shade";
     t.front.appendChild(t.frontShade);
     // The back of the sheet: the next page for a spread; for a single page, this page seen
-    // through the paper. It's laid out mirrored about the spine so the fold mirrors it back.
+    // through the paper. It's laid out mirrored about the spine so turning mirrors it back.
+    const backFace = () => {
+      const inner = document.createElement("div");
+      inner.className = ghost ? "curl-back ghosted" : "curl-back";
+      inner.style.transform = ghost ? "none" : `translateX(${2 * t.hinge}px) scaleX(-1)`;
+      inner.appendChild(back.cloneNode(true));
+      return inner;
+    };
+    // Where the sheet lifts it rolls over a cylinder: drawn as thin strips, each a copy of the
+    // page squeezed and shaded as that band of paper faces away from you and then back.
     t.flapWrap = document.createElement("div");
     t.flapWrap.className = "curl-flap-wrap";
+    t.strips = [];
+    for (let k = 0; k < STRIPS; k++) {
+      const strip = this.layer("curl-strip");
+      strip.appendChild(k < STRIPS / 2 ? front.cloneNode(true) : backFace());
+      const shade = document.createElement("div");
+      shade.className = "curl-shade";
+      strip.appendChild(shade);
+      t.strips.push({ el: strip, shade });
+    }
+    // Past the roll, the rest of the sheet lies flat, back side up.
     t.flap = this.layer("curl-flap");
-    const inner = document.createElement("div");
-    inner.className = ghost ? "curl-back ghosted" : "curl-back";
-    inner.style.transform = ghost ? "none" : `translateX(${2 * t.hinge}px) scaleX(-1)`;
-    inner.appendChild(back);
     t.flapShade = document.createElement("div");
     t.flapShade.className = "curl-shade";
-    t.flap.append(inner, t.flapShade);
-    t.flapWrap.appendChild(t.flap);
+    t.flap.append(backFace(), t.flapShade);
+    t.flapWrap.append(...t.strips.map((x) => x.el), t.flap);
     t.layers.push(t.under, t.front, t.flapWrap);
     this.book.append(...t.layers);
     return t;
@@ -401,6 +418,10 @@ class Pager {
   }
 
   // Draws the sheet with its pulled corner at P (its resting place is t.C).
+  //
+  // The sheet stays flat up to a line, then rolls over a cylinder of radius R and lies flat
+  // again, back up, beyond it. A point s past the line lands at R·sin(s/R) on the roll, or at
+  // πR − s once it's off it, so the corner (at s = (d + πR) / 2) lands exactly at P.
   pose(t, P) {
     const { W, H } = t;
     const C = { x: t.C0x, y: t.C.y };
@@ -414,6 +435,7 @@ class Pager {
     const dx = P.x - C.x, dy = P.y - C.y;
     const d = Math.hypot(dx, dy);
     const rect = [[t.leaf[0], 0], [t.leaf[1], 0], [t.leaf[1], H], [t.leaf[0], H]];
+    const none = "polygon(0 0, 0 0, 0 0)";
     if (d < 0.5) {
       t.front.style.clipPath = poly(rect);
       t.flapWrap.style.display = "none";
@@ -422,40 +444,67 @@ class Pager {
       return;
     }
     t.flapWrap.style.display = "";
+    // n points from the corner's resting place toward where it's been pulled.
     const n = { x: dx / d, y: dy / d };
-    const M = { x: (C.x + P.x) / 2, y: (C.y + P.y) / 2 };
-    const side = (pt) => (pt[0] - M.x) * n.x + (pt[1] - M.y) * n.y;
-    const keep = clipPoly(rect, (pt) => side(pt));
-    const fold = clipPoly(rect, (pt) => -side(pt));
-    t.front.style.clipPath = keep.length > 2 ? poly(keep) : "polygon(0 0, 0 0, 0 0)";
-    t.flap.style.clipPath = fold.length > 2 ? poly(fold) : "polygon(0 0, 0 0, 0 0)";
-    t.under.style.clipPath = t.flap.style.clipPath;
-    // Mirror over the fold: X' = X - 2((X - M)·n) n.
-    const k = 2 * (M.x * n.x + M.y * n.y);
-    t.flap.style.transform =
-      `matrix(${1 - 2 * n.x * n.x}, ${-2 * n.x * n.y}, ${-2 * n.x * n.y}, ${1 - 2 * n.y * n.y}, ${k * n.x}, ${k * n.y})`;
+    const R = Math.min(w * 0.12, 6 + d * 0.16);
+    const sC = (d + Math.PI * R) / 2;
+    // The line where the sheet starts to lift; s is measured from it, back toward the corner.
+    const L0 = { x: C.x + n.x * sC, y: C.y + n.y * sC };
+    const sOf = (pt) => -((pt[0] - L0.x) * n.x + (pt[1] - L0.y) * n.y);
+    const band = (lo, hi) => {
+      let q = rect;
+      if (lo !== null) q = clipPoly(q, (pt) => sOf(pt) - lo);
+      if (hi !== null) q = clipPoly(q, (pt) => hi - sOf(pt));
+      return q.length > 2 ? poly(q) : none;
+    };
+    // Moves each point (f(s) - s) along the sheet (toward the corner, -n), f(s) = a·s + b.
+    const affine = (a, b) => {
+      const ux = -n.x, uy = -n.y;
+      const k = a - 1;
+      const T = b - k * (ux * L0.x + uy * L0.y);
+      return `matrix(${1 + k * ux * ux}, ${k * ux * uy}, ${k * ux * uy}, ${1 + k * uy * uy}, ${T * ux}, ${T * uy})`;
+    };
+    t.front.style.clipPath = band(null, 0);
     const span = Math.abs(2 * t.hinge - 2 * C.x) || W;
     const p = Math.min(1, Math.abs(P.x - C.x) / span);
     t.progress = t.reverse ? 1 - p : p;
     const lift = Math.sin(Math.PI * Math.min(1, d / span));
-    const g = (stops) => gradient(W, H, n, M, stops);
-    // Shadow of the lifted sheet on the page it uncovers, deepest right at the fold.
-    const reach = Math.min(160, 30 + d * 0.5);
+    // The roll.
+    const roll = Math.PI * R;
+    t.strips.forEach(({ el, shade }, k) => {
+      const s0 = (roll * k) / STRIPS, s1 = (roll * (k + 1)) / STRIPS;
+      const f0 = R * Math.sin(s0 / R), f1 = R * Math.sin(s1 / R);
+      const a = (f1 - f0) / (s1 - s0);
+      el.style.clipPath = band(s0 - 0.4, s1 + 0.4);
+      el.style.transform = affine(a, f0 - a * s0);
+      // Light from the viewer: the paper darkens as it turns edge-on, the back brightens as it
+      // comes round to face you, with a gloss where the curve catches the light.
+      const th = (Math.PI * (k + 0.5)) / STRIPS;
+      const dark = k < STRIPS / 2 ? 0.34 * (1 - Math.cos(th)) : 0.3 * (1 + Math.cos(th));
+      const gloss = Math.exp(-(((th - 0.78 * Math.PI) / (0.11 * Math.PI)) ** 2));
+      shade.style.background =
+        `linear-gradient(rgba(255,255,255,${(0.3 * gloss).toFixed(3)}), rgba(255,255,255,${(0.3 * gloss).toFixed(3)})), ` +
+        `rgba(0,0,0,${dark.toFixed(3)})`;
+    });
+    // Off the roll: flat, back up, folded over the line at s = πR/2.
+    t.flap.style.clipPath = band(roll, null);
+    t.flap.style.transform = affine(-1, roll);
+    // A point s along the sheet from the lift line.
+    const at = (s) => ({ x: L0.x - n.x * s, y: L0.y - n.y * s });
+    // The flat back darkens a little toward the roll it's coming off.
+    t.flapShade.style.background = gradient(W, H, { x: -n.x, y: -n.y }, at(roll), [[0, "rgba(0,0,0,0.16)"], [Math.min(40, 6 + d * 0.1), "rgba(0,0,0,0)"]]);
+    // Shadow of the lifted sheet on the page it uncovers, deepest right under the roll.
+    const reach = Math.min(170, 30 + d * 0.5);
+    t.under.style.clipPath = band(R, null);
     t.under.style.opacity = "1";
-    t.under.style.background = g([[-reach, `rgba(0,0,0,0)`], [-reach * 0.35, `rgba(0,0,0,${(0.12 * lift).toFixed(3)})`], [0, `rgba(0,0,0,${(0.42 * lift + 0.05).toFixed(3)})`]]);
-    // The back of the sheet curls over the fold: a crease shadow, a highlight where it rounds
-    // toward the light, and a little shade toward the corner.
-    const fl = Math.max(20, d / 2);
-    t.flapShade.style.background = g([
-      [0, "rgba(0,0,0,0.30)"],
-      [-Math.min(10, fl * 0.12), "rgba(0,0,0,0.10)"],
-      [-Math.min(28, fl * 0.3), "rgba(255,255,255,0.32)"],
-      [-fl * 0.6, "rgba(255,255,255,0.08)"],
-      [-fl, "rgba(0,0,0,0.10)"],
+    t.under.style.background = gradient(W, H, { x: -n.x, y: -n.y }, at(R), [
+      [0, `rgba(0,0,0,${(0.45 * lift + 0.06).toFixed(3)})`],
+      [reach * 0.35, `rgba(0,0,0,${(0.12 * lift).toFixed(3)})`],
+      [reach, "rgba(0,0,0,0)"],
     ]);
-    // The flat page darkens slightly just before the fold, where it starts to lift.
-    t.frontShade.style.background = g([[0, `rgba(0,0,0,${(0.16 * lift).toFixed(3)})`], [Math.min(50, 8 + d * 0.15), "rgba(0,0,0,0)"]]);
-    t.flapWrap.style.filter = `drop-shadow(${(-n.x * 3 * lift).toFixed(1)}px ${(-n.y * 3 * lift).toFixed(1)}px ${(4 + 10 * lift).toFixed(1)}px rgba(0,0,0,${(0.22 + 0.18 * lift).toFixed(2)}))`;
+    // The flat page darkens slightly just before it starts to lift.
+    t.frontShade.style.background = gradient(W, H, { x: n.x, y: n.y }, L0, [[0, `rgba(0,0,0,${(0.1 * lift).toFixed(3)})`], [Math.min(40, 6 + d * 0.1), "rgba(0,0,0,0)"]]);
+    t.flapWrap.style.filter = `drop-shadow(${(n.x * 3 * lift).toFixed(1)}px ${(n.y * 3 * lift).toFixed(1)}px ${(4 + 10 * lift).toFixed(1)}px rgba(0,0,0,${(0.2 + 0.16 * lift).toFixed(2)}))`;
   }
 
   animate(t, from, to, ms, arc) {
