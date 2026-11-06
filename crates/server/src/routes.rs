@@ -38,6 +38,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/works/{id}/cover", get(cover))
         .route("/works/{id}/position", get(get_position).put(put_position))
         .route("/works/{id}/sync", get(sync))
+        .route("/works/{id}/sync/live", post(sync_live))
         .route("/works/{id}/cast", post(save_cast))
         .route("/works/{id}/merge", post(merge_work))
         .route("/assets/{id}/file", get(asset_file))
@@ -535,4 +536,41 @@ struct MergeReq {
 async fn merge_work(AxState(s): AxState<State>, Path(id): Path<i64>, Json(r): Json<MergeReq>) -> ApiResult<Json<WorkDetail>> {
     library::merge_works(&s.db, id, r.into).await?;
     work(AxState(s), Path(r.into)).await
+}
+
+#[derive(Deserialize)]
+struct LiveSyncReq {
+    ebook: i64,
+    audio: i64,
+    track: i64,
+    start: f64,
+    #[serde(default)]
+    near: Option<i64>,
+}
+
+/// Syncs while you listen: the voice server hears the next stretch of audio and finds it in the
+/// book; the sentences it places are added to this pairing's sync map and returned.
+async fn sync_live(AxState(s): AxState<State>, Path(id): Path<i64>, Json(r): Json<LiveSyncReq>) -> ApiResult<Json<serde_json::Value>> {
+    let ebook = asset_or_404(&s, r.ebook).await?;
+    let book_json = jobs::book_json_cached(&s, &ebook).await?;
+    let audio_path = db::track_path(&s.db, r.audio, r.track).await?.ok_or_else(|| ApiError::not_found("track"))?;
+    let tts = s.settings.read().await.ai.tts_url.clone();
+    let resp = s
+        .http
+        .post(format!("{}/sync-window", tts.trim_end_matches('/')))
+        .timeout(std::time::Duration::from_secs(120))
+        .json(&serde_json::json!({
+            "book": book_json, "audio": audio_path, "track": r.track, "start": r.start, "duration": 30.0, "near": r.near,
+        }))
+        .send()
+        .await
+        .map_err(|_| ApiError(StatusCode::SERVICE_UNAVAILABLE, "The voice server isn't running (Settings → Voices)".into()))?;
+    if !resp.status().is_success() {
+        let msg = resp.text().await.unwrap_or_default();
+        return Err(ApiError(StatusCode::BAD_GATEWAY, format!("Listening failed: {}", msg.chars().take(300).collect::<String>())));
+    }
+    let v: serde_json::Value = resp.json().await?;
+    let spans: Vec<duet_common::SyncSpan> = serde_json::from_value(v["spans"].clone()).unwrap_or_default();
+    jobs::merge_sync(&s, id, r.ebook, r.audio, spans.clone()).await?;
+    Ok(Json(serde_json::json!({ "spans": spans, "near": v["near"] })))
 }

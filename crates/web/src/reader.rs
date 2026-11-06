@@ -97,6 +97,26 @@ impl SyncIndex {
         SyncIndex { by_time: spans }
     }
 
+    /// Adds newly placed sentences, replacing earlier placements of the same ones.
+    fn merge(&mut self, new: Vec<SyncSpan>) {
+        let fresh: std::collections::HashSet<(usize, usize)> = new.iter().map(|s| (s.chapter, s.sentence)).collect();
+        self.by_time.retain(|s| !fresh.contains(&(s.chapter, s.sentence)));
+        self.by_time.extend(new);
+        self.by_time.sort_by(|a, b| (a.track, a.start).partial_cmp(&(b.track, b.start)).unwrap());
+    }
+
+    /// How far past `t` the sync reaches without a gap, on this track.
+    fn covered_until(&self, track: usize, t: f64) -> f64 {
+        let mut reach = t;
+        for s in self.by_time.iter().filter(|s| s.track == track && s.end >= t - 3.0) {
+            if s.start > reach + 6.0 {
+                break;
+            }
+            reach = reach.max(s.end);
+        }
+        reach
+    }
+
     fn at(&self, track: usize, t: f64) -> Option<&SyncSpan> {
         let i = self.by_time.partition_point(|s| (s.track, s.start) <= (track, t + 0.05));
         self.by_time[..i].last().filter(|s| s.track == track && t <= s.end + 2.0)
@@ -312,10 +332,59 @@ pub fn Reader(id: i64) -> impl IntoView {
     let audio_el = move || audio.get_untracked();
 
     // Follow the audio: highlight what's being said, turning chapters as needed.
+    // Syncing while you listen: the next half-minute of audio is heard ahead of the narration
+    // and placed in the book, so the highlight is ready before the words are spoken.
+    let live_busy = RwSignal::new(false);
+    let live_near = RwSignal::new(None::<i64>);
+    let live_paused_until = RwSignal::new(0.0f64);
+    let live_sync = move |t: f64| {
+        if live_busy.get_untracked() || js_sys::Date::now() < live_paused_until.get_untracked() {
+            return;
+        }
+        let (Some(e), Some(a)) = (ebook.get_untracked(), audio_asset.get_untracked()) else { return };
+        if !READABLE.contains(&e.format.as_str()) {
+            return;
+        }
+        let tr = track.get_untracked();
+        let reach = sync.with_untracked(|s| s.covered_until(tr, t));
+        if reach > t + 12.0 {
+            return;
+        }
+        live_busy.set(true);
+        let body = serde_json::json!({
+            "ebook": e.id, "audio": a.id, "track": tr, "start": (reach - 1.0).max(0.0), "near": live_near.get_untracked(),
+        });
+        spawn_local(async move {
+            match api::post::<_, serde_json::Value>(&format!("/api/works/{id}/sync/live"), &body).await {
+                Ok(v) => {
+                    let spans: Vec<SyncSpan> = serde_json::from_value(v["spans"].clone()).unwrap_or_default();
+                    if spans.is_empty() {
+                        // Nothing placed (music, an intro): skip ahead rather than asking again.
+                        live_paused_until.set(js_sys::Date::now() + 8000.0);
+                    }
+                    if let Some(n) = v["near"].as_i64() {
+                        live_near.set(Some(n));
+                    }
+                    sync.update(|s| s.merge(spans));
+                    pairs.update(|p| if !p.contains(&(e.id, a.id)) { p.push((e.id, a.id)) });
+                }
+                Err(err) => {
+                    // The voice server may be off or busy; try again a little later.
+                    live_paused_until.set(js_sys::Date::now() + 30000.0);
+                    leptos::logging::warn!("live sync: {}", err.0);
+                }
+            }
+            live_busy.set(false);
+        });
+    };
+
     let on_time = move |_| {
         let Some(a) = audio_el() else { return };
         let t = a.current_time();
         time.set(t);
+        if playing.get_untracked() {
+            live_sync(t);
+        }
         let s = sync.get_untracked();
         if s.is_empty() || !prefs.get_untracked().follow_audio && !playing.get_untracked() {
             return;
@@ -775,7 +844,8 @@ pub fn Reader(id: i64) -> impl IntoView {
                             <small>{move || {
                                 let name = audio_asset.get().and_then(|a| a.tracks.get(track.get()).map(|t| t.title.clone())).unwrap_or_default();
                                 let left = (duration.get() - time.get()).max(0.0);
-                                format!("{name} · −{}", format_time(left))
+                                let listening = if live_busy.get() { " · syncing as you listen" } else { "" };
+                                format!("{name} · −{}{listening}", format_time(left))
                             }}</small>
                         </div>
                     </div>

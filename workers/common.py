@@ -106,3 +106,18 @@ def load_audio(path, rate=16000):
         check=True,
     )
     return np.frombuffer(out.stdout, dtype=np.float32)
+
+
+def load_audio_window(path, start, duration, rate=16000):
+    """Decodes `duration` seconds from `start` of an audio file (16 kHz mono float32)."""
+    import subprocess
+
+    import numpy as np
+
+    out = subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-ss", f"{max(0.0, start):.3f}", "-t", f"{duration:.3f}", "-i", path,
+         "-f", "f32le", "-ac", "1", "-ar", str(rate), "pipe:1"],
+        capture_output=True,
+        check=True,
+    )
+    return np.frombuffer(out.stdout, dtype=np.float32)

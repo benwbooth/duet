@@ -99,7 +99,7 @@ def locate(idx, part, near):
     return max(0, bucket * 40)
 
 
-def align(book, heard):
+def align(book, heard, near=0, idx=None):
     """Maps book word index -> heard word index.
 
     The book's words are indexed by phrase; each stretch of the transcript is located anywhere in
@@ -108,9 +108,9 @@ def align(book, heard):
     """
     bw = [w for w, _, _ in book]
     hw = [w for w, _, _, _ in heard]
-    idx = index_book(bw)
+    if idx is None:
+        idx = index_book(bw)
     mapping = {}
-    near = 0
     # Overlapping stretches, so words where the recording jumps (a chapter boundary) get a second
     # chance in a stretch that sits wholly on one side of the jump.
     for start in range(0, len(hw), CHUNK // 2):

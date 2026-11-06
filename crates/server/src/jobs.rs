@@ -240,6 +240,37 @@ fn sanitize(s: &str) -> String {
     s.chars().map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c }).collect()
 }
 
+/// The book's sentences as the workers want them, kept between runs (rebuilt if the file is newer).
+pub async fn book_json_cached(state: &State, ebook: &Asset) -> anyhow::Result<PathBuf> {
+    let dir = state.data_dir.join("cache").join("books").join(ebook.id.to_string());
+    let out = dir.join("book.json");
+    let fresh = match (tokio::fs::metadata(&out).await, tokio::fs::metadata(&ebook.path).await) {
+        (Ok(o), Ok(src)) => o.modified().ok() >= src.modified().ok(),
+        _ => false,
+    };
+    if !fresh {
+        tokio::fs::create_dir_all(&dir).await?;
+        write_book_json(state, ebook, &dir).await?;
+    }
+    Ok(std::path::absolute(out)?)
+}
+
+/// Adds spans to a pairing's sync map (creating it), replacing any for the same sentences.
+pub async fn merge_sync(state: &State, work_id: i64, ebook: i64, audio: i64, new: Vec<SyncSpan>) -> anyhow::Result<()> {
+    if new.is_empty() {
+        return Ok(());
+    }
+    let mut spans = sync_map(state, ebook, audio).await?.map(|m| m.spans).unwrap_or_default();
+    let fresh: std::collections::HashSet<(usize, usize)> = new.iter().map(|s| (s.chapter, s.sentence)).collect();
+    spans.retain(|s| !fresh.contains(&(s.chapter, s.sentence)));
+    spans.extend(new);
+    let dir = state.data_dir.join("jobs").join("live");
+    tokio::fs::create_dir_all(&dir).await?;
+    let path = dir.join(format!("{work_id}-{ebook}-{audio}.json"));
+    tokio::fs::write(&path, serde_json::to_vec(&spans)?).await?;
+    store_sync(state, work_id, ebook, audio, &path).await
+}
+
 async fn write_book_json(state: &State, ebook: &Asset, dir: &Path) -> anyhow::Result<()> {
     let src = book::source(ebook, &state.data_dir);
     let id = ebook.id;

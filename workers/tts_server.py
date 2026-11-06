@@ -4,6 +4,8 @@
 POST /v1/audio/speech {"input", "voice", "instructions"?, "response_format"?}
 POST /v1/audio/transcriptions (multipart "file"): speech recognition with faster-whisper, so the
 microphone works without a separate server.
+POST /v1/sync-window {"book", "audio", "track", "start", "duration", "near"?}: listens to a short
+stretch of an audiobook and finds where it is in the book, for syncing while you listen.
 
 Two jobs, two models:
   * Casting. The first time a voice name is used, Qwen3-TTS VoiceDesign creates the voice from
@@ -213,6 +215,53 @@ def transcribe(audio, model_name):
         return " ".join(seg.text.strip() for seg in segments).strip()
 
 
+listen_lock = threading.Lock()
+books = {}
+
+
+def book_index(path):
+    """A book's words and phrase index, loaded once per book (reloaded if the file changes)."""
+    import align
+
+    mtime = os.path.getmtime(path)
+    cached = books.get(path)
+    if cached and cached[0] == mtime:
+        return cached[1], cached[2]
+    with open(path, encoding="utf-8") as f:
+        bw = align.book_words(json.load(f))
+    idx = align.index_book([w for w, _, _ in bw])
+    books[path] = (mtime, bw, idx)
+    return bw, idx
+
+
+def sync_window(body):
+    """Transcribes a stretch of audio and returns the sentences it covers, with times."""
+    import align
+    from common import load_audio_window, whisper as load_whisper, words
+
+    bw, idx = book_index(body["book"])
+    start, duration = float(body["start"]), float(body.get("duration", 30.0))
+    samples = load_audio_window(body["audio"], start, duration)
+    with listen_lock:
+        key = "live:" + args.listen_model
+        if key not in whisper:
+            whisper[key], _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda")
+        segments, _ = whisper[key].transcribe(samples, word_timestamps=True, vad_filter=False, language="en")
+        heard = []
+        for seg in segments:
+            for w in seg.words or []:
+                for token in words(w.word):
+                    heard.append((token, body.get("track", 0), start + w.start, start + w.end))
+    if not heard:
+        return {"spans": [], "near": body.get("near"), "heard": 0}
+    mapping = align.align(bw, heard, near=int(body.get("near") or 0), idx=idx)
+    spans = align.spans(bw, heard, mapping)
+    near = max(mapping) if mapping else body.get("near")
+    # Only sentences actually heard in this stretch (interpolation can't reach outside it).
+    spans = [sp for sp in spans if start - 1 <= sp["start"] <= start + duration + 1]
+    return {"spans": spans, "near": near, "heard": len(heard)}
+
+
 def multipart(content_type, body):
     """Fields of a multipart/form-data body: name -> bytes."""
     from email.parser import BytesParser
@@ -252,6 +301,8 @@ class Handler(BaseHTTPRequestHandler):
                 text = transcribe(fields["file"], model_name.rsplit("/", 1)[-1].removeprefix("faster-whisper-"))
                 return self.reply(200, json.dumps({"text": text}).encode(), "application/json")
             body = json.loads(raw)
+            if path in ("/v1/sync-window", "/sync-window"):
+                return self.reply(200, json.dumps(sync_window(body)).encode(), "application/json")
             language = body.get("language", "English")
             if path in ("/v1/shutdown", "/shutdown"):
                 self.reply(200, b'{"ok":true}', "application/json")
@@ -289,6 +340,8 @@ def main():
     ap.add_argument("--fish-python", default="python")
     ap.add_argument("--fish-checkpoint", default="checkpoints/s2-pro", help="checkpoints/s2-pro (24 GB, ROCm or CUDA) or checkpoints/drama-3 (48 GB NVIDIA)")
     ap.add_argument("--fish-decoder", default="", help="codec path, e.g. checkpoints/s2-pro/codec.pth")
+    ap.add_argument("--listen-model", default="small.en", help="faster-whisper model for syncing while you listen")
+    ap.add_argument("--listen-cpu", action="store_true", default=True, help="listen on the CPU (CTranslate2 has no ROCm support)")
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--top-p", type=float, default=0.7)
     ap.add_argument("--design-model", default="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
