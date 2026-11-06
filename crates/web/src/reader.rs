@@ -765,6 +765,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         }
     };
 
+    let tap_seq = RwSignal::new(0u32);
     let on_page_click = move |ev: web_sys::MouseEvent| {
         let target = crate::click_target(&ev);
         if let Some(link) = js_sys::Reflect::get(&target, &JsValue::from_str("link")).ok().and_then(|v| v.as_string()) {
@@ -779,26 +780,40 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             });
             return;
         }
-        if let Some(n) = js_sys::Reflect::get(&target, &JsValue::from_str("sentence")).ok().and_then(|v| v.as_f64()) {
-            let n = n as usize;
-            if mode.get_untracked().cast() {
-                cast_go(chapter.get_untracked(), n, playing.get_untracked());
-                return;
-            }
-            let s = sync.get_untracked();
-            if let Some(span) = s.of(chapter.get_untracked(), n).cloned() {
-                sentence.set(n as i32);
-                if let Some(el) = page.get_untracked() {
-                    crate::highlight(&el, n as i32, false);
+        // A double or triple click is selecting a word or sentence: the single click that began it
+        // mustn't also jump the audio or toggle the bars.
+        tap_seq.update(|n| *n += 1);
+        if ev.detail() > 1 {
+            return;
+        }
+        let seq = tap_seq.get_untracked();
+        let n = js_sys::Reflect::get(&target, &JsValue::from_str("sentence")).ok().and_then(|v| v.as_f64());
+        set_timeout(
+            move || {
+                if tap_seq.try_get_untracked() != Some(seq) || !crate::selected_text().is_empty() {
+                    return;
                 }
-                seek_to(span.track, span.start);
-                return;
-            }
-        }
-        // A plain tap on the page shows or hides the bars.
-        if crate::selected_text().is_empty() {
-            chrome_hidden.update(|h| *h = !*h);
-        }
+                if let Some(n) = n {
+                    let n = n as usize;
+                    if mode.get_untracked().cast() {
+                        cast_go(chapter.get_untracked(), n, playing.get_untracked());
+                        return;
+                    }
+                    let s = sync.get_untracked();
+                    if let Some(span) = s.of(chapter.get_untracked(), n).cloned() {
+                        sentence.set(n as i32);
+                        if let Some(el) = page.get_untracked() {
+                            crate::highlight(&el, n as i32, false);
+                        }
+                        seek_to(span.track, span.start);
+                        return;
+                    }
+                }
+                // A plain tap on the page shows or hides the bars.
+                chrome_hidden.update(|h| *h = !*h);
+            },
+            std::time::Duration::from_millis(260),
+        );
     };
 
     let position = move || -> Position {

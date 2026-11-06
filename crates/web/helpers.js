@@ -1450,7 +1450,9 @@ class Pager {
       this.swallowClick = false;
       if (e.button !== 0) return;
       if (e.target.closest && e.target.closest("a[data-href]")) return;
-      start = { x: e.clientX, y: e.clientY, time: performance.now(), grab: this.curl && grabZone(e) };
+      // A finger already selecting text (a selection is showing) adjusts it, not the page.
+      const selecting = e.pointerType === "touch" && String(window.getSelection()) !== "";
+      start = { x: e.clientX, y: e.clientY, time: performance.now(), grab: this.curl && !selecting && grabZone(e) };
       this.selecting = !start.grab;
       // Holding the page, not selecting its words.
       if (start.grab && e.pointerType !== "touch") e.preventDefault();
@@ -1542,6 +1544,20 @@ class Pager {
     this.book.addEventListener("pointerleave", () => { if (!drag) this.book.classList.remove("grab-edge"); });
     this.book.addEventListener("pointerup", release);
     this.book.addEventListener("pointercancel", release);
+    // Double-click selects a word (the browser's own), drag selects any stretch of text, and a
+    // triple-click selects the whole sentence (rather than the paragraph).
+    this.book.addEventListener("click", (e) => {
+      if (e.detail !== 3) return;
+      const sentence = e.target.closest && e.target.closest(".s");
+      if (!sentence) return;
+      const spans = this.article.querySelectorAll(`.s[data-s="${sentence.dataset.s}"]`);
+      const range = document.createRange();
+      range.setStartBefore(spans[0]);
+      range.setEndAfter(spans[spans.length - 1]);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
     // Taps on the outer edges turn the page; taps elsewhere reach the sentences.
     this.book.addEventListener(
       "click",
