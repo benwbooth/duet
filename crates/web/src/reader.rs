@@ -471,7 +471,10 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         }
         spawn_local(async move {
             let got = api::get::<Chapter>(&format!("/api/assets/{}/chapters/{c}", e.id)).await;
-            done.set_value(true);
+            // The reader may have closed while this was loading.
+            if done.try_set_value(true).is_some() {
+                return;
+            }
             if transcript {
                 // Its timings came with it; and have the next chapter ready by the time it's needed.
                 if let Some(a) = audio_asset.get_untracked() {
@@ -516,11 +519,12 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         let e = ebook.get_untracked()?;
         let total = layout.get_untracked().map(|l| l.chapters).unwrap_or(0);
         while c < total {
-            let n = match counts.with_untracked(|m| m.get(&c).copied()) {
+            // (try_: the reader may close while a chapter is being fetched.)
+            let n = match counts.try_with_untracked(|m| m.get(&c).copied())? {
                 Some(n) => n,
                 None => {
                     let n = api::get::<Chapter>(&format!("/api/assets/{}/chapters/{c}", e.id)).await.ok()?.sentences;
-                    counts.update(|m| { m.insert(c, n); });
+                    counts.try_update(|m| { m.insert(c, n); })?;
                     n
                 }
             };
@@ -536,7 +540,11 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     // Moves the full cast to a sentence, carrying on playing if it was.
     let cast_go = move |c: usize, s: usize, play: bool| {
         spawn_local(async move {
-            if let Some(at) = settle(c, s).await {
+            let found = settle(c, s).await;
+            if mode.try_get_untracked().is_none() {
+                return;
+            }
+            if let Some(at) = found {
                 pending_seek.set(Some((0.0, play)));
                 cast_at.set(at);
             } else if !play {
@@ -571,27 +579,27 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             for _ in 0..8 {
                 let Some(next) = settle(at.0, at.1 + 1).await else { break };
                 at = next;
-                if prefetched.with_value(|p| p.contains(&at)) {
+                if prefetched.try_with_value(|p| p.contains(&at)).unwrap_or(true) {
                     continue;
                 }
-                prefetched.update_value(|p| { p.insert(at); });
+                prefetched.try_update_value(|p| { p.insert(at); });
                 crate::prefetch(&cast_url(e, at)).await;
-                // Stop running ahead once the listener has moved somewhere else.
-                if cast_at.get_untracked().0 != c || !mode.get_untracked().cast() {
+                // Stop running ahead once the listener has moved somewhere else (or left).
+                if cast_at.try_get_untracked().is_none_or(|x| x.0 != c) || !mode.get_untracked().cast() {
                     break;
                 }
             }
             // Nearing the end of a chapter, have the next one directed and cast in good time.
-            let left = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(0).saturating_sub(s);
+            let left = counts.try_with_untracked(|m| m.get(&c).copied()).flatten().unwrap_or(0).saturating_sub(s);
             if left <= 15 {
                 if let Some(next) = settle(c + 1, 0).await {
-                    if prefetched.with_value(|p| !p.contains(&next)) {
-                        prefetched.update_value(|p| { p.insert(next); });
+                    if prefetched.try_with_value(|p| !p.contains(&next)).unwrap_or(false) {
+                        prefetched.try_update_value(|p| { p.insert(next); });
                         crate::prefetch(&cast_url(e, next)).await;
                     }
                 }
             }
-            prefetching.set(false);
+            prefetching.try_set(false);
         });
     });
 
@@ -899,6 +907,29 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         }
     };
     let chapters = move || layout.get().map(|l| l.chapters).unwrap_or(0);
+    // The recording's real waveform behind the scrub bar, filled in up to where it's playing.
+    let wave = NodeRef::<leptos::html::Canvas>::new();
+    let peaks = RwSignal::new(Vec::<f32>::new());
+    Effect::new(move |_| {
+        let (Some(a), tr) = (audio_asset.get(), track.get()) else { return };
+        if !mode.get().audiobook() {
+            return;
+        }
+        peaks.set(Vec::new());
+        spawn_local(async move {
+            if let Ok(p) = api::get::<Vec<f32>>(&format!("/api/assets/{}/tracks/{tr}/peaks?v=2", a.id)).await {
+                if track.try_get_untracked() == Some(tr) {
+                    peaks.set(p);
+                }
+            }
+        });
+    });
+    Effect::new(move |_| {
+        let fraction = if duration.get() > 0.0 { time.get() / duration.get() } else { 0.0 };
+        if let Some(c) = wave.get() {
+            peaks.with(|p| crate::draw_wave(&c, &js_sys::Float32Array::from(&p[..]), fraction));
+        }
+    });
     let toc_title = move |c: usize| layout.get().and_then(|l| l.toc.iter().rev().find(|t| t.chapter <= c).map(|t| t.title.clone()));
     // The chapter being heard: the book's own chapter name when the audio is matched to the text,
     // otherwise the recording's.
@@ -1269,7 +1300,6 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                             } else {
                                 view! { <svg viewBox="0 0 24 24" aria-hidden="true"><path class="fill" d="M8 5.5v13l11-6.5z"/></svg> }.into_any()
                             }}
-                            <span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
                         </button>
                         <button class="round" title=move || if mode.get().cast() { "Next sentence" } else { "Forward 30 seconds" } on:click=move |_| skip(30.0)>
                             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/></svg><span>{move || if mode.get().cast() { "" } else { "30" }}</span>
@@ -1321,11 +1351,14 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     </Show>
                     <div class="scrub" class:hidden=move || mode.get().cast()>
                         <span>{move || format_time(time.get())}</span>
-                        <input type="range" min="0" step="1" prop:max=move || duration.get() prop:value=move || time.get()
-                            style=move || format!("--pct:{:.2}%", if duration.get() > 0.0 { time.get() / duration.get() * 100.0 } else { 0.0 })
-                            on:input=move |ev| {
-                                if let (Some(a), Ok(v)) = (audio_el(), event_target_value(&ev).parse::<f64>()) { a.set_current_time(v) }
-                            }/>
+                        <div class="wave">
+                            <canvas node_ref=wave aria-hidden="true"></canvas>
+                            <input type="range" min="0" step="1" aria-label="Position in the recording"
+                                prop:max=move || duration.get() prop:value=move || time.get()
+                                on:input=move |ev| {
+                                    if let (Some(a), Ok(v)) = (audio_el(), event_target_value(&ev).parse::<f64>()) { a.set_current_time(v) }
+                                }/>
+                        </div>
                         <span>{move || format_time(duration.get())}</span>
                     </div>
                 </div>

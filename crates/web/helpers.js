@@ -633,3 +633,41 @@ export async function prefetch(url) {
     return false;
   }
 }
+
+// The recording's waveform as rounded bars: played part in the text colour, the rest faint.
+// Redrawn as it plays; sized to the canvas's box at the screen's pixel density.
+export function drawWave(canvas, peaks, fraction) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w || !h) return;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const cs = getComputedStyle(canvas);
+  const played = cs.color;
+  const rest = cs.getPropertyValue("--wave-rest").trim() || "rgba(128,128,128,0.35)";
+  const bar = 2, gap = 1.5, step = bar + gap;
+  const n = Math.max(1, Math.floor(w / step));
+  const at = fraction * w;
+  for (let i = 0; i < n; i++) {
+    let v = 0.06;
+    if (peaks.length) {
+      // The loudest moment in this bar's stretch of the recording.
+      const a = Math.floor((i / n) * peaks.length), b = Math.max(a + 1, Math.floor(((i + 1) / n) * peaks.length));
+      v = 0;
+      for (let k = a; k < b && k < peaks.length; k++) v = Math.max(v, peaks[k]);
+      v = Math.max(0.06, v);
+    }
+    const bh = Math.max(2, v * h);
+    const x = i * step;
+    ctx.fillStyle = x + bar <= at ? played : rest;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, (h - bh) / 2, bar, bh, 1);
+    else ctx.rect(x, (h - bh) / 2, bar, bh);
+    ctx.fill();
+  }
+}

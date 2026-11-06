@@ -49,6 +49,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assets/{id}/pages/{n}", get(page_image))
         .route("/assets/{id}/locate", get(locate))
         .route("/assets/{id}/tracks/{n}", get(track))
+        .route("/assets/{id}/tracks/{n}/peaks", get(track_peaks))
         .route("/assets/{id}/cast/{chapter}/{n}", get(cast_sentence))
         .route("/assets/{id}/link", post(link))
         .route("/jobs", get(list_jobs).post(new_job))
@@ -237,6 +238,38 @@ async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResul
 async fn cast_sentence(AxState(s): AxState<State>, Path((id, chapter, n)): Path<(i64, usize, usize)>) -> ApiResult<Response> {
     let bytes = crate::cast::sentence(&s, id, chapter, n).await?;
     Ok(([(header::CONTENT_TYPE, "audio/mpeg"), (header::CACHE_CONTROL, "max-age=86400")], bytes).into_response())
+}
+
+/// The recording's loudness across a track, for drawing its waveform: 0..1 per slice.
+async fn track_peaks(AxState(s): AxState<State>, Path((id, n)): Path<(i64, i64)>) -> ApiResult<Response> {
+    const BINS: usize = 1000;
+    let cache = s.data_dir.join("cache").join("peaks").join(format!("{id}-{n}.json"));
+    let json = match tokio::fs::read(&cache).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            let path = db::track_path(&s.db, id, n).await?.ok_or_else(|| ApiError::not_found("track"))?;
+            // Decoded small (mono, 2 kHz): plenty for an outline and quick even for long tracks.
+            let out = tokio::process::Command::new("ffmpeg")
+                .args(["-v", "error", "-i", &path, "-ac", "1", "-ar", "2000", "-f", "s16le", "-"])
+                .stdin(std::process::Stdio::null())
+                .output()
+                .await
+                .map_err(|e| ApiError::from(anyhow::anyhow!("running ffmpeg: {e}")))?;
+            let samples: Vec<f32> = out.stdout.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
+            let per = samples.len().div_ceil(BINS).max(1);
+            // Loudness (RMS) per slice, scaled to the loudest.
+            let rms: Vec<f32> = samples.chunks(per).map(|c| (c.iter().map(|x| x * x).sum::<f32>() / c.len() as f32).sqrt()).collect();
+            let top = rms.iter().cloned().fold(1e-6f32, f32::max);
+            let peaks: Vec<f32> = rms.iter().map(|r| ((r / top).powf(1.3) * 1000.0).round() / 1000.0).collect();
+            let bytes = serde_json::to_vec(&peaks).map_err(anyhow::Error::from)?;
+            if !peaks.is_empty() {
+                let _ = tokio::fs::create_dir_all(cache.parent().unwrap()).await;
+                let _ = tokio::fs::write(&cache, &bytes).await;
+            }
+            bytes
+        }
+    };
+    Ok(([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "max-age=86400")], json).into_response())
 }
 
 #[derive(Deserialize)]

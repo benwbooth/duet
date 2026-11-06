@@ -55,6 +55,8 @@ extern "C" {
     #[wasm_bindgen(js_name = sentenceText)]
     fn sentence_text(container: &web_sys::Element, n: i32) -> String;
     async fn prefetch(url: &str) -> JsValue;
+    #[wasm_bindgen(js_name = drawWave)]
+    fn draw_wave(canvas: &web_sys::HtmlCanvasElement, peaks: &js_sys::Float32Array, fraction: f64);
 }
 
 #[wasm_bindgen(start)]

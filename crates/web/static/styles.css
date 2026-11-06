@@ -682,14 +682,6 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 
 /* A little equalizer dances on the play button while audio plays. */
 .round.play { position: relative; }
-.round.play .eq { position: absolute; bottom: -14px; left: 50%; transform: translateX(-50%); display: flex; gap: 2px; align-items: flex-end; height: 10px; opacity: 0; transition: opacity 0.3s; }
-.round.play .eq i { width: 3px; background: var(--accent); border-radius: 2px; height: 30%; }
-.round.play.playing .eq { opacity: 1; }
-.round.play.playing .eq i { animation: eq 0.9s ease-in-out infinite; }
-.round.play.playing .eq i:nth-child(2) { animation-delay: -0.3s; }
-.round.play.playing .eq i:nth-child(3) { animation-delay: -0.6s; }
-.round.play.playing .eq i:nth-child(4) { animation-delay: -0.15s; }
-@keyframes eq { 0%, 100% { height: 25%; } 50% { height: 100%; } }
 .round.play.playing { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); animation: breathe 2.4s ease-in-out infinite; }
 @keyframes breathe { 50% { box-shadow: 0 0 0 8px transparent; } }
 
@@ -983,8 +975,6 @@ input, select { border-radius: 12px; }
 .transport .round.play { width: 50px; height: 50px; border-radius: 50%; background: var(--page-text); color: var(--page-bg); }
 .transport .round.play svg { width: 22px; height: 22px; }
 .transport .round.play .fill { fill: currentColor; stroke: none; }
-.transport .round.play .eq { bottom: -12px; }
-.transport .round.play .eq i { background: var(--page-text); }
 .np-extra { display: flex; justify-content: flex-end; gap: 0.4rem; min-width: 0; }
 .np-extra select { background: color-mix(in srgb, var(--page-text) 7%, transparent); border: 0; color: var(--page-text); font-size: 0.8rem; min-height: 32px; padding: 0.2rem 0.6rem; max-width: 150px; }
 .player .scrub { grid-column: 1 / -1; gap: 0.6rem; font-size: 0.7rem; color: var(--page-muted); padding: 0 0.2rem; }
@@ -1083,3 +1073,14 @@ input, select { border-radius: 12px; }
 .curl-shade { position: absolute; inset: 0; pointer-events: none; }
 .reader[data-theme="dark"] .curl-layer { background: #000; }
 .reader[data-theme="dark"] .curl-back.ghosted .page { opacity: 0.12; }
+
+/* The scrub bar is the recording's waveform; the range input sits invisibly on top of it. */
+.player .scrub { width: 100%; justify-self: stretch; box-sizing: border-box; }
+.player .scrub .wave { position: relative; flex: 1; height: 26px; min-width: 120px; }
+.player .scrub .wave canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+  color: var(--page-text); --wave-rest: color-mix(in srgb, var(--page-text) 22%, transparent);
+}
+.player .scrub .wave input[type="range"] {
+  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; background: none;
+}
