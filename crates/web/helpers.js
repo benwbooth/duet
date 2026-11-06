@@ -1909,6 +1909,10 @@ class Pager {
       // it reads the right way round without the element itself being turned over.
       const front = kx > 0;
       const fc = front ? b.front : b.back;
+      // Painted from the bottom up: the flat page, then round the roll as it rises, then the part
+      // lying back over the top (one place in the stack per band; bands only ever overlap their
+      // neighbours by the hair that hides the seam).
+      fc.f.style.zIndex = String(i + 1);
       show(b.front, front);
       show(b.back, !front);
       let poly2 = poly;
