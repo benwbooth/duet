@@ -19,6 +19,9 @@ pub enum Source {
     Comic(PathBuf),
     /// MOBI, AZW3, FB2, DOCX... until converted to EPUB.
     NeedsConversion,
+    /// Text made from an audiobook, a chapter per track as each is transcribed (see audiotext.rs):
+    /// a folder of layout.json and <n>.html.
+    Transcript(PathBuf),
 }
 
 /// Formats Calibre's ebook-convert turns into EPUB for us.
@@ -33,6 +36,9 @@ pub fn converted_path(data_dir: &Path, asset_id: i64) -> PathBuf {
 
 pub fn source(asset: &Asset, data_dir: &Path) -> Source {
     let path = PathBuf::from(&asset.path);
+    if asset.format == "transcript" {
+        return Source::Transcript(path);
+    }
     match ext_of(&path).as_str() {
         "epub" => Source::Epub(path),
         "txt" | "md" => Source::Text(path),
@@ -74,6 +80,7 @@ pub fn layout(src: &Source) -> anyhow::Result<BookLayout> {
             Ok(BookLayout { mode: ReadMode::Chapters, chapters: chapters.len(), toc, pages: 0 })
         }
         Source::Html(_) => Ok(BookLayout { mode: ReadMode::Chapters, chapters: 1, toc: Vec::new(), pages: 0 }),
+        Source::Transcript(dir) => Ok(serde_json::from_slice(&std::fs::read(dir.join("layout.json")).context("reading the transcript")?)?),
         Source::Pdf(path) => Ok(BookLayout { mode: ReadMode::Images, chapters: 1, toc: Vec::new(), pages: images::pdf_pages(path)? }),
         Source::Comic(path) => {
             Ok(BookLayout { mode: ReadMode::Images, chapters: 1, toc: Vec::new(), pages: images::comic_pages(path)?.len() })
@@ -107,6 +114,10 @@ fn chapter_source(src: &Source, index: usize) -> anyhow::Result<(String, String)
             Ok((html, String::new()))
         }
         Source::Html(path) => Ok((std::fs::read_to_string(path)?, String::new())),
+        Source::Transcript(dir) => Ok((
+            std::fs::read_to_string(dir.join(format!("{index}.html"))).context("this part isn't transcribed yet")?,
+            String::new(),
+        )),
         Source::Pdf(_) | Source::Comic(_) | Source::NeedsConversion => bail!("this format has no chapters"),
     }
 }

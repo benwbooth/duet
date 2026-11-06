@@ -101,7 +101,7 @@ fn readable<'a>(assets: &'a [Asset], data_dir: &Path) -> Option<&'a Asset> {
     assets
         .iter()
         .filter(|a| a.kind == AssetKind::Ebook)
-        .filter(|a| matches!(book::source(a, data_dir), book::Source::Epub(_) | book::Source::Text(_) | book::Source::Html(_)))
+        .filter(|a| matches!(book::source(a, data_dir), book::Source::Epub(_) | book::Source::Text(_) | book::Source::Html(_)) && a.format != "transcript")
         .min_by_key(|a| a.origin == "generated")
 }
 
@@ -260,9 +260,25 @@ pub async fn merge_sync(state: &State, work_id: i64, ebook: i64, audio: i64, new
     if new.is_empty() {
         return Ok(());
     }
-    let mut spans = sync_map(state, ebook, audio).await?.map(|m| m.spans).unwrap_or_default();
     let fresh: std::collections::HashSet<(usize, usize)> = new.iter().map(|s| (s.chapter, s.sentence)).collect();
-    spans.retain(|s| !fresh.contains(&(s.chapter, s.sentence)));
+    save_spans(state, work_id, ebook, audio, new, |s| !fresh.contains(&(s.chapter, s.sentence))).await
+}
+
+/// Replaces a whole chapter's spans (its sentences were renumbered, say).
+pub async fn replace_chapter_sync(state: &State, work_id: i64, ebook: i64, audio: i64, chapter: usize, new: Vec<SyncSpan>) -> anyhow::Result<()> {
+    save_spans(state, work_id, ebook, audio, new, |s| s.chapter != chapter).await
+}
+
+async fn save_spans(
+    state: &State,
+    work_id: i64,
+    ebook: i64,
+    audio: i64,
+    new: Vec<SyncSpan>,
+    keep: impl Fn(&SyncSpan) -> bool,
+) -> anyhow::Result<()> {
+    let mut spans = sync_map(state, ebook, audio).await?.map(|m| m.spans).unwrap_or_default();
+    spans.retain(|s| keep(s));
     spans.extend(new);
     let dir = state.data_dir.join("jobs").join("live");
     tokio::fs::create_dir_all(&dir).await?;

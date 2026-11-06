@@ -176,6 +176,9 @@ pub async fn sentence(state: &State, asset: i64, chapter: usize, n: usize) -> an
         return Ok(bytes);
     }
     let a = db::asset(&state.db, asset).await?.context("no such book")?;
+    if a.format == "transcript" {
+        crate::audiotext::ensure_chapter(state, &a, chapter).await?;
+    }
     let src = book::source(&a, &state.data_dir);
     let sentences = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, chapter)).await??;
     let text = sentences.get(n).cloned().context("no such sentence")?;

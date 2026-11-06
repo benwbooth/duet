@@ -1089,3 +1089,8 @@ input, select { border-radius: 12px; }
   margin: 1.2rem 0 0; font-family: var(--font); font-size: 1.2rem; line-height: 1.55; font-style: italic;
   min-height: 3em; transition: opacity 0.3s;
 }
+
+/* A chapter being made from the recording. */
+.transcribing { display: grid; justify-items: center; gap: 0.6rem; padding: 4rem 1rem; text-align: center; color: var(--page-muted, var(--muted)); font-family: var(--sans); }
+.transcribing p { margin: 0; font-size: 1rem; color: var(--page-text, var(--text)); }
+.transcribing small { font-size: 0.85rem; }

@@ -11,7 +11,7 @@ use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 
 use crate::{api, format_time, toast};
 
-const READABLE: [&str; 6] = ["epub", "txt", "md", "html", "htm", "xhtml"];
+const READABLE: [&str; 7] = ["epub", "txt", "md", "html", "htm", "xhtml", "transcript"];
 
 /// The page colour to use: light unless you've chosen otherwise ("auto" from older settings
 /// counts as light too).
@@ -29,7 +29,7 @@ fn readable(a: &Asset) -> bool {
 /// How an edition is named in the edition picker.
 pub fn edition_label(a: &Asset) -> String {
     match (a.kind, a.origin == "generated") {
-        (AssetKind::Ebook, true) => "Transcribed from the audiobook (AI)".into(),
+        (AssetKind::Ebook, true) => "Made from the audiobook (AI)".into(),
         (AssetKind::Audiobook, true) => "Full cast (AI)".into(),
         (AssetKind::Ebook, false) => format!("Original {}", a.format.to_uppercase()),
         (AssetKind::Audiobook, false) => "Original narration".into(),
@@ -119,9 +119,10 @@ impl Mode {
 
     /// The modes this book's editions allow.
     pub fn available(assets: &[Asset]) -> Vec<Mode> {
-        let ebook = assets.iter().any(|a| a.kind == AssetKind::Ebook);
-        let text = assets.iter().any(|a| a.kind == AssetKind::Ebook && readable(a));
         let audio = assets.iter().any(|a| a.kind == AssetKind::Audiobook);
+        // An audiobook can always be read: its text is made from the recording as you go.
+        let ebook = audio || assets.iter().any(|a| a.kind == AssetKind::Ebook);
+        let text = audio || assets.iter().any(|a| a.kind == AssetKind::Ebook && readable(a));
         Mode::ALL
             .into_iter()
             .filter(|m| match m {
@@ -316,8 +317,15 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         let synced: Vec<(i64, i64)> = api::get(&format!("/api/works/{id}/sync")).await.unwrap_or_default();
         let (want_e, want_a) = remembered(id);
         let find = |want: Option<i64>| want.and_then(|want| w.assets.iter().find(|a| a.id == want).cloned());
-        let e = find(want_e).or_else(|| pick_ebook(&w.assets));
+        let mut e = find(want_e).or_else(|| pick_ebook(&w.assets));
         let a = find(want_a).or_else(|| pick_audio(&w.assets, e.as_ref().map(|e| e.id), &synced));
+        // Only a recording: read the text made from it.
+        if e.is_none() && a.is_some() {
+            let m = start_mode.unwrap_or_else(|| Mode::default_for(id, &w.assets));
+            if !m.listening_only() || m.cast() {
+                e = api::post::<_, Asset>(&format!("/api/works/{id}/transcript"), &()).await.ok();
+            }
+        }
         sync.set(load_sync(id, e.as_ref().map(|e| e.id), a.as_ref().map(|a| a.id)).await);
         pairs.set(synced);
         if let Some(e) = &e {
@@ -448,8 +456,37 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             return;
         }
         let c = c.min(l.chapters.saturating_sub(1));
+        let transcript = e.format == "transcript";
+        let done = StoredValue::new(false);
+        if transcript {
+            // Making a chapter from the recording takes a minute or two the first time.
+            set_timeout(
+                move || {
+                    if !done.get_value() && chapter.get_untracked().min(l.chapters.saturating_sub(1)) == c {
+                        html.set(r#"<div class="transcribing"><span class="spinner"></span><p>Listening to this chapter and setting it as text…</p><small>This takes a minute or two the first time.</small></div>"#.into());
+                    }
+                },
+                std::time::Duration::from_millis(500),
+            );
+        }
         spawn_local(async move {
-            match api::get::<Chapter>(&format!("/api/assets/{}/chapters/{c}", e.id)).await {
+            let got = api::get::<Chapter>(&format!("/api/assets/{}/chapters/{c}", e.id)).await;
+            done.set_value(true);
+            if transcript {
+                // Its timings came with it; and have the next chapter ready by the time it's needed.
+                if let Some(a) = audio_asset.get_untracked() {
+                    let idx = load_sync(id, Some(e.id), Some(a.id)).await;
+                    sync.set(idx);
+                }
+                if c + 1 < l.chapters {
+                    let next = format!("/api/assets/{}/chapters/{}", e.id, c + 1);
+                    spawn_local(async move { crate::prefetch(&next).await; });
+                }
+            }
+            if chapter.get_untracked().min(l.chapters.saturating_sub(1)) != c {
+                return;
+            }
+            match got {
                 Ok(ch) => {
                     counts.update(|m| { m.insert(c, ch.sentences); });
                     html.set(ch.html);
@@ -462,6 +499,16 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     });
 
     let audio_el = move || audio.get_untracked();
+
+    // Text made from the recording has a chapter per track: the page follows the track at once,
+    // even before that chapter's words are timed.
+    Effect::new(move |_| {
+        let tr = track.get();
+        if mode.get().audiobook() && ebook.get().is_some_and(|e| e.format == "transcript") && chapter.get_untracked() != tr {
+            scroll_to.set(Some(0));
+            chapter.set(tr);
+        }
+    });
 
     // The first sentence at or after (chapter, sentence), skipping chapters with none (covers,
     // image pages); None past the end of the book.
@@ -559,7 +606,8 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             return;
         }
         let (Some(e), Some(a)) = (ebook.get_untracked(), audio_asset.get_untracked()) else { return };
-        if !READABLE.contains(&e.format.as_str()) {
+        // Text made from the recording is in sync already.
+        if !READABLE.contains(&e.format.as_str()) || e.format == "transcript" {
             return;
         }
         let tr = track.get_untracked();
@@ -975,6 +1023,8 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                         let available = Mode::available(&w.assets);
                         let of = |k: AssetKind| w.assets.iter().filter(|a| a.kind == k).cloned().collect::<Vec<_>>();
                         let (texts, audios) = (of(AssetKind::Ebook), of(AssetKind::Audiobook));
+                        // The text-from-the-recording edition, offered before it exists.
+                        let make_text = !audios.is_empty() && !texts.iter().any(|a| a.format == "transcript");
                         view! {
                             <div class="mode-list">
                                 {Mode::ALL.into_iter().map(|m| {
@@ -997,9 +1047,25 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                                     }
                                 }).collect_view()}
                             </div>
-                            {(texts.len() > 1).then(|| view! {
+                            {(texts.len() + make_text as usize > 1).then(|| view! {
                                 <div class="edition-group">
                                     <h4>"Text edition"</h4>
+                                    {make_text.then(|| view! {
+                                        <label class="choice">
+                                            <input type="radio" name="text-edition" on:change=move |_| {
+                                                spawn_local(async move {
+                                                    match api::post::<_, Asset>(&format!("/api/works/{id}/transcript"), &()).await {
+                                                        Ok(t) => {
+                                                            work.update(|w| if let Some(w) = w { w.assets.push(t.clone()) });
+                                                            switch_ebook(t);
+                                                        }
+                                                        Err(err) => toast.show(err.0),
+                                                    }
+                                                });
+                                            }/>
+                                            "Made from the audiobook (AI)"
+                                        </label>
+                                    })}
                                     {texts.into_iter().map(|a| {
                                         let (aid, label, a2) = (a.id, edition_label(&a), a.clone());
                                         view! {

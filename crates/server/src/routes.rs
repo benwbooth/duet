@@ -41,6 +41,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/works/{id}/sync/live", post(sync_live))
         .route("/works/{id}/cast", post(save_cast))
         .route("/works/{id}/merge", post(merge_work))
+        .route("/works/{id}/transcript", post(transcript))
         .route("/assets/{id}/file", get(asset_file))
         .route("/assets/{id}/layout", get(layout))
         .route("/assets/{id}/chapters/{n}", get(chapter))
@@ -196,6 +197,9 @@ async fn layout(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Js
 
 async fn chapter(AxState(s): AxState<State>, Path((id, n)): Path<(i64, usize)>) -> ApiResult<Json<Chapter>> {
     let a = asset_or_404(&s, id).await?;
+    if a.format == "transcript" {
+        crate::audiotext::ensure_chapter(&s, &a, n).await?;
+    }
     let src = book::source(&a, &s.data_dir);
     Ok(Json(tokio::task::spawn_blocking(move || book::chapter(&src, id, n)).await??))
 }
@@ -222,6 +226,11 @@ async fn locate(AxState(s): AxState<State>, Path(id): Path<i64>, Query(q): Query
 async fn track(AxState(s): AxState<State>, Path((id, n)): Path<(i64, i64)>, req: Request) -> ApiResult<Response> {
     let path = db::track_path(&s.db, id, n).await?.ok_or_else(|| ApiError::not_found("track"))?;
     serve_path(PathBuf::from(path), req).await
+}
+
+/// The book's text-from-the-audiobook edition (made chapter by chapter as it's read).
+async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Json<duet_common::Asset>> {
+    Ok(Json(crate::audiotext::ensure_asset(&s, id).await?))
 }
 
 /// One sentence of the full cast, performed on the fly (see cast.rs).

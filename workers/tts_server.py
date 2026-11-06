@@ -337,6 +337,32 @@ def sync_window(body):
     return {"spans": spans, "near": near, "heard": len(heard)}
 
 
+def track_words(body):
+    """Transcribes a whole track with word timings, for making a book from an audiobook:
+    segments of {start, end, text, words: [[word, start, end]]}. Cached next to align.py's."""
+    import align
+    from common import load_audio, load, save, whisper as load_whisper
+
+    path = body["audio"]
+    cached = align.cache_path(path, "segments:" + args.listen_model)
+    if os.path.exists(cached):
+        return {"segments": load(cached)}
+    samples = load_audio(path)
+    with listen_lock:
+        touch("whisper")
+        key = "live:" + args.listen_model
+        if key not in whisper:
+            whisper[key], _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda")
+        segments, _ = whisper[key].transcribe(samples, word_timestamps=True, vad_filter=True, language="en")
+        out = [
+            {"start": round(seg.start, 3), "end": round(seg.end, 3), "text": seg.text.strip(),
+             "words": [[w.word.strip(), round(w.start, 3), round(w.end, 3)] for w in seg.words or []]}
+            for seg in segments
+        ]
+    save(cached, out)
+    return {"segments": out}
+
+
 def multipart(content_type, body):
     """Fields of a multipart/form-data body: name -> bytes."""
     from email.parser import BytesParser
@@ -376,6 +402,8 @@ class Handler(BaseHTTPRequestHandler):
                 text = transcribe(fields["file"], model_name.rsplit("/", 1)[-1].removeprefix("faster-whisper-"))
                 return self.reply(200, json.dumps({"text": text}).encode(), "application/json")
             body = json.loads(raw)
+            if path in ("/v1/track-words", "/track-words"):
+                return self.reply(200, json.dumps(track_words(body)).encode(), "application/json")
             if path in ("/v1/sync-window", "/sync-window"):
                 return self.reply(200, json.dumps(sync_window(body)).encode(), "application/json")
             language = body.get("language", "English")
@@ -416,6 +444,9 @@ class Handler(BaseHTTPRequestHandler):
             data, mime = encode(wav, sr, body.get("response_format", "mp3"))
             self.reply(200, data, mime)
         except Exception as e:  # report to the client instead of dropping the connection
+            import traceback
+
+            traceback.print_exc()
             self.reply(500, json.dumps({"error": str(e)}).encode(), "application/json")
 
 

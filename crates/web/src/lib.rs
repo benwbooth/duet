@@ -658,27 +658,21 @@ fn WorkPage(id: i64) -> impl IntoView {
                                 </div>
                             </section>
 
-                            <section class="work-section">
-                                <h2>"Make more of it"</h2>
-                                <div class="action-cards">
-                                    {(has_a && !has_e).then(|| action_card(
-                                        icons::QUILL,
-                                        "Ebook from the audio",
-                                        "Transcribe the audiobook into a formatted ebook with chapters, synced to the recording.",
-                                        "Create",
-                                        busy(JobKind::Transcribe),
-                                        move || spawn_local(start_job(JobKind::Transcribe, id)),
-                                    ))}
-                                    {(has_e && !readable && !ebooks.iter().any(|a| ["pdf", "cbz", "cbr", "cb7", "cbt"].contains(&a.format.as_str()))).then(|| action_card(
-                                        icons::CONVERT,
-                                        "Convert to EPUB",
-                                        "Make a readable copy of this format with Calibre.",
-                                        "Convert",
-                                        busy(JobKind::Convert),
-                                        move || spawn_local(start_job(JobKind::Convert, id)),
-                                    ))}
-                                </div>
-                            </section>
+                            {(has_e && !readable && !ebooks.iter().any(|a| ["pdf", "cbz", "cbr", "cb7", "cbt"].contains(&a.format.as_str()))).then(|| view! {
+                                <section class="work-section">
+                                    <h2>"Make it readable"</h2>
+                                    <div class="action-cards">
+                                        {action_card(
+                                            icons::CONVERT,
+                                            "Convert to EPUB",
+                                            "Make a readable copy of this format with Calibre.",
+                                            "Convert",
+                                            busy(JobKind::Convert),
+                                            move || spawn_local(start_job(JobKind::Convert, id)),
+                                        )}
+                                    </div>
+                                </section>
+                            })}
 
                             <section class="work-section">
                                 <CombineWith id title=w.title.clone()/>

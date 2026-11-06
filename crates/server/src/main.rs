@@ -2,6 +2,7 @@
 
 mod ai;
 mod ai_setup;
+mod audiotext;
 mod book;
 mod cast;
 mod db;

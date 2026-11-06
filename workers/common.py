@@ -22,7 +22,10 @@ def load(path):
 
 
 def save(path, data):
-    tmp = path + ".tmp"
+    import threading
+
+    # Unique, so two writers of the same file (two requests, say) can't trip over each other.
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f)
     os.replace(tmp, path)
