@@ -253,6 +253,7 @@ pub async fn start_server(state: &State) -> anyhow::Result<()> {
         .arg(venv_dir(state))
         .arg(state.data_dir.join("voices"))
         .arg(VOICE_PORT.to_string())
+        .arg(state.settings.read().await.ai.voice_idle_minutes.max(0.0).to_string())
         .env("DUET_DATA_DIR", &state.data_dir)
         .stdout(log.try_clone()?)
         .stderr(log)

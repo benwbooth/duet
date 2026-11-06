@@ -6,7 +6,7 @@
 #
 # duet starts this itself (Settings -> Voices); run by hand with the same arguments.
 #
-# Usage: scripts/voices.sh [fish-speech dir] [workers venv] [voices dir] [port]
+# Usage: scripts/voices.sh [fish-speech dir] [workers venv] [voices dir] [port] [idle minutes]
 
 set -euo pipefail
 
@@ -16,9 +16,11 @@ fish="${1:-$data/fish-speech}"
 venv="${2:-$data/venv}"
 voices="${3:-$data/voices}"
 port="${4:-8880}"
+idle="${5:-5}"
 cd "$root"
 exec "$venv/bin/python" workers/tts_server.py \
   --port "$port" \
+  --idle-minutes "$idle" \
   --engine fish \
   --fish-dir "$fish" \
   --fish-url "http://127.0.0.1:$((port + 1))" \

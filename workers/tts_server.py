@@ -58,9 +58,58 @@ def free_gpu():
         pass
 
 
+last_used = {"qwen": 0.0, "fish": 0.0, "whisper": 0.0}
+
+
+def touch(what):
+    last_used[what] = time.monotonic()
+
+
+def free_ollama():
+    """Asks a local Ollama to drop the models it holds on the graphics card, to make room."""
+    if not args.free_ollama:
+        return
+    base = args.ollama_url.rstrip("/")
+    try:
+        with urllib.request.urlopen(base + "/api/ps", timeout=2) as r:
+            running = json.load(r).get("models", [])
+        for m in running:
+            req = urllib.request.Request(
+                base + "/api/generate", data=json.dumps({"model": m["name"], "keep_alive": 0}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=10).read()
+            print(f"asked Ollama to unload {m['name']} to make room", flush=True)
+    except Exception:
+        pass  # no Ollama here, or nothing loaded
+
+
+def reaper():
+    """Unloads whatever hasn't been used for --idle-minutes, so the GPU and memory are free for
+    everything else on the computer. Each one loads again on its next use."""
+    limit = args.idle_minutes * 60
+    while limit > 0:
+        time.sleep(30)
+        now = time.monotonic()
+        with lock:
+            if models and now - last_used["qwen"] > limit:
+                print("unloading the voice design models (idle)", flush=True)
+                unload_qwen()
+            if fish.proc and now - last_used["fish"] > limit:
+                print("stopping Fish Audio (idle)", flush=True)
+                fish.stop()
+        with listen_lock:
+            if whisper and now - last_used["whisper"] > limit:
+                print("unloading speech recognition (idle)", flush=True)
+                whisper.clear()
+                free_gpu()
+
+
 def qwen(kind):
     """Loads a Qwen3-TTS checkpoint on first use ("design", "base" or "custom")."""
+    touch("qwen")
     if kind not in models:
+        free_ollama()
         import torch
         from qwen_tts import Qwen3TTSModel
 
@@ -88,8 +137,10 @@ class Fish:
             return False
 
     def start(self):
+        touch("fish")
         if self.healthy():
             return
+        free_ollama()
         if not args.fish_dir:
             raise RuntimeError(f"no fish-speech server at {args.fish_url}")
         host_port = args.fish_url.split("://", 1)[-1].rstrip("/")
@@ -123,6 +174,7 @@ class Fish:
         import soundfile as sf
 
         self.start()
+        touch("fish")
         with open(ref_wav, "rb") as f:
             audio = f.read()
         body = ormsgpack.packb({
@@ -197,6 +249,7 @@ whisper = {}
 
 def transcribe(audio, model_name):
     """faster-whisper on the GPU when CTranslate2 has one (NVIDIA), otherwise the CPU."""
+    touch("whisper")
     import tempfile
 
     from faster_whisper import WhisperModel
@@ -243,6 +296,7 @@ def sync_window(body):
     start, duration = float(body["start"]), float(body.get("duration", 30.0))
     samples = load_audio_window(body["audio"], start, duration)
     with listen_lock:
+        touch("whisper")
         key = "live:" + args.listen_model
         if key not in whisper:
             whisper[key], _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda")
@@ -347,9 +401,14 @@ def main():
     ap.add_argument("--design-model", default="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
     ap.add_argument("--base-model", default="Qwen/Qwen3-TTS-12Hz-1.7B-Base")
     ap.add_argument("--custom-model", default="", help="Qwen3-TTS CustomVoice, to allow its built-in speaker names")
+    ap.add_argument("--idle-minutes", type=float, default=5, help="unload models unused for this long (0: never)")
+    ap.add_argument("--ollama-url", default="http://127.0.0.1:11434")
+    ap.add_argument("--no-free-ollama", dest="free_ollama", action="store_false",
+                    help="don't ask Ollama to unload its models before loading voice models")
     args = ap.parse_args()
     print(f"duet TTS ({args.engine}) on http://{args.host}:{args.port}/v1", flush=True)
     try:
+        threading.Thread(target=reaper, daemon=True).start()
         ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
     finally:
         fish.stop()

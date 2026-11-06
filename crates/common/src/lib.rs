@@ -347,6 +347,8 @@ pub struct AiSettings {
     pub device: String,
     /// Start the local voice server with duet once it's installed.
     pub auto_start_voices: bool,
+    /// Unload voice and speech models after this many idle minutes (0: keep them loaded).
+    pub voice_idle_minutes: f64,
 }
 
 impl Default for AiSettings {
@@ -375,6 +377,7 @@ impl Default for AiSettings {
             workers_dir: "workers".into(),
             device: "auto".into(),
             auto_start_voices: true,
+            voice_idle_minutes: 5.0,
         }
     }
 }

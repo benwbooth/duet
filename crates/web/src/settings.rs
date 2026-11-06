@@ -343,6 +343,15 @@ pub fn VoicesSetup(s: RwSignal<Settings>) -> impl IntoView {
                 <VoiceTry/>
             </Show>
             {toggle(s, "Start the voice server with duet", |x| x.ai.auto_start_voices, |x, v| x.ai.auto_start_voices = v)}
+            <label class="field">
+                <span>"Free the graphics card when idle"</span>
+                <select on:change=move |ev| s.update(|x| if let Ok(v) = event_target_value(&ev).parse() { x.ai.voice_idle_minutes = v })>
+                    {[(2.0, "After 2 minutes"), (5.0, "After 5 minutes"), (15.0, "After 15 minutes"), (60.0, "After an hour"), (0.0, "Never (keep models loaded)")].map(|(v, label)| view! {
+                        <option value=v.to_string() selected=move || s.with(|x| (x.ai.voice_idle_minutes - v).abs() < 0.01)>{label}</option>
+                    })}
+                </select>
+                <small>"Voice and speech models are unloaded after this long unused and load again when needed (the first line after that takes a little longer). Ollama's models are also asked to step aside when the voices need the card. Takes effect when the voice server restarts."</small>
+            </label>
         </section>
     }
 }
