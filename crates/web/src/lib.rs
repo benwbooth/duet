@@ -50,6 +50,10 @@ extern "C" {
     fn pager_destroy(book: &web_sys::Element);
     #[wasm_bindgen(js_name = pagerEnd)]
     fn pager_end(book: &web_sys::Element);
+    #[wasm_bindgen(js_name = pagerSetPlace)]
+    fn pager_set_place(book: &web_sys::Element, chapter: u32, chapters: u32);
+    #[wasm_bindgen(js_name = bookCover)]
+    fn book_cover(book: &web_sys::Element, url: &str);
     #[wasm_bindgen(js_name = pagerTurn)]
     fn pager_turn(book: &web_sys::Element, dir: i32);
     #[wasm_bindgen(js_name = sentenceText)]

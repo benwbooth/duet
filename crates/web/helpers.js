@@ -497,7 +497,35 @@ class Pager {
       }
     }
     if (this.h.onPage) this.h.onPage(this.page + 1, this.pages, this.spread);
+    this.edges();
     this.warm();
+  }
+
+  // The book's edges: page stacks either side, as thick as the pages read and still to come,
+  // on a hard cover a little larger than the pages.
+  edges() {
+    const narrow = this.book.clientWidth < 640 && (this.book.parentElement || this.book).clientWidth < 700;
+    if (narrow) {
+      this.book.style.boxShadow = "";
+      return;
+    }
+    const place = this.book.__place || { chapter: 0, chapters: 1 };
+    const f = Math.max(0, Math.min(1, (place.chapter + (this.page + 1) / this.pages) / Math.max(1, place.chapters)));
+    const D = 14;
+    const before = Math.max(1, Math.round(D * f)), after = Math.max(1, Math.round(D * (1 - f)));
+    const sh = [];
+    // Leaves stepping out from under the open pages: paper, with a fine line between each.
+    for (let i = 1; i <= Math.max(before, after); i++) {
+      const c = i % 2 ? "var(--edge-line)" : "var(--page-bg)";
+      if (i <= before) sh.push(`${-i}px ${(i * 0.55).toFixed(2)}px 0 0 ${c}`);
+      if (i <= after) sh.push(`${i}px ${(i * 0.55).toFixed(2)}px 0 0 ${c}`);
+    }
+    // The cover board, then its shadow on the table.
+    const ring = D + 9;
+    sh.push(`0 ${(D * 0.55 + 5).toFixed(1)}px 0 ${ring}px var(--cover, #6b2d2d)`);
+    sh.push(`0 ${(D * 0.55 + 6).toFixed(1)}px 0 ${ring + 1}px rgba(0,0,0,0.35)`);
+    sh.push(`0 ${D + 26}px 50px ${D}px rgba(0,0,0,0.38)`);
+    this.book.style.boxShadow = sh.join(", ");
   }
 
   // What a page picture depends on besides its place: size, colours and type.
@@ -1125,6 +1153,43 @@ export function pagerInit(book, article, onNext, onPrev, onPage, spread) {
 }
 
 // "one", "two" or "auto" (two facing pages on wide windows).
+// Where this chapter sits in the book (for the thickness of the page stacks).
+export function pagerSetPlace(book, chapter, chapters) {
+  if (!book) return;
+  book.__place = { chapter, chapters };
+  if (book.__pager) book.__pager.edges();
+}
+
+const coverColours = new Map();
+
+// Colours the book's hard cover after its cover picture: the picture's average colour, deepened
+// so it reads as cloth or leather.
+export function bookCover(book, url) {
+  if (!book || !url) return;
+  const apply = (c) => book.style.setProperty("--cover", c);
+  if (coverColours.has(url)) return apply(coverColours.get(url));
+  const img = new Image();
+  img.onload = () => {
+    try {
+      const c = document.createElement("canvas");
+      c.width = c.height = 8;
+      const ctx = c.getContext("2d");
+      ctx.drawImage(img, 0, 0, 8, 8);
+      const d = ctx.getImageData(0, 0, 8, 8).data;
+      let r = 0, g = 0, b = 0;
+      for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
+      const n = d.length / 4;
+      // Darker and a little richer than the average, like a book's board.
+      const mx = Math.max(r, g, b) / n || 1;
+      const k = Math.min(1, 120 / mx);
+      const col = `rgb(${Math.round((r / n) * k)}, ${Math.round((g / n) * k)}, ${Math.round((b / n) * k)})`;
+      coverColours.set(url, col);
+      apply(col);
+    } catch (_) {}
+  };
+  img.src = url;
+}
+
 export function pagerSetSpread(book, spread) {
   if (book && book.__pager) book.__pager.setSpread(spread);
 }

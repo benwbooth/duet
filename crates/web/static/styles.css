@@ -516,13 +516,16 @@ button.link { background: none; border: 0; color: var(--muted); padding: 0; text
 .reader.has-player { --player-h: 132px; }
 .reader.paged-mode { padding-bottom: 0; }
 .reader.paged-mode .bookview {
-  position: relative; overflow: hidden; contain: paint;
-  height: calc(100dvh - 54px - var(--player-h, 0px) - 2rem);
-  max-width: 46em; margin: 1rem auto 0;
+  /* As big as the window allows, centred, at a book's proportions: each page about 0.7 as wide
+     as it's tall. The page stacks and the cover around it are drawn by the pager (edges()). */
+  --avail-h: calc(100dvh - 54px - var(--player-h, 0px) - 6rem);
+  --edge-line: color-mix(in srgb, var(--page-bg) 82%, #000);
+  position: relative; overflow: hidden;
+  height: var(--avail-h);
+  width: min(calc(100% - 5rem), calc(var(--avail-h) * 0.72));
+  max-width: none; margin: 2.2rem auto 0;
   background: linear-gradient(to right, rgba(0,0,0,0.07), rgba(0,0,0,0) 4%), var(--page-bg);
-  border-radius: 3px 8px 8px 3px;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.12), 0 12px 32px rgba(0,0,0,0.18),
-    3px 0 0 -1px var(--page-bg), 4px 0 0 -1px rgba(0,0,0,0.12), 6px 1px 0 -2px var(--page-bg), 7px 1px 0 -2px rgba(0,0,0,0.1);
+  border-radius: 2px;
   touch-action: pan-y; user-select: text;
 }
 .bookview.paged .page {
@@ -535,11 +538,11 @@ button.link { background: none; border: 0; color: var(--muted); padding: 0; text
 .reader.paged-mode .chapter-nav { margin: 0.4rem auto 0; max-width: 46em; font-size: 0.85rem; padding: 0 0.6rem; }
 .reader.paged-mode .chapter-nav button { padding: 0.25rem 0.6rem; font-size: 0.85rem; }
 @media (max-width: 760px) {
-  .reader.paged-mode .bookview { margin: 0; border-radius: 0; box-shadow: none; height: calc(100dvh - 54px - var(--player-h, 0px)); }
+  .reader.paged-mode .bookview, .reader.paged-mode .bookview.spread { margin: 0; width: 100%; border-radius: 0; box-shadow: none; height: calc(100dvh - 54px - var(--player-h, 0px)); }
 }
 
 /* Two facing pages: wider book, with a fold down the middle. */
-.reader.paged-mode .bookview.spread { max-width: min(92em, 100%); }
+.reader.paged-mode .bookview.spread { width: min(calc(100% - 5rem), calc(var(--avail-h) * 1.44)); max-width: none; }
 .bookview.spread::after {
   content: ""; position: absolute; top: 0; bottom: 0; left: calc(50% - 40px); width: 80px; z-index: 1; pointer-events: none;
   background: linear-gradient(to right, rgba(0,0,0,0) 0%, rgba(0,0,0,0.06) 35%, rgba(0,0,0,0.16) 50%, rgba(0,0,0,0.06) 65%, rgba(0,0,0,0) 100%);
@@ -952,7 +955,8 @@ input, select { border-radius: 12px; }
 .reader-bar .back { color: var(--page-text); width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--page-text) 7%, transparent); font-size: 1.4rem; text-decoration: none; }
 .reader-bar .reader-title { color: var(--page-text); }
 .reader.chrome-hidden .reader-bar { transform: translateY(-140%); }
-.reader.paged-mode .bookview { margin-top: 78px; height: calc(100dvh - 78px - var(--player-h) - 28px); }
+/* Under the floating bar, with room below for the cover and its shadow. */
+.reader.paged-mode .bookview { --avail-h: calc(100dvh - 82px - var(--player-h, 0px) - 58px); margin-top: 82px; height: var(--avail-h); }
 
 .player {
   left: calc(var(--nav-w) + 50% - var(--nav-w) / 2); right: auto; transform: translateX(-50%); bottom: 14px;
@@ -995,7 +999,7 @@ input, select { border-radius: 12px; }
   .player { left: 50%; width: calc(100vw - 16px); bottom: calc(8px + env(safe-area-inset-bottom)); grid-template-columns: minmax(0, 1fr) auto; }
   .np-extra { display: none; }
   .reader.has-player { --player-h: 92px; }
-  .reader.paged-mode .bookview { margin-top: 66px; height: calc(100dvh - 66px - var(--player-h) - 16px); }
+  .reader.paged-mode .bookview, .reader.paged-mode .bookview.spread { margin-top: 66px; height: calc(100dvh - 66px - var(--player-h) - 16px); }
   .transport .round:not(.play) { display: none; }
 }
 
@@ -1078,8 +1082,8 @@ input, select { border-radius: 12px; }
   position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; background: none;
 }
 /* Dark pages: a fine white edge so the page reads as a sheet against the black. */
-.reader[data-theme="dark"] .bookview { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.55); }
-@media (max-width: 760px) { .reader[data-theme="dark"] .bookview { box-shadow: none; } }
+/* (Dark pages are outlined by their page stacks: --edge-line below.) */
+.reader[data-theme="dark"] .bookview { --edge-line: rgba(255, 255, 255, 0.5); }
 /* Over a page's turning edge (and while holding it): a hand gripping the page. Drawn here so it
    looks the same whatever cursor theme the system has (many lack a grabbing hand). */
 .bookview.grab-edge, .bookview.grab-edge * {

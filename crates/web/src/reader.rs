@@ -392,6 +392,12 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     let lay_out = StoredValue::new_local(move || {
         let (Some(el), Some(b)) = (page.get_untracked(), book.get_untracked()) else { return };
         if paged() {
+            // Before the pager starts, so the page stacks are right from the first page.
+            let total = layout.get_untracked().map(|l| l.chapters).unwrap_or(1);
+            crate::pager_set_place(&b, chapter.get_untracked().min(total.saturating_sub(1)) as u32, total as u32);
+            if let Some(url) = work.get_untracked().and_then(|w| w.cover_url) {
+                crate::book_cover(&b, &url);
+            }
             crate::pager_init(&b, &el, &pager_next, &pager_prev, &pager_page, &prefs.get_untracked().spread);
         } else {
             crate::pager_destroy(&b);
