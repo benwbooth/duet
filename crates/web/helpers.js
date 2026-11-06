@@ -228,6 +228,44 @@ void main() {
 
 let sharedCurl = null;
 
+// Takes whatever the curl canvas is showing off the screen.
+function uncover() {
+  if (!sharedCurl || sharedCurl.lost) return;
+  sharedCurl.clear();
+  sharedCurl.canvas.style.opacity = "0";
+}
+
+// Flat parts of the book drawn with the curl, so the whole book comes from one picture at a time:
+// the page underneath (with the turning page's shadow on it) and the facing page that stays put.
+const FLAT_VS = `
+attribute vec2 a_uv;
+uniform vec4 u_rect;   // x0, width, height
+uniform vec2 u_view;
+varying vec2 v_pos;
+void main() {
+  vec2 X = vec2(u_rect.x + a_uv.x * u_rect.y, a_uv.y * u_rect.z);
+  v_pos = X;
+  gl_Position = vec4(X.x / u_view.x * 2.0 - 1.0, 1.0 - X.y / u_view.y * 2.0, 0.0, 1.0);
+}`;
+
+const FLAT_FS = `
+precision highp float;
+uniform sampler2D u_tex;
+uniform vec2 u_view;
+uniform vec4 u_sh;     // shadow: edge point, direction away from the turning page
+uniform vec3 u_shp;    // reach, strength, on
+varying vec2 v_pos;
+void main() {
+  vec3 col = texture2D(u_tex, v_pos / u_view).rgb;
+  if (u_shp.z > 0.5) {
+    float d = dot(v_pos - u_sh.xy, u_sh.zw);
+    float r = u_shp.x;
+    float a = d < 0.0 ? 0.0 : d < 0.35 * r ? mix(u_shp.y, u_shp.y * 0.3, d / (0.35 * r)) : mix(u_shp.y * 0.3, 0.0, clamp((d - 0.35 * r) / (0.65 * r), 0.0, 1.0));
+    col *= 1.0 - a;
+  }
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
 class CurlGL {
   constructor(book) {
     this.canvas = document.createElement("canvas");
@@ -250,6 +288,15 @@ class CurlGL {
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
     this.prog = prog;
+    const flat = gl.createProgram();
+    gl.attachShader(flat, sh(gl.VERTEX_SHADER, FLAT_VS));
+    gl.attachShader(flat, sh(gl.FRAGMENT_SHADER, FLAT_FS));
+    gl.linkProgram(flat);
+    if (!gl.getProgramParameter(flat, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(flat));
+    this.flat = flat;
+    this.f = {};
+    for (const n of ["u_rect", "u_view", "u_tex", "u_sh", "u_shp"]) this.f[n] = gl.getUniformLocation(flat, n);
+    this.flatLoc = gl.getAttribLocation(flat, "a_uv");
     gl.useProgram(prog);
     // A fine grid over the sheet: fine enough that the roll looks round from any angle.
     const NX = 72, NY = 48, verts = [], idx = [];
@@ -265,6 +312,7 @@ class CurlGL {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx), gl.STATIC_DRAW);
     const loc = gl.getAttribLocation(prog, "a_uv");
+    this.curlLoc = loc;
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     this.u = {};
@@ -273,7 +321,7 @@ class CurlGL {
     gl.uniform1i(this.u.u_front, 0);
     gl.uniform1i(this.u.u_back, 1);
     gl.uniform1f(this.u.u_flip, 0);
-    this.tex = [gl.createTexture(), gl.createTexture()];
+    this.tex = [gl.createTexture(), gl.createTexture(), gl.createTexture()];
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
     book.appendChild(this.canvas);
@@ -310,10 +358,44 @@ class CurlGL {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   }
 
+  // A flat rectangle of the book from texture `unit`, optionally with the turning page's shadow.
+  flatRect(x0, w, H, W, unit, shadow) {
+    const gl = this.gl, f = this.f;
+    gl.useProgram(this.flat);
+    gl.enableVertexAttribArray(this.flatLoc);
+    gl.vertexAttribPointer(this.flatLoc, 2, gl.FLOAT, false, 0, 0);
+    gl.uniform4f(f.u_rect, x0, w, H, 0);
+    gl.uniform2f(f.u_view, W, H);
+    gl.uniform1i(f.u_tex, unit);
+    if (shadow) {
+      gl.uniform4f(f.u_sh, shadow.edge.x, shadow.edge.y, shadow.dir.x, shadow.dir.y);
+      gl.uniform3f(f.u_shp, shadow.reach, shadow.strength, 1);
+    } else {
+      gl.uniform3f(f.u_shp, 1, 0, 0);
+    }
+    gl.drawElements(gl.TRIANGLES, this.count, gl.UNSIGNED_SHORT, 0);
+  }
+
+  // Just a picture of the book, flat (keeping the old page on screen while the next chapter loads).
+  cover(picture, W, H) {
+    this.texture(0, picture);
+    this.size(W, H);
+    this.clear();
+    this.flatRect(0, W, H, W, 0, null);
+    this.canvas.style.visibility = "visible";
+    this.canvas.style.opacity = "1";
+  }
+
   draw(p) {
     const gl = this.gl, u = this.u;
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    // The page uncovered beneath (texture 2) and the facing page that doesn't move (texture 0).
+    if (p.under) this.flatRect(p.x0, p.w, p.H, p.W, 2, p.shadow);
+    if (p.still) this.flatRect(p.still[0], p.still[1] - p.still[0], p.H, p.W, 0, null);
+    gl.useProgram(this.prog);
+    gl.enableVertexAttribArray(this.curlLoc);
+    gl.vertexAttribPointer(this.curlLoc, 2, gl.FLOAT, false, 0, 0);
     gl.uniform4f(u.u_leaf, p.x0, p.w, p.H, p.hinge);
     gl.uniform2f(u.u_view, p.W, p.H);
     gl.uniform2f(u.u_L0, p.L0.x, p.L0.y);
@@ -530,6 +612,7 @@ class Pager {
         if (this.dead || book.__carry !== carry) return;
         delete book.__carry;
         if (carry.spread === this.spread) this.turn(carry.dir, carry);
+        else uncover();
       }, 0);
     }
   }
@@ -537,7 +620,10 @@ class Pager {
   destroy() {
     this.resize.disconnect();
     document.removeEventListener("keydown", this.onKey);
-    this.book.querySelectorAll(".curl-layer, .page3d, .page-gl, .page-warp").forEach((e) => e.remove());
+    this.book.querySelectorAll(".curl-layer, .page3d, .page-warp").forEach((e) => e.remove());
+    // The shared curl canvas stays in the book; it's left showing only while a turn into the
+    // next chapter is waiting to play (the old page over the new one).
+    if (sharedCurl && !this.book.__carry && sharedCurl.canvas.parentNode === this.book) uncover();
     this.dead = true;
     clearTimeout(this.warmTimer);
     if (this.styleWatch) this.styleWatch.disconnect();
@@ -832,6 +918,18 @@ class Pager {
       dir, snap: this.article.cloneNode(true), at: this.page * this.width, spread: this.spread,
       picture: this.snap(this.page * this.width), key: this.snapKey(),
     };
+    // Keep this page on screen (as a picture) while the next chapter loads underneath, so the
+    // new chapter doesn't show before the page has turned away.
+    const pic = this.book.__carry.picture;
+    if (pic && !this.noGL) {
+      try {
+        if (!sharedCurl || sharedCurl.lost) sharedCurl = new CurlGL(this.book);
+        if (sharedCurl.canvas.parentNode !== this.book) this.book.appendChild(sharedCurl.canvas);
+        sharedCurl.cover(pic, this.width, this.book.clientHeight);
+        // Never stuck: if no turn picks it up, the cover goes.
+        setTimeout(() => { if (this.book.__carry && this.book.__carry.picture === pic) { delete this.book.__carry; uncover(); } }, 6000);
+      } catch (_) {}
+    }
     go();
   }
 
@@ -890,8 +988,11 @@ class Pager {
       return null;
     }
     this.busy = true;
+    // The canvas draws the whole book for the length of the turn (the turning page, the page it
+    // uncovers and the facing page), from pictures; the live page underneath doesn't change
+    // until the turn has landed, so nothing can show through early.
     const t = { dir, target, W, H, layers: [], gl: true };
-    let front, back;
+    let front, back, under;
     if (!this.spread) {
       t.leaf = [0, W];
       t.hinge = 0;
@@ -900,40 +1001,32 @@ class Pager {
       t.ghost = true;
       t.reverse = dir < 0;
       if (dir > 0) {
-        front = curPic;
-        back = curPic;
-        if (!carry) t.placeTarget = true;
+        [front, back, under] = [curPic, curPic, nextPic];
       } else {
         // The previous page is laid back down over this one.
-        front = nextPic;
-        back = nextPic;
-        if (carry) t.layers.push(this.layer("curl-under", this.copy(cur, carry.snap)));
+        [front, back, under] = [nextPic, nextPic, curPic];
       }
     } else if (dir > 0) {
       t.leaf = [half, W];
       t.hinge = half;
       t.C0x = W;
-      front = curPic;
-      back = nextPic;
-      t.layers.push(this.halfLayer(0, this.copy(cur, carry ? carry.snap : null)));
-      if (!carry) t.placeTarget = true;
+      t.still = [0, half];
+      [front, back, under] = [curPic, nextPic, nextPic];
     } else {
       t.leaf = [0, half];
       t.hinge = half;
       t.C0x = 0;
-      front = curPic;
-      back = nextPic;
-      t.layers.push(this.halfLayer(half, this.copy(cur, carry ? carry.snap : null)));
-      if (!carry) t.placeTarget = true;
+      t.still = [half, W];
+      [front, back, under] = [curPic, nextPic, nextPic];
     }
     try {
       this.gl.texture(0, front);
       this.gl.texture(1, back);
+      this.gl.texture(2, under);
     } catch (e) {
       console.warn("page pictures can't be drawn:", e);
       this.noGL = true;
       this.busy = false;
-      this.place(this.article, this.page);
       return null;
     }
     // The paper colour, for the back of a single page.
@@ -941,17 +1034,17 @@ class Pager {
     probe.fillStyle = getComputedStyle(this.book).getPropertyValue("--page-bg").trim() || "#fff";
     const hex = probe.fillStyle.startsWith("#") ? probe.fillStyle : "#ffffff";
     t.paper = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
-    t.under = this.layer("curl-shadow");
-    t.layers.push(t.under);
-    this.book.append(...t.layers);
     this.gl.size(W, H);
-    // The canvas stays on screen between turns (cleared): shown from hidden, its first frame can
-    // arrive a frame late, and the page underneath would flash through.
     this.gl.canvas.style.visibility = "visible";
-    // The pictures and the live page can differ by a pixel here and there; a quick cross-fade at
-    // each end of the turn hides that instead of letting it jump.
-    this.gl.canvas.style.opacity = "0";
-    t.fadeStart = performance.now();
+    if (carry) {
+      // Coming from the last chapter: its page is already on the canvas (see carryInto).
+      this.gl.canvas.style.opacity = "1";
+    } else {
+      // The pictures and the live page can differ by a pixel here and there; a quick cross-fade
+      // hides that instead of letting it jump.
+      this.gl.canvas.style.opacity = "0";
+      t.fadeStart = performance.now();
+    }
     t.canvasLayer = { remove: () => this.gl.clear() };
     t.layers.push(t.canvasLayer);
     return t;
@@ -1094,11 +1187,10 @@ class Pager {
     if (r > w) { vx *= w / r; vy *= w / r; }
     P = { x: hp.x + vx, y: hp.y + vy };
     let d = Math.hypot(P.x - C.x, P.y - C.y);
-    const flat = { x0: t.leaf[0], w, W, H, hinge: t.hinge, ghost: !!t.ghost, paper: t.paper, squash: 1 };
+    const flat = { x0: t.leaf[0], w, W, H, hinge: t.hinge, ghost: !!t.ghost, paper: t.paper, squash: 1, under: true, still: t.still };
     if (d < 0.5) {
       this.gl.draw({ ...flat, L0: { x: -1e5, y: -1e5 }, dir: { x: 1, y: 0 }, R: 1 });
       this.revealUnder(t);
-      t.under.style.opacity = "0";
       t.progress = 0;
       return;
     }
@@ -1133,42 +1225,33 @@ class Pager {
     const L0 = { x: C.x + n.x * sC, y: C.y + n.y * sC };
     // ...and turns edge-on into it.
     const upright = t.single ? Math.max(0, Math.min(1, (turned - 0.8) / 0.2)) : 0;
-    this.gl.draw({ ...flat, L0, dir: { x: -n.x, y: -n.y }, R, squash: 1 - 0.98 * upright });
-    this.revealUnder(t);
     const p = Math.min(1, Math.abs(P.x - C.x) / span);
     t.progress = t.reverse ? 1 - p : p;
     // The sheet's shadow on the page it uncovers, deepest just past the roll.
     const lift = Math.sin(Math.PI * Math.min(1, turned));
-    const reach = Math.min(170, 30 + d * 0.5);
-    const edge = { x: L0.x - n.x * R, y: L0.y - n.y * R };
-    t.under.style.opacity = "1";
-    t.under.style.clipPath = `inset(0 ${W - t.leaf[1]}px 0 ${t.leaf[0]}px)`;
-    // Transparent on the page's side of the edge, so it never shows round the curl or under a
-    // page that's rolling up.
-    t.under.style.background = lineGradient(W, H, { x: -n.x, y: -n.y }, edge, [
-      [-0.5, "rgba(0,0,0,0)"],
-      [0, `rgba(0,0,0,${(0.4 * lift + 0.06).toFixed(3)})`],
-      [reach * 0.35, `rgba(0,0,0,${(0.12 * lift).toFixed(3)})`],
-      [reach, "rgba(0,0,0,0)"],
-    ]);
+    const shadow = {
+      edge: { x: L0.x - n.x * R, y: L0.y - n.y * R },
+      dir: { x: -n.x, y: -n.y },
+      reach: Math.min(170, 30 + d * 0.5),
+      strength: 0.4 * lift + 0.06,
+    };
+    this.gl.draw({ ...flat, L0, dir: { x: -n.x, y: -n.y }, R, squash: 1 - 0.98 * upright, shadow });
+    this.revealUnder(t);
   }
 
   fadeIn(t) {
     return new Promise((resolve) => {
       const step = () => {
         this.revealUnder(t);
-        if (t.fadeStart === undefined) {
-          // Opaque; the page underneath is changed on the next frame.
-          frame(() => resolve());
-        } else {
-          frame(step);
-        }
+        if (t.fadeStart === undefined) frame(() => resolve());
+        else frame(step);
       };
       step();
     });
   }
 
-  // The next page goes under the turning one only once the turning one is drawn over it.
+  // The canvas fades in over the live page at the start of a turn; and for the strips (which are
+  // live copies), the page underneath changes once they're drawn over it.
   revealUnder(t) {
     if (t.fadeStart !== undefined) {
       const a = Math.min(1, (performance.now() - t.fadeStart) / (FADE_MS * slow()));
@@ -1329,12 +1412,14 @@ class Pager {
       if (!got && !this.noGL && !(carry ? carry.picture && this.snap(target * this.width) : this.snap(this.page * this.width) && this.snap(target * this.width))) {
         console.warn("page turn without animation: page pictures not ready");
         if (!carry) this.go(target, false);
+        uncover();
         return;
       }
     }
     const t = this.begin(dir, carry);
     if (!t) {
       if (!carry) this.go(this.page + dir, false);
+      uncover();
       return;
     }
     const H = t.H;
