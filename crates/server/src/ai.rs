@@ -14,20 +14,32 @@ const CONTEXT_SENTENCES: usize = 80;
 
 pub async fn transcribe(state: &State, audio: Vec<u8>, filename: String, mime: String) -> anyhow::Result<String> {
     let ai = state.settings.read().await.ai.clone();
-    let part = reqwest::multipart::Part::bytes(audio).file_name(filename).mime_str(&mime)?;
-    let form = reqwest::multipart::Form::new().part("file", part).text("model", ai.stt_model.clone());
-    let resp: serde_json::Value = state
-        .http
-        .post(format!("{}/audio/transcriptions", ai.stt_url.trim_end_matches('/')))
-        .bearer_auth(&ai.llm_api_key)
-        .multipart(form)
-        .send()
-        .await
-        .context("speech-to-text server unreachable")?
-        .error_for_status()?
-        .json()
-        .await?;
-    Ok(resp["text"].as_str().unwrap_or("").trim().to_string())
+    // The bundled voice server does speech recognition too, so it's the fallback when the
+    // configured speech-to-text server isn't running.
+    let mut urls = vec![ai.stt_url.clone()];
+    if ai.tts_url.trim_end_matches('/') != ai.stt_url.trim_end_matches('/') {
+        urls.push(ai.tts_url.clone());
+    }
+    let mut last = None;
+    for url in urls {
+        let part = reqwest::multipart::Part::bytes(audio.clone()).file_name(filename.clone()).mime_str(&mime)?;
+        let form = reqwest::multipart::Form::new().part("file", part).text("model", ai.stt_model.clone());
+        match state
+            .http
+            .post(format!("{}/audio/transcriptions", url.trim_end_matches('/')))
+            .bearer_auth(&ai.llm_api_key)
+            .multipart(form)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let v: serde_json::Value = resp.error_for_status()?.json().await?;
+                return Ok(v["text"].as_str().unwrap_or("").trim().to_string());
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(anyhow::Error::from(last.unwrap())).context("speech-to-text server unreachable (Settings → Voices)")
 }
 
 pub async fn speak(state: &State, text: &str, voice: &str, instructions: Option<&str>) -> anyhow::Result<String> {
