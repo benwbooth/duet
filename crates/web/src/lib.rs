@@ -420,6 +420,7 @@ fn book_card(w: WorkSummary) -> impl IntoView {
                     <div class="cover-progress"><div style=format!("width:{:.1}%", p * 100.0)></div></div>
                 })}
             </div>
+            <div class="plank" aria-hidden="true"></div>
             <div class="title">{w.title.clone()}</div>
             <div class="author">{w.author.clone().unwrap_or_default()}</div>
             <div class="format-badges">
@@ -566,7 +567,7 @@ fn Library() -> impl IntoView {
                         </div>
                     </div>
                     {move || shown().is_empty().then(|| view! { <p class="empty">"No books match."</p> })}
-                    <div class="grid">
+                    <div class="grid bookcase">
                         <For each=shown key=|w| (w.id, w.progress.map(|p| (p * 1000.0) as i64)) let:w>
                             {book_card(w)}
                         </For>
