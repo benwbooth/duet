@@ -22,8 +22,16 @@ pub async fn chat(state: &State, system: &str, turns: &[Turn]) -> anyhow::Result
             let model = if ai.openai_model.is_empty() { bail!("Choose an OpenAI model (Settings → AI)") } else { &ai.openai_model };
             openai_compatible(state, OPENAI_URL, &ai.openai_api_key, model, system, turns).await?
         }
+        "service" => {
+            if ai.service_model.is_empty() {
+                bail!("Choose a model for the service (Settings → AI)");
+            }
+            openai_compatible(state, &ai.service_url, &ai.service_key, &ai.service_model, system, turns).await?
+        }
         "claude_cli" => claude_cli(&ai, system, turns).await?,
         "codex_cli" => codex_cli(&ai, system, turns).await?,
+        "gemini_cli" => gemini_cli(&ai, system, turns).await?,
+        "opencode_cli" => opencode_cli(&ai, system, turns).await?,
         _ => {
             if ai.llm_url.is_empty() {
                 bail!("No chat model set up (Settings → AI)");
@@ -180,4 +188,59 @@ async fn codex_cli(ai: &AiSettings, system: &str, turns: &[Turn]) -> anyhow::Res
     let text = tokio::fs::read_to_string(&answer).await.context("codex gave no answer")?;
     let _ = tokio::fs::remove_file(&answer).await;
     Ok(text)
+}
+
+/// Gemini CLI, signed in to your Google account (`gemini -p`).
+async fn gemini_cli(ai: &AiSettings, system: &str, turns: &[Turn]) -> anyhow::Result<String> {
+    let prompt = format!("{system}\n\nReply with your answer only; don't run commands or edit files.\n\n{}", transcript(turns));
+    let mut cmd = tokio::process::Command::new("gemini");
+    cmd.arg("-p").arg(prompt);
+    if !ai.cli_model.is_empty() {
+        cmd.args(["-m", &ai.cli_model]);
+    }
+    run_cli(cmd, "gemini", "Gemini CLI").await
+}
+
+/// OpenCode, with whichever provider accounts you've connected to it (`opencode run`).
+async fn opencode_cli(ai: &AiSettings, system: &str, turns: &[Turn]) -> anyhow::Result<String> {
+    let prompt = format!("{system}\n\nReply with your answer only; don't run commands or edit files.\n\n{}", transcript(turns));
+    let mut cmd = tokio::process::Command::new("opencode");
+    // Its own server for the call, rather than relying on OpenCode's background service.
+    cmd.args(["run", "--standalone"]);
+    if !ai.cli_model.is_empty() {
+        cmd.args(["--model", &ai.cli_model]);
+    }
+    cmd.arg(prompt);
+    run_cli(cmd, "opencode", "OpenCode").await
+}
+
+async fn run_cli(mut cmd: tokio::process::Command, name: &str, product: &str) -> anyhow::Result<String> {
+    let out = cmd
+        .current_dir(scratch()?)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .with_context(|| format!("running `{name}` (is {product} installed and signed in?)"))?;
+    if !out.status.success() {
+        bail!("{name}: {}", strip_ansi(String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("failed")));
+    }
+    Ok(strip_ansi(String::from_utf8_lossy(&out.stdout).trim()))
+}
+
+/// Terminal colour codes from CLI output.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }

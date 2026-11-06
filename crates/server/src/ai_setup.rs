@@ -67,6 +67,8 @@ pub async fn detect(state: &State) -> ChatSetup {
         nixos: std::path::Path::new("/etc/NIXOS").exists(),
         claude_cli: on_path("claude"),
         codex_cli: on_path("codex"),
+        gemini_cli: on_path("gemini"),
+        opencode_cli: on_path("opencode"),
         gpu: gpu.as_ref().map(|g| g.0.clone()),
         gpu_vram_gb: gpu.map(|g| g.1),
         servers,

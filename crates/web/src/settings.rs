@@ -426,12 +426,26 @@ fn AiSection(s: RwSignal<Settings>) -> impl IntoView {
 }
 
 /// Where the chat model can run.
-const PROVIDERS: [(&str, &str, &str); 5] = [
+const PROVIDERS: [(&str, &str, &str); 8] = [
     ("local", "On this computer", "Free and private: Ollama, LM Studio, llama.cpp or vLLM."),
-    ("anthropic", "Claude", "Anthropic's models, with an API key."),
-    ("openai", "OpenAI", "GPT and Codex models, with an API key."),
-    ("claude_cli", "Claude Code", "Your Claude subscription, through the `claude` command."),
-    ("codex_cli", "Codex", "Your ChatGPT subscription, through the `codex` command."),
+    ("claude_cli", "Claude account", "Your Claude subscription, through Claude Code (the `claude` command)."),
+    ("codex_cli", "ChatGPT / Codex account", "Your ChatGPT subscription, through Codex (the `codex` command)."),
+    ("gemini_cli", "Google account", "Your Google account, through Gemini CLI (the `gemini` command)."),
+    ("opencode_cli", "OpenCode", "Any account you've connected to OpenCode (Copilot, Claude, OpenAI, …)."),
+    ("anthropic", "Claude API key", "Anthropic's models, paid per use with an API key."),
+    ("openai", "OpenAI API key", "GPT and Codex models, paid per use with an API key."),
+    ("service", "Another service", "OpenRouter, Google Gemini, Groq, Mistral, DeepSeek, xAI or any OpenAI-compatible API."),
+];
+
+/// Ready-made addresses for "Another service".
+const SERVICES: [(&str, &str, &str); 7] = [
+    ("OpenRouter", "https://openrouter.ai/api/v1", "https://openrouter.ai/keys"),
+    ("Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "https://aistudio.google.com/apikey"),
+    ("Groq", "https://api.groq.com/openai/v1", "https://console.groq.com/keys"),
+    ("Mistral", "https://api.mistral.ai/v1", "https://console.mistral.ai/api-keys"),
+    ("DeepSeek", "https://api.deepseek.com/v1", "https://platform.deepseek.com/api_keys"),
+    ("xAI", "https://api.x.ai/v1", "https://console.x.ai"),
+    ("Together", "https://api.together.xyz/v1", "https://api.together.xyz/settings/api-keys"),
 ];
 
 const CLAUDE_MODELS: [(&str, &str); 4] = [
@@ -462,6 +476,16 @@ pub fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
     let toast = toast();
     let is_local = move || s.with(|x| provider_of(x) == "local");
     let openai_models = RwSignal::new(Vec::<String>::new());
+    let service_models = RwSignal::new(Vec::<String>::new());
+    let load_service = move || {
+        let (url, key) = s.with_untracked(|x| (x.ai.service_url.clone(), x.ai.service_key.clone()));
+        spawn_local(async move {
+            match api::post::<_, Vec<String>>("/api/ai/models", &serde_json::json!({ "url": url, "key": key })).await {
+                Ok(list) => service_models.set(list),
+                Err(e) => toast.show(e.0),
+            }
+        });
+    };
     let load_openai = move || {
         let key = s.with_untracked(|x| x.ai.openai_api_key.clone());
         if key.is_empty() {
@@ -552,6 +576,8 @@ pub fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
                     let missing = move || match id {
                         "claude_cli" => setup.get().is_some_and(|v| !v.claude_cli),
                         "codex_cli" => setup.get().is_some_and(|v| !v.codex_cli),
+                        "gemini_cli" => setup.get().is_some_and(|v| !v.gemini_cli),
+                        "opencode_cli" => setup.get().is_some_and(|v| !v.opencode_cli),
                         _ => false,
                     };
                     view! {
@@ -616,13 +642,66 @@ pub fn ChatModelSetup(s: RwSignal<Settings>) -> impl IntoView {
                 </div>
             </Show>
 
-            <Show when=move || s.with(|x| x.ai.llm_provider == "claude_cli" || x.ai.llm_provider == "codex_cli")>
+            <Show when=move || s.with(|x| x.ai.llm_provider == "service")>
                 <div class="wizard-step">
-                    <div class="step-title"><span class="num">"1"</span>"Use your subscription"</div>
-                    <p>{move || if s.with(|x| x.ai.llm_provider == "claude_cli") {
-                        "duet runs Claude Code (the `claude` command) with no tools, in an empty folder. Sign in once in a terminal with `claude` if you haven't."
-                    } else {
-                        "duet runs Codex (the `codex` command) read-only, in an empty folder. Sign in once in a terminal with `codex login` if you haven't."
+                    <div class="step-title"><span class="num">"1"</span>"Connect a service"</div>
+                    <label class="field">
+                        <span>"Service"</span>
+                        <select on:change=move |ev| {
+                            let v = event_target_value(&ev);
+                            if let Some((_, url, _)) = SERVICES.iter().find(|(n, _, _)| *n == v) {
+                                s.update(|x| x.ai.service_url = url.to_string());
+                                service_models.set(Vec::new());
+                            }
+                        }>
+                            {SERVICES.map(|(name, url, _)| view! {
+                                <option value=name selected=move || s.with(|x| x.ai.service_url == url)>{name}</option>
+                            })}
+                            <option value="custom" selected=move || s.with(|x| !SERVICES.iter().any(|(_, u, _)| *u == x.ai.service_url))>"Other (enter the address)"</option>
+                        </select>
+                    </label>
+                    {text(s, "API address", "Any OpenAI-compatible API.", |x| x.ai.service_url.clone(), |x, v| x.ai.service_url = v)}
+                    {secret(s, "API key", |x| x.ai.service_key.clone(), |x, v| x.ai.service_key = v)}
+                    {move || {
+                        let url = s.with(|x| x.ai.service_url.clone());
+                        SERVICES.iter().find(|(_, u, _)| *u == url).map(|(name, _, keys)| view! {
+                            <p class="hint">"Get a key at "<a href=*keys target="_blank" rel="noopener">{format!("{name}'s console")}</a>"."</p>
+                        })
+                    }}
+                    <div class="field">
+                        <span>"Model"</span>
+                        {move || {
+                            let list = service_models.get();
+                            if list.is_empty() {
+                                view! {
+                                    <input type="text" placeholder="Model name" prop:value=move || s.with(|x| x.ai.service_model.clone())
+                                        on:input=move |ev| s.update(|x| x.ai.service_model = event_target_value(&ev))/>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <select on:change=move |ev| s.update(|x| x.ai.service_model = event_target_value(&ev))>
+                                        <option value="" selected=move || s.with(|x| x.ai.service_model.is_empty())>"Choose a model"</option>
+                                        {list.into_iter().map(|m| {
+                                            let (value, label, current) = (m.clone(), m.clone(), m);
+                                            view! { <option value=value selected=move || s.with(|x| x.ai.service_model == current)>{label}</option> }
+                                        }).collect_view()}
+                                    </select>
+                                }.into_any()
+                            }
+                        }}
+                        <button class="small" on:click=move |_| load_service()>"Load models"</button>
+                    </div>
+                </div>
+            </Show>
+
+            <Show when=move || s.with(|x| x.ai.llm_provider.ends_with("_cli"))>
+                <div class="wizard-step">
+                    <div class="step-title"><span class="num">"1"</span>"Use your account"</div>
+                    <p>{move || match s.with(|x| x.ai.llm_provider.clone()).as_str() {
+                        "claude_cli" => "duet runs Claude Code (the `claude` command) with no tools, in an empty folder. Sign in once in a terminal by running `claude` if you haven't.",
+                        "codex_cli" => "duet runs Codex (the `codex` command) read-only, in an empty folder. Sign in once in a terminal with `codex login` if you haven't.",
+                        "gemini_cli" => "duet runs Gemini CLI (the `gemini` command) in an empty folder. Install it with `npm install -g @google/gemini-cli`, then run `gemini` once to sign in with your Google account.",
+                        _ => "duet runs OpenCode (`opencode run`) in an empty folder, using whichever accounts you've connected with `opencode auth login`. Pick the model as provider/model, e.g. github-copilot/gpt-4.1.",
                     }}</p>
                     {text(s, "Model (optional)", "Leave empty for the tool's default.", |x| x.ai.cli_model.clone(), |x, v| x.ai.cli_model = v)}
                 </div>

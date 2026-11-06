@@ -324,8 +324,12 @@ pub struct AiSettings {
     pub anthropic_model: String,
     pub openai_api_key: String,
     pub openai_model: String,
-    /// Model for the Claude Code / Codex CLIs; empty uses the tool's own default.
+    /// Model for the Claude Code / Codex / Gemini / OpenCode CLIs; empty uses the tool's default.
     pub cli_model: String,
+    /// "service": any other OpenAI-compatible API (OpenRouter, Google Gemini, Groq, Mistral...).
+    pub service_url: String,
+    pub service_key: String,
+    pub service_model: String,
     /// Speech to text: POST {stt_url}/audio/transcriptions
     pub stt_url: String,
     pub stt_model: String,
@@ -354,6 +358,9 @@ impl Default for AiSettings {
             openai_api_key: String::new(),
             openai_model: String::new(),
             cli_model: String::new(),
+            service_url: "https://openrouter.ai/api/v1".into(),
+            service_key: String::new(),
+            service_model: String::new(),
             llm_url: "http://localhost:11434/v1".into(),
             llm_api_key: String::new(),
             llm_model: "qwen3:14b".into(),
@@ -523,6 +530,8 @@ pub struct ChatSetup {
     /// The Claude Code and Codex command-line tools are installed.
     pub claude_cli: bool,
     pub codex_cli: bool,
+    pub gemini_cli: bool,
+    pub opencode_cli: bool,
     pub gpu: Option<String>,
     pub gpu_vram_gb: Option<u64>,
     pub servers: Vec<DetectedServer>,
