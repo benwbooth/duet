@@ -517,7 +517,7 @@ button.link { background: none; border: 0; color: var(--muted); padding: 0; text
 .reader.paged-mode { padding-bottom: 0; }
 .reader.paged-mode .bookview {
   position: relative; overflow: hidden; contain: paint;
-  height: calc(100dvh - 54px - var(--player-h, 0px) - 3.2rem);
+  height: calc(100dvh - 54px - var(--player-h, 0px) - 2rem);
   max-width: 46em; margin: 1rem auto 0;
   background: linear-gradient(to right, rgba(0,0,0,0.07), rgba(0,0,0,0) 4%), var(--page-bg);
   border-radius: 3px 8px 8px 3px;
@@ -556,7 +556,7 @@ button.link { background: none; border: 0; color: var(--muted); padding: 0; text
 .reader.paged-mode .chapter-nav { margin: 0.4rem auto 0; max-width: 46em; font-size: 0.85rem; padding: 0 0.6rem; }
 .reader.paged-mode .chapter-nav button { padding: 0.25rem 0.6rem; font-size: 0.85rem; }
 @media (max-width: 760px) {
-  .reader.paged-mode .bookview { margin: 0; border-radius: 0; box-shadow: none; height: calc(100dvh - 54px - var(--player-h, 0px) - 2.8rem); }
+  .reader.paged-mode .bookview { margin: 0; border-radius: 0; box-shadow: none; height: calc(100dvh - 54px - var(--player-h, 0px)); }
 }
 
 /* Two facing pages: wider book, with a fold down the middle. */
@@ -911,3 +911,23 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .swatch.active { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
 .swatch-auto { background: linear-gradient(135deg, #fbf8f2 50%, #161412 50%); color: #7b6f63; }
 .swatch-light { background: #ffffff; } .swatch-sepia { background: #f3e9d4; } .swatch-gray { background: #4a4a4c; } .swatch-dark { background: #121212; }
+
+/* Page arrows beside the book, and the end-of-chapter way on when scrolling. */
+.reader.paged-mode { position: relative; }
+.page-arrow {
+  position: fixed; top: calc(50% - var(--player-h, 0px) / 2); transform: translateY(-50%); z-index: 3;
+  width: 44px; height: 72px; min-height: 0; padding: 0; border: 0; border-radius: 12px; background: transparent; box-shadow: none;
+  color: var(--page-muted); opacity: 0.55; transition: opacity 0.25s, background 0.25s, color 0.25s;
+}
+.page-arrow:hover { opacity: 1; background: color-mix(in srgb, var(--page-text) 8%, transparent); color: var(--page-text); }
+.page-arrow svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.page-arrow.prev { left: calc(var(--nav-w) + 0.6rem); }
+.page-arrow.next { right: 0.6rem; }
+.reader.chrome-hidden .page-arrow { opacity: 0; }
+.reader.chrome-hidden .page-arrow:hover { opacity: 0.8; }
+@media (max-width: 760px) { .page-arrow { display: none; } }
+.chapter-end {
+  display: flex; align-items: center; justify-content: center; gap: 1rem; flex-wrap: wrap;
+  max-width: 38em; margin: 1rem auto 3rem; padding: 1.4rem 1rem 0; border-top: 1px solid color-mix(in srgb, var(--page-muted) 30%, transparent);
+}
+.chapter-end .muted { font-size: 0.85rem; }

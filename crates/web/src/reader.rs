@@ -239,9 +239,11 @@ pub fn Reader(id: i64) -> impl IntoView {
         crate::highlight(&el, sentence.get_untracked(), false);
     });
     // The page element is rebuilt when the edition or layout changes; lay it out again then.
+    // Also whenever a chapter's text arrives, after the page has drawn it.
     Effect::new(move |_| {
-        if book.get().is_some() && !html.get_untracked().is_empty() {
-            request_animation_frame(move || lay_out.with_value(|f| f()));
+        let has_text = html.with(|h| !h.is_empty());
+        if book.get().is_some() && has_text {
+            set_timeout(move || lay_out.with_value(|f| f()), std::time::Duration::ZERO);
         }
     });
     on_cleanup(move || {
@@ -268,7 +270,7 @@ pub fn Reader(id: i64) -> impl IntoView {
         prefs.update(|p| p.layout = if p.layout == "scroll" { "pages".into() } else { "scroll".into() });
         let layout_choice = prefs.get_untracked().layout;
         scroll_to.set(Some(keep));
-        request_animation_frame(move || lay_out.with_value(|f| f()));
+        set_timeout(move || lay_out.with_value(|f| f()), std::time::Duration::ZERO);
         spawn_local(async move {
             if let Ok(mut s) = api::get::<Settings>("/api/settings").await {
                 s.reader.layout = layout_choice;
@@ -291,7 +293,7 @@ pub fn Reader(id: i64) -> impl IntoView {
                 Ok(ch) => {
                     html.set(ch.html);
                     // Let the DOM update first.
-                    request_animation_frame(move || lay_out.with_value(|f| f()));
+                    set_timeout(move || lay_out.with_value(|f| f()), std::time::Duration::ZERO);
                 }
                 Err(err) => toast.show(err.0),
             }
@@ -675,26 +677,40 @@ pub fn Reader(id: i64) -> impl IntoView {
                                     1 => "1 page left in chapter".to_string(),
                                     k => format!("{k} pages left in chapter"),
                                 };
-                                format!("{p} of {n} · {rest}")
+                                let c = chapter.get();
+                                let total = layout.get().map(|l| l.chapters).unwrap_or(0);
+                                if total > 1 {
+                                    format!("Chapter {} of {total} · page {p} of {n} · {rest}", c.saturating_add(1).min(total))
+                                } else {
+                                    format!("Page {p} of {n}")
+                                }
                             }}
                         </div>
                     </Show>
                     </div>
-                    <div class="chapter-nav">
-                        <button disabled=move || chapter.get() == 0 || chapter.get() == usize::MAX
-                            on:click=move |_| go_chapter(chapter.get_untracked().saturating_sub(1))>"‹ Previous"</button>
-                        <span>{move || {
-                            let c = format!("Chapter {} of {}", chapter.get().saturating_add(1).min(chapters()), chapters());
-                            if paged() {
-                                let (p, n) = page_info.get();
-                                format!("{c} · page {p} of {n}")
-                            } else {
-                                c
-                            }
-                        }}</span>
-                        <button disabled=move || chapters() <= chapter.get().saturating_add(1)
-                            on:click=move |_| go_chapter(chapter.get_untracked() + 1)>"Next ›"</button>
-                    </div>
+                    // Paged: quiet arrows either side of the page (they turn pages, and on into the next chapter).
+                    <Show when=paged>
+                        <button class="page-arrow prev" aria-label="Previous page"
+                            on:click=move |_| if let Some(b) = book.get_untracked() { crate::pager_turn(&b, -1) }>
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+                        </button>
+                        <button class="page-arrow next" aria-label="Next page"
+                            on:click=move |_| if let Some(b) = book.get_untracked() { crate::pager_turn(&b, 1) }>
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+                        </button>
+                    </Show>
+                    // Scrolling: the way on sits at the end of the chapter, like turning to the next one.
+                    <Show when=move || !paged()>
+                        <nav class="chapter-end">
+                            <Show when=move || { let c = chapter.get(); c > 0 && c != usize::MAX }>
+                                <button class="ghost" on:click=move |_| go_chapter(chapter.get_untracked().saturating_sub(1))>"‹ Previous chapter"</button>
+                            </Show>
+                            <span class="muted">{move || format!("Chapter {} of {}", chapter.get().saturating_add(1).min(chapters()), chapters())}</span>
+                            <Show when=move || chapter.get().saturating_add(1) < chapters()>
+                                <button class="primary" on:click=move |_| go_chapter(chapter.get_untracked() + 1)>"Next chapter ›"</button>
+                            </Show>
+                        </nav>
+                    </Show>
                 }.into_any(),
                 _ => view! {
                     <div class="listen-only">
