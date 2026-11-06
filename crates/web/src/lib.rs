@@ -341,7 +341,7 @@ fn App() -> impl IntoView {
                         sidebar_hidden.set(true);
                         set_sidebar_hidden(true);
                     }>
-                        <svg viewBox="0 0 24 24" aria-hidden="true" class="icon"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9 4.5v15M15.5 10l-2 2 2 2"/></svg>
+                        <svg viewBox="0 0 24 24" aria-hidden="true" class="icon" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9 4.5v15M15.5 10l-2 2 2 2"/></svg>
                         <span>"Hide sidebar"</span>
                     </button>
                 </Show>
