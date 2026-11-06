@@ -895,21 +895,8 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 
 /* Page arrows beside the book, and the end-of-chapter way on when scrolling. */
 .reader.paged-mode { position: relative; }
-.page-arrow {
-  position: fixed; top: calc(50% - var(--player-h, 0px) / 2); transform: translateY(-50%); z-index: 3;
-  width: 44px; height: 72px; min-height: 0; padding: 0; border: 0; border-radius: 12px; background: transparent; box-shadow: none;
-  color: var(--page-muted); opacity: 0.55; transition: opacity 0.25s, background 0.25s, color 0.25s;
-}
-.page-arrow:hover { opacity: 1; background: color-mix(in srgb, var(--page-text) 8%, transparent); color: var(--page-text); }
 /* Pressed: keep the centring transform (the global button:active nudge would replace it, moving
    the button half its height under the pointer, so the click never landed on it). */
-.page-arrow:active:not(:disabled) { transform: translateY(-50%) scale(0.94); }
-.page-arrow svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.page-arrow.prev { left: calc(var(--nav-w) + 0.6rem); }
-.page-arrow.next { right: 0.6rem; }
-.reader.chrome-hidden .page-arrow { opacity: 0; }
-.reader.chrome-hidden .page-arrow:hover { opacity: 0.8; }
-@media (max-width: 760px) { .page-arrow { display: none; } }
 .chapter-end {
   display: flex; align-items: center; justify-content: center; gap: 1rem; flex-wrap: wrap;
   max-width: 38em; margin: 1rem auto 3rem; padding: 1.4rem 1rem 0; border-top: 1px solid color-mix(in srgb, var(--page-muted) 30%, transparent);
@@ -1002,7 +989,6 @@ input, select { border-radius: 12px; }
 
 .assistant-buttons { bottom: calc(var(--player-h) + 28px); }
 .assistant { bottom: calc(var(--player-h) + 28px); }
-.page-arrow { top: calc(50% + 39px - var(--player-h) / 2); }
 
 @media (max-width: 760px) {
   .reader-bar { left: 8px; right: 8px; top: calc(8px + env(safe-area-inset-top)); border-radius: 18px; }
@@ -1051,7 +1037,7 @@ input, select { border-radius: 12px; }
 .scrub.hidden { display: none; }
 
 /* Listening only: the page steps aside for the cover and the line being performed. */
-.reader.listen-mode .bookview, .reader.listen-mode .page-arrow, .reader.listen-mode .chapter-end,
+.reader.listen-mode .bookview, .reader.listen-mode .chapter-end,
 .reader.listen-mode .listen-only { position: absolute; visibility: hidden; pointer-events: none; height: 0; overflow: hidden; }
 .listen-stage {
   color: var(--page-text, var(--text)); display: flex; flex-direction: column; align-items: center; text-align: center; gap: 0.3rem;
@@ -1205,3 +1191,17 @@ input, select { border-radius: 12px; }
 .mic-icon .fill { fill: currentColor; stroke: none; }
 .assistant .mic { color: var(--text); border-radius: 50%; height: 40px; width: 40px; min-height: 0; }
 .assistant .mic.recording { color: #fff; }
+
+/* The page margins brighten a touch under the pointer: a page can be turned there. */
+.edge-hint {
+  position: absolute; top: 0; bottom: 0; z-index: 3; pointer-events: none; opacity: 0;
+  transition: opacity 0.25s var(--ease-out);
+}
+.edge-hint[data-side="right"] {
+  right: 0; opacity: 1;
+  background: linear-gradient(to left, color-mix(in srgb, var(--accent) 16%, transparent), color-mix(in srgb, var(--accent) 0%, transparent));
+}
+.edge-hint[data-side="left"] {
+  left: 0; opacity: 1;
+  background: linear-gradient(to right, color-mix(in srgb, var(--accent) 16%, transparent), color-mix(in srgb, var(--accent) 0%, transparent));
+}

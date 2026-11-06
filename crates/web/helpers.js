@@ -707,7 +707,7 @@ class Pager {
   destroy() {
     this.resize.disconnect();
     document.removeEventListener("keydown", this.onKey);
-    this.book.querySelectorAll(".curl-layer, .page3d, .page-warp").forEach((e) => e.remove());
+    this.book.querySelectorAll(".curl-layer, .page3d, .page-warp, .edge-hint").forEach((e) => e.remove());
     // The shared curl canvas stays in the book; it's left showing only while a turn into the
     // next chapter is waiting to play (the old page over the new one).
     if (sharedCurl && !this.book.__carry && sharedCurl.canvas.parentNode === this.book) uncover();
@@ -883,6 +883,20 @@ class Pager {
     sh.push(`0 ${(D * 0.55 + 6).toFixed(1)}px 0 ${ring + 1}px rgba(0,0,0,0.35)`);
     sh.push(`0 ${D + 26}px 50px ${D}px rgba(0,0,0,0.38)`);
     this.book.style.boxShadow = sh.join(", ");
+  }
+
+  // A soft tint over the page margin under the pointer: there's a page to turn there.
+  edgeHint(side) {
+    let el = this.book.querySelector(":scope > .edge-hint");
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "edge-hint";
+      this.book.appendChild(el);
+    }
+    const can = side === "right" ? this.page + 1 < this.pages || !!this.h.onNext : side === "left" ? this.page > 0 || !!this.h.onPrev : false;
+    const pad = parseFloat(this.article.style.getPropertyValue("--page-pad")) || 40;
+    el.style.width = `${Math.max(36, pad + 10)}px`;
+    el.dataset.side = can ? side : "";
   }
 
   // What a page picture depends on besides its place: size, colours and type.
@@ -1549,7 +1563,11 @@ class Pager {
     });
     this.book.addEventListener("pointermove", (e) => {
       if (!start) {
-        if (e.pointerType === "mouse") this.book.classList.toggle("grab-edge", this.curl && !this.busy && grabZone(e));
+        if (e.pointerType === "mouse") {
+          const on = !this.busy && grabZone(e);
+          this.book.classList.toggle("grab-edge", this.curl && on);
+          this.edgeHint(on ? (e.clientX - this.book.getBoundingClientRect().left < this.width / 2 ? "left" : "right") : "");
+        }
         return;
       }
       const dx = e.clientX - start.x;
@@ -1663,7 +1681,10 @@ class Pager {
       clearTimeout(swipe.timer);
       swipe.timer = setTimeout(endSwipe, 160);
     }, { passive: false });
-    this.book.addEventListener("pointerleave", () => { if (!drag) this.book.classList.remove("grab-edge"); });
+    this.book.addEventListener("pointerleave", () => {
+      if (!drag) this.book.classList.remove("grab-edge");
+      this.edgeHint("");
+    });
     this.book.addEventListener("pointerup", release);
     this.book.addEventListener("pointercancel", release);
     // Double-click selects a word (the browser's own), drag selects any stretch of text, and a

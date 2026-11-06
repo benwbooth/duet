@@ -1421,17 +1421,6 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                         </div>
                     </Show>
                     </div>
-                    // Paged: quiet arrows either side of the page (they turn pages, and on into the next chapter).
-                    <Show when=paged>
-                        <button class="page-arrow prev" aria-label="Previous page"
-                            on:click=move |_| if let Some(b) = book.get_untracked() { crate::pager_turn(&b, -1) }>
-                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
-                        </button>
-                        <button class="page-arrow next" aria-label="Next page"
-                            on:click=move |_| if let Some(b) = book.get_untracked() { crate::pager_turn(&b, 1) }>
-                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
-                        </button>
-                    </Show>
                     // Scrolling: the way on sits at the end of the chapter, like turning to the next one.
                     <Show when=move || !paged()>
                         <nav class="chapter-end">
