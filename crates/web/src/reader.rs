@@ -1229,23 +1229,22 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                                 layout.get().and_then(|l| l.toc.iter().rev().find(|t| t.chapter <= c).map(|t| t.title.clone()))
                             }}</span>
                         </div>
+                        // In two-page view each half sits under its own page, clear of the spine.
                         <div class="folio" aria-hidden="true">
-                            {move || {
+                            <span class="folio-chapter">{move || {
+                                let c = chapter.get();
+                                let total = layout.get().map(|l| l.chapters).unwrap_or(0);
+                                (total > 1).then(|| format!("Chapter {} of {total}", c.saturating_add(1).min(total)))
+                            }}</span>
+                            <span class="folio-page">{move || {
                                 let (p, n) = page_info.get();
-                                let left = n.saturating_sub(p);
-                                let rest = match left {
-                                    0 => "Last page in chapter".to_string(),
+                                let rest = match n.saturating_sub(p) {
+                                    0 => "last page in chapter".to_string(),
                                     1 => "1 page left in chapter".to_string(),
                                     k => format!("{k} pages left in chapter"),
                                 };
-                                let c = chapter.get();
-                                let total = layout.get().map(|l| l.chapters).unwrap_or(0);
-                                if total > 1 {
-                                    format!("Chapter {} of {total} · page {p} of {n} · {rest}", c.saturating_add(1).min(total))
-                                } else {
-                                    format!("Page {p} of {n}")
-                                }
-                            }}
+                                format!("Page {p} of {n} · {rest}")
+                            }}</span>
                         </div>
                     </Show>
                     </div>

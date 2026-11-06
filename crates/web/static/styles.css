@@ -867,7 +867,14 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .running-head .rh-book { display: none; }
 .bookview.spread ~ .running-head .rh-book, .bookview.spread .running-head .rh-book { display: inline; }
 .bookview.spread .running-head { justify-content: space-between; padding: 0 4.5rem; }
-.folio { bottom: 1.1rem; text-transform: none; letter-spacing: 0.02em; font-size: 0.75rem; }
+.folio { bottom: 1.1rem; text-transform: none; letter-spacing: 0.02em; font-size: 0.75rem; gap: 0.5rem; }
+.folio .folio-chapter:empty { display: none; }
+.folio .folio-chapter:not(:empty) + .folio-page::before { content: "· "; }
+/* Two pages: the chapter under the left page, the page count under the right; never on the spine. */
+.bookview.spread .folio { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+.bookview.spread .folio span { text-align: center; padding: 0 2rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bookview.spread .folio .folio-page::before { content: none; }
+.bookview.spread .folio .folio-chapter:empty { display: block; }
 
 /* Chrome that gets out of the way. */
 .reader-bar, .player, .assistant-buttons, .reader.paged-mode .chapter-nav {
