@@ -404,7 +404,9 @@ async fn transcribe(AxState(s): AxState<State>, mut form: Multipart) -> ApiResul
             let bytes = field.bytes().await.map_err(|e| ApiError::bad_request(e.to_string()))?;
             // The latest recording is kept (overwritten each time), for checking what the
             // microphone actually picked up.
-            let _ = tokio::fs::write(s.data_dir.join("cache").join("last-dictation.audio"), &bytes).await;
+            if filename != "warm.wav" {
+                let _ = tokio::fs::write(s.data_dir.join("cache").join("last-dictation.audio"), &bytes).await;
+            }
             let text = ai::transcribe(&s, bytes.to_vec(), filename, mime).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
             return Ok(Json(text));
         }

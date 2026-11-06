@@ -1708,6 +1708,12 @@ fn Assistant(
     dict: RwSignal<Option<(f64, f64, String, Option<String>)>>,
 ) -> impl IntoView {
     let open = RwSignal::new(false);
+    // Opening the panel gets speech recognition ready for the microphone.
+    Effect::new(move |_| {
+        if open.get() && crate::mic_supported() {
+            crate::warm_speech();
+        }
+    });
     let input = RwSignal::new(String::new());
     let messages = RwSignal::new(Vec::<Message>::new());
     let persona = RwSignal::new(None::<i64>);

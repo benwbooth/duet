@@ -21,6 +21,22 @@ async function transcribeChunks(type) {
   return body;
 }
 
+// Gets speech recognition loaded (it's unloaded when idle, and loading takes a while) before
+// the microphone is used: a moment of silence to transcribe.
+let warmedAt = 0;
+export function warmSpeech() {
+  if (Date.now() - warmedAt < 60000) return;
+  warmedAt = Date.now();
+  const n = 8000, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const str = (o, t) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVEfmt "); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 16000, true); v.setUint32(28, 32000, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, "data"); v.setUint32(40, n * 2, true);
+  const form = new FormData();
+  form.append("audio", new Blob([buf], { type: "audio/wav" }), "warm.wav");
+  fetch("/api/assistant/transcribe", { method: "POST", body: form }).catch(() => {});
+}
+
 export async function startRecording(onPartial, onLevel) {
   // Waiting on a permission prompt nobody can see would look like the button doing nothing.
   const stream = await Promise.race([

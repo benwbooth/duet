@@ -16,6 +16,8 @@ use wasm_bindgen::prelude::*;
 extern "C" {
     #[wasm_bindgen(js_name = micSupported)]
     fn mic_supported() -> bool;
+    #[wasm_bindgen(js_name = warmSpeech)]
+    fn warm_speech();
     #[wasm_bindgen(js_name = startRecording, catch)]
     async fn start_recording(on_partial: &js_sys::Function, on_level: &js_sys::Function) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(js_name = stopRecording, catch)]
