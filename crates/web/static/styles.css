@@ -532,27 +532,6 @@ button.link { background: none; border: 0; color: var(--muted); padding: 0; text
 }
 .bookview.paged .page img { max-height: calc(100% - 2rem); object-fit: contain; break-inside: avoid; }
 .bookview.paged .page h1, .bookview.paged .page h2, .bookview.paged .page h3 { break-after: avoid; text-align: left; }
-.leaf {
-  position: absolute; top: 0; bottom: 0; z-index: 3; transform-style: preserve-3d; pointer-events: none;
-}
-.leaf-static { position: absolute; top: 0; bottom: 0; z-index: 2; overflow: hidden; background: var(--page-bg); pointer-events: none; }
-.leaf-front .page, .leaf-back .page, .leaf-static .page { height: 100%; max-width: none; margin: 0; }
-.leaf-front, .leaf-back { position: absolute; inset: 0; overflow: hidden; backface-visibility: hidden; background: var(--page-bg); }
-.leaf-front .page { color: var(--page-text); }
-.leaf-back {
-  transform: rotateY(180deg);
-  background: linear-gradient(to left, rgba(0,0,0,0.1), rgba(0,0,0,0) 25%), var(--page-bg);
-}
-/* The paper darkens toward the fold as it lifts. */
-.leaf-shade {
-  position: absolute; inset: 0; opacity: 0; pointer-events: none;
-  background: linear-gradient(to left, rgba(0,0,0,0.38), rgba(0,0,0,0.06) 30%, rgba(255,255,255,0.12) 55%, rgba(0,0,0,0) 80%);
-}
-/* The shadow the turning page casts on the one underneath. */
-.turn-shadow {
-  position: absolute; top: 0; bottom: 0; left: 0; width: 100%; z-index: 2; opacity: 0; pointer-events: none;
-  background: linear-gradient(to left, rgba(0,0,0,0.3), rgba(0,0,0,0) 40%);
-}
 .reader.paged-mode .chapter-nav { margin: 0.4rem auto 0; max-width: 46em; font-size: 0.85rem; padding: 0 0.6rem; }
 .reader.paged-mode .chapter-nav button { padding: 0.25rem 0.6rem; font-size: 0.85rem; }
 @media (max-width: 760px) {
@@ -1030,10 +1009,6 @@ input, select { border-radius: 12px; }
   .transport .round:not(.play) { display: none; }
 }
 
-/* Page turn details: a highlight on the bending paper and the page seen through from behind. */
-.leaf-gloss { position: absolute; inset: 0; opacity: 0; pointer-events: none; mix-blend-mode: soft-light; }
-.leaf-back .ghost { position: absolute; inset: 0; overflow: hidden; transform: scaleX(-1); opacity: 0.07; filter: blur(0.3px); pointer-events: none; }
-.leaf { will-change: transform; }
 
 .theme-toggle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
@@ -1043,7 +1018,6 @@ input, select { border-radius: 12px; }
 .reader[data-theme="dark"] .bookview { background: #000; box-shadow: none; }
 .reader[data-theme="dark"] .bookview::before, .reader[data-theme="dark"] .bookview.spread::after { opacity: 0.35; }
 .reader[data-theme="dark"] .reader-bar, .reader[data-theme="dark"] .player { background: rgba(18, 18, 18, 0.72); border-color: rgba(255, 255, 255, 0.08); }
-.reader[data-theme="dark"] .leaf-front, .reader[data-theme="dark"] .leaf-back, .reader[data-theme="dark"] .leaf-static { background: #000; }
 .swatch-dark { background: #000; }
 
 /* ---------- Read or listen: the five modes ---------- */
@@ -1094,3 +1068,18 @@ input, select { border-radius: 12px; }
 .transcribing { display: grid; justify-items: center; gap: 0.6rem; padding: 4rem 1rem; text-align: center; color: var(--page-muted, var(--muted)); font-family: var(--sans); }
 .transcribing p { margin: 0; font-size: 1rem; color: var(--page-text, var(--text)); }
 .transcribing small { font-size: 0.85rem; }
+
+/* ---------- Page turns: a sheet of paper folding back over itself ---------- */
+.curl-layer { position: absolute; top: 0; left: 0; bottom: 0; overflow: hidden; pointer-events: none; background: var(--page-bg); }
+.curl-layer .page { height: 100%; max-width: none; margin: 0; color: var(--page-text); }
+.curl-under, .curl-static { z-index: 2; }
+.curl-shadow { z-index: 3; background: none; }
+.curl-front { z-index: 4; }
+.curl-flap-wrap { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+.curl-flap { transform-origin: 0 0; will-change: transform, clip-path; }
+.curl-back { position: absolute; inset: 0; transform-origin: 0 0; }
+/* A single page's back is the same page seen through the paper. */
+.curl-back.ghosted .page { opacity: 0.07; filter: blur(0.3px); }
+.curl-shade { position: absolute; inset: 0; pointer-events: none; }
+.reader[data-theme="dark"] .curl-layer { background: #000; }
+.reader[data-theme="dark"] .curl-back.ghosted .page { opacity: 0.12; }

@@ -112,7 +112,7 @@ export function setMediaSession(title, artist, artwork) {
 
 // ---------------------------------------------------------------------------------------------
 // The paged reader: the chapter is laid out in CSS columns, one column per page, and pages turn
-// with a 3D leaf that follows your finger or mouse. Tap the left or right edge, swipe, or use the
+// like paper: the corner follows your finger or mouse and the sheet folds back over itself. Tap the left or right edge, swipe, or use the
 // arrow keys.
 
 function pagerOf(container) {
@@ -120,7 +120,20 @@ function pagerOf(container) {
   return book && book.__pager;
 }
 
-const TURN_MS = 520;
+const TURN_MS = 620;
+
+// The next animation frame, or a timer when frames aren't coming (a hidden or throttled page),
+// so a page turn always finishes.
+function frame(cb) {
+  let ran = false;
+  const id = requestAnimationFrame((now) => { ran = true; cb(now); });
+  setTimeout(() => {
+    if (!ran) {
+      cancelAnimationFrame(id);
+      cb(performance.now());
+    }
+  }, 50);
+}
 
 class Pager {
   constructor(book, article, handlers, spreadPref) {
@@ -141,12 +154,17 @@ class Pager {
     };
     document.addEventListener("keydown", this.onKey);
     this.bindPointer();
+    // Arriving from the neighbouring chapter: finish the page turn that started there (after the
+    // reader has gone to this chapter's first or last page).
+    const carry = book.__carry;
+    delete book.__carry;
+    if (carry && carry.spread === this.spread) setTimeout(() => this.turn(carry.dir, carry), 0);
   }
 
   destroy() {
     this.resize.disconnect();
     document.removeEventListener("keydown", this.onKey);
-    this.book.querySelectorAll(".leaf, .leaf-static, .turn-shadow").forEach((e) => e.remove());
+    this.book.querySelectorAll(".curl-layer, .curl-flap-wrap").forEach((e) => e.remove());
     this.book.classList.remove("spread");
     delete this.book.__pager;
   }
@@ -257,208 +275,266 @@ class Pager {
   }
 
   next() {
-    if (this.busy) return;
+    if (this.busy) { this.queued = 1; return; }
     if (this.page + 1 < this.pages) this.turn(1);
-    else if (this.h.onNext) this.h.onNext();
+    else if (this.h.onNext) this.carryInto(1, this.h.onNext);
   }
 
   prev() {
-    if (this.busy) return;
+    if (this.busy) { this.queued = -1; return; }
     if (this.page > 0) this.turn(-1);
-    else if (this.h.onPrev) this.h.onPrev();
+    else if (this.h.onPrev) this.carryInto(-1, this.h.onPrev);
   }
 
-  // A copy of the laid-out chapter, shifted so `offset` px of it sits at the left edge.
-  copy(offset) {
-    const c = this.article.cloneNode(true);
+  // Turning past the chapter's first or last page: the page on screen is kept, the neighbouring
+  // chapter is laid out underneath, and the kept page turns away over it.
+  carryInto(dir, go) {
+    this.book.__carry = { dir, snap: this.article.cloneNode(true), at: this.page * this.width, spread: this.spread };
+    go();
+  }
+
+  // A copy of the laid-out chapter (or of a kept one), shifted so `offset` px of it sits at the
+  // left edge of the book.
+  copy(offset, from) {
+    const c = (from || this.article).cloneNode(true);
     c.classList.remove("synced");
+    c.querySelectorAll(".s.now").forEach((e) => e.classList.remove("now"));
     c.style.width = `${this.width}px`;
     c.style.transform = `translateX(${-offset}px)`;
     return c;
   }
 
-  face(cls, offset) {
-    const f = document.createElement("div");
-    f.className = cls;
-    if (offset !== null) f.appendChild(this.copy(offset));
-    return f;
+  layer(cls, content) {
+    const l = document.createElement("div");
+    l.className = `curl-layer ${cls}`;
+    l.style.width = `${this.width}px`;
+    if (content) l.appendChild(content);
+    return l;
   }
 
-  // A turning leaf over [x, x + w), hinged on its left or right edge. The front shows the text
-  // at `front` px into the chapter, the back the text at `back` (or blank paper when null).
-  makeLeaf({ x, w, hinge, front, back }) {
-    const leaf = document.createElement("div");
-    leaf.className = "leaf";
-    leaf.style.left = `${x}px`;
-    leaf.style.width = `${w}px`;
-    leaf.style.transformOrigin = `${hinge} center`;
-    const f = this.face("leaf-front", front);
-    const shade = document.createElement("div");
-    shade.className = "leaf-shade";
-    shade.style.background = `linear-gradient(to ${hinge === "left" ? "left" : "right"}, rgba(0,0,0,0.38), rgba(0,0,0,0.06) 30%, rgba(255,255,255,0.12) 55%, rgba(0,0,0,0) 80%)`;
-    // A soft highlight where the paper bends toward the light.
-    const gloss = document.createElement("div");
-    gloss.className = "leaf-gloss";
-    gloss.style.background = `linear-gradient(to ${hinge === "left" ? "left" : "right"}, rgba(255,255,255,0) 0%, rgba(255,255,255,0.35) 6%, rgba(255,255,255,0) 16%)`;
-    f.append(shade, gloss);
-    const b = this.face("leaf-back", back);
-    if (back === null && front !== null) {
-      // A single page's back: the same page seen through the paper, faint and mirrored.
-      const wrap = document.createElement("div");
-      wrap.className = "ghost";
-      wrap.appendChild(this.copy(front));
-      b.appendChild(wrap);
-    }
-    leaf.append(f, b);
-    return { leaf, shade, gloss };
-  }
-
-  // A still copy of half a spread, kept on top until the turning leaf lands on it.
-  makeStatic(x, w, offset) {
-    const s = document.createElement("div");
-    s.className = "leaf-static";
-    s.style.left = `${x}px`;
-    s.style.width = `${w}px`;
-    s.appendChild(this.copy(offset));
-    return s;
-  }
-
-  // Sets the leaf's turn: 0 = flat where it started, 1 = turned all the way over.
-  // `y` (0 top .. 1 bottom) is where the page is being held: pulling from a corner tips the page
-  // that way, so it curls from the corner instead of turning like a door.
-  pose(t, x, y) {
-    const p = t.parts;
-    if (y !== undefined) t.y = y;
-    const hold = (t.y === undefined ? 0.5 : t.y) - 0.5;
-    const angle = t.sign * 180 * x;
-    // A slight lift and skew in mid-turn reads as paper bending rather than a rigid card.
-    const lift = Math.sin(Math.PI * x);
-    const tilt = -hold * 14 * lift;
-    // Perspective lives on the leaf, not the book, so the book still clips what's outside it.
-    p.leaf.style.transform =
-      `perspective(2200px) rotateY(${angle.toFixed(2)}deg) rotateX(${tilt.toFixed(2)}deg) ` +
-      `skewY(${(t.sign * (3 + hold * 6) * lift).toFixed(2)}deg) scale(${(1 + 0.015 * lift).toFixed(4)})`;
-    p.shade.style.opacity = (0.55 * lift).toFixed(3);
-    p.gloss.style.opacity = (0.9 * lift).toFixed(3);
-    p.gloss.style.transform = `translateX(${(t.sign * -40 * lift).toFixed(1)}px)`;
-    if (t.spread) {
-      p.shadow.style.opacity = (0.4 * lift).toFixed(3);
-    } else {
-      // The shadow falls just beyond the lifted edge, on the page being uncovered.
-      const W = this.width;
-      const edge = Math.max(0, W * Math.cos(Math.PI * x));
-      p.shadow.style.opacity = (0.9 * Math.min(1, lift * 1.4)).toFixed(3);
-      p.shadow.style.transform = "none";
-      p.shadow.style.background =
-        `linear-gradient(to right, rgba(0,0,0,0) ${Math.max(0, edge - 2).toFixed(0)}px, ` +
-        `rgba(0,0,0,${(0.32 * lift).toFixed(3)}) ${edge.toFixed(0)}px, rgba(0,0,0,0) ${(edge + 90 * lift + 10).toFixed(0)}px)`;
-    }
-  }
-
-  animate(t, from, to, ms) {
-    return new Promise((resolve) => {
-      const start = performance.now();
-      // Quick to lift, gentle as it settles.
-      const ease = (x) => 1 - Math.pow(1 - x, 4);
-      const step = (now) => {
-        const x = Math.min(1, (now - start) / ms);
-        this.pose(t, from + (to - from) * ease(x));
-        if (x < 1) requestAnimationFrame(step);
-        else resolve();
-      };
-      requestAnimationFrame(step);
-    });
-  }
-
-  // Sets up a turn. dir 1 shows the next page (spread), dir -1 the previous one.
-  // Returns where the leaf starts and where it ends when the turn completes.
-  begin(dir) {
+  // Sets up a turn: dir 1 shows the next page (or spread), -1 the previous one. With `carry`, the
+  // page being turned is the kept page of the chapter just left.
+  //
+  // The page is modelled as a sheet folded flat along a line: the corner being pulled is at P,
+  // the fold is the perpendicular bisector of the corner's resting place C and P, the part past
+  // the fold is mirrored over it to show the sheet's back, and shading along the fold gives it
+  // the roundness of paper curling over.
+  begin(dir, carry) {
     this.busy = true;
-    const W = this.width;
-    const half = W / 2;
-    const cur = this.page * W;
-    const target = this.page + dir;
+    const W = this.width, H = this.book.clientHeight, half = W / 2;
+    const cur = carry ? carry.at : this.page * W;
+    const src = carry ? carry.snap : null;
+    const target = carry ? this.page : this.page + dir;
     const next = target * W;
-    const shadow = document.createElement("div");
-    shadow.className = "turn-shadow";
-    const t = { dir, target, spread: this.spread, extra: [shadow] };
+    const t = { dir, target, W, H, layers: [] };
+    let front, back, ghost = false;
     if (!this.spread) {
-      // One page: the current page lifts off to the left, or the previous one falls back.
-      t.sign = -1;
-      t.parts = this.makeLeaf({ x: 0, w: W, hinge: "left", front: dir > 0 ? cur : next, back: null });
-      [t.start, t.end] = dir > 0 ? [0, 1] : [1, 0];
-      if (dir > 0) this.place(this.article, target);
+      // One page: forward, this page peels off to the left; back, the previous one is laid back down.
+      t.leaf = [0, W];
+      t.hinge = 0;
+      t.C0x = W;
+      if (dir > 0) {
+        front = this.copy(cur, src);
+        back = this.copy(cur, src);
+        if (!carry) this.place(this.article, target);
+      } else {
+        front = this.copy(next);
+        back = this.copy(next);
+        if (carry) t.layers.push(this.layer("curl-under", this.copy(cur, src)));
+      }
+      ghost = true;
+      t.reverse = dir < 0;
     } else if (dir > 0) {
       // Two pages: the right page turns over the spine; its back is the next left page.
-      t.sign = -1;
-      t.parts = this.makeLeaf({ x: half, w: half, hinge: "left", front: cur + half, back: next });
-      t.extra.push(this.makeStatic(0, half, cur));
-      [t.start, t.end] = [0, 1];
-      shadow.style.left = `${half}px`;
-      shadow.style.width = `${half}px`;
-      this.place(this.article, target);
+      t.leaf = [half, W];
+      t.hinge = half;
+      t.C0x = W;
+      front = this.copy(cur, src);
+      back = this.copy(next);
+      t.layers.push(this.halfLayer(0, this.copy(cur, src)));
+      if (!carry) this.place(this.article, target);
     } else {
       // Two pages, backwards: the left page turns over to the right; its back is the previous right page.
-      t.sign = 1;
-      t.parts = this.makeLeaf({ x: 0, w: half, hinge: "right", front: cur, back: next + half });
-      t.extra.push(this.makeStatic(half, half, cur + half));
-      [t.start, t.end] = [0, 1];
-      shadow.style.width = `${half}px`;
-      shadow.style.background = "linear-gradient(to right, rgba(0,0,0,0.3), rgba(0,0,0,0) 40%)";
-      this.place(this.article, target);
+      t.leaf = [0, half];
+      t.hinge = half;
+      t.C0x = 0;
+      front = this.copy(cur, src);
+      back = this.copy(next);
+      t.layers.push(this.halfLayer(half, this.copy(cur, src)));
+      if (!carry) this.place(this.article, target);
     }
-    t.parts.shadow = shadow;
-    this.book.append(...t.extra, t.parts.leaf);
-    this.pose(t, t.start);
+    // The page underneath darkens in the turning page's shadow.
+    t.under = this.layer("curl-shadow");
+    t.front = this.layer("curl-front", front);
+    t.frontShade = document.createElement("div");
+    t.frontShade.className = "curl-shade";
+    t.front.appendChild(t.frontShade);
+    // The back of the sheet: the next page for a spread; for a single page, this page seen
+    // through the paper. It's laid out mirrored about the spine so the fold mirrors it back.
+    t.flapWrap = document.createElement("div");
+    t.flapWrap.className = "curl-flap-wrap";
+    t.flap = this.layer("curl-flap");
+    const inner = document.createElement("div");
+    inner.className = ghost ? "curl-back ghosted" : "curl-back";
+    inner.style.transform = ghost ? "none" : `translateX(${2 * t.hinge}px) scaleX(-1)`;
+    inner.appendChild(back);
+    t.flapShade = document.createElement("div");
+    t.flapShade.className = "curl-shade";
+    t.flap.append(inner, t.flapShade);
+    t.flapWrap.appendChild(t.flap);
+    t.layers.push(t.under, t.front, t.flapWrap);
+    this.book.append(...t.layers);
     return t;
   }
 
-  async finish(t, from, complete) {
-    const to = complete ? t.end : t.start;
-    await this.animate(t, from, to, TURN_MS * Math.max(0.35, Math.abs(to - from)));
-    if (complete) this.page = t.target;
-    this.place(this.article, this.page);
-    if (complete) this.report();
-    t.parts.leaf.remove();
-    t.extra.forEach((e) => e.remove());
-    this.busy = false;
+  halfLayer(x, content) {
+    const s = this.layer("curl-static", content);
+    s.style.clipPath = `inset(0 ${this.width - x - this.width / 2}px 0 ${x}px)`;
+    return s;
   }
 
-  async turn(dir) {
-    const t = this.begin(dir);
-    t.y = 0.78;
-    await this.finish(t, t.start, true);
+  // Where the corner rests (flat) and where it lands when the page has turned all the way.
+  ends(t, y) {
+    const C = { x: t.C0x, y };
+    const F = { x: 2 * t.hinge - t.C0x, y };
+    return t.reverse ? [F, C] : [C, F];
+  }
+
+  // Draws the sheet with its pulled corner at P (its resting place is t.C).
+  pose(t, P) {
+    const { W, H } = t;
+    const C = { x: t.C0x, y: t.C.y };
+    // Paper doesn't stretch: the corner stays within a page's width of the spine.
+    const hp = { x: t.hinge, y: C.y };
+    const w = t.leaf[1] - t.leaf[0];
+    let vx = P.x - hp.x, vy = P.y - hp.y;
+    const r = Math.hypot(vx, vy);
+    if (r > w) { vx *= w / r; vy *= w / r; }
+    P = { x: hp.x + vx, y: hp.y + vy };
+    const dx = P.x - C.x, dy = P.y - C.y;
+    const d = Math.hypot(dx, dy);
+    const rect = [[t.leaf[0], 0], [t.leaf[1], 0], [t.leaf[1], H], [t.leaf[0], H]];
+    if (d < 0.5) {
+      t.front.style.clipPath = poly(rect);
+      t.flapWrap.style.display = "none";
+      t.under.style.opacity = "0";
+      t.progress = 0;
+      return;
+    }
+    t.flapWrap.style.display = "";
+    const n = { x: dx / d, y: dy / d };
+    const M = { x: (C.x + P.x) / 2, y: (C.y + P.y) / 2 };
+    const side = (pt) => (pt[0] - M.x) * n.x + (pt[1] - M.y) * n.y;
+    const keep = clipPoly(rect, (pt) => side(pt));
+    const fold = clipPoly(rect, (pt) => -side(pt));
+    t.front.style.clipPath = keep.length > 2 ? poly(keep) : "polygon(0 0, 0 0, 0 0)";
+    t.flap.style.clipPath = fold.length > 2 ? poly(fold) : "polygon(0 0, 0 0, 0 0)";
+    t.under.style.clipPath = t.flap.style.clipPath;
+    // Mirror over the fold: X' = X - 2((X - M)·n) n.
+    const k = 2 * (M.x * n.x + M.y * n.y);
+    t.flap.style.transform =
+      `matrix(${1 - 2 * n.x * n.x}, ${-2 * n.x * n.y}, ${-2 * n.x * n.y}, ${1 - 2 * n.y * n.y}, ${k * n.x}, ${k * n.y})`;
+    const span = Math.abs(2 * t.hinge - 2 * C.x) || W;
+    const p = Math.min(1, Math.abs(P.x - C.x) / span);
+    t.progress = t.reverse ? 1 - p : p;
+    const lift = Math.sin(Math.PI * Math.min(1, d / span));
+    const g = (stops) => gradient(W, H, n, M, stops);
+    // Shadow of the lifted sheet on the page it uncovers, deepest right at the fold.
+    const reach = Math.min(160, 30 + d * 0.5);
+    t.under.style.opacity = "1";
+    t.under.style.background = g([[-reach, `rgba(0,0,0,0)`], [-reach * 0.35, `rgba(0,0,0,${(0.12 * lift).toFixed(3)})`], [0, `rgba(0,0,0,${(0.42 * lift + 0.05).toFixed(3)})`]]);
+    // The back of the sheet curls over the fold: a crease shadow, a highlight where it rounds
+    // toward the light, and a little shade toward the corner.
+    const fl = Math.max(20, d / 2);
+    t.flapShade.style.background = g([
+      [0, "rgba(0,0,0,0.30)"],
+      [-Math.min(10, fl * 0.12), "rgba(0,0,0,0.10)"],
+      [-Math.min(28, fl * 0.3), "rgba(255,255,255,0.32)"],
+      [-fl * 0.6, "rgba(255,255,255,0.08)"],
+      [-fl, "rgba(0,0,0,0.10)"],
+    ]);
+    // The flat page darkens slightly just before the fold, where it starts to lift.
+    t.frontShade.style.background = g([[0, `rgba(0,0,0,${(0.16 * lift).toFixed(3)})`], [Math.min(50, 8 + d * 0.15), "rgba(0,0,0,0)"]]);
+    t.flapWrap.style.filter = `drop-shadow(${(-n.x * 3 * lift).toFixed(1)}px ${(-n.y * 3 * lift).toFixed(1)}px ${(4 + 10 * lift).toFixed(1)}px rgba(0,0,0,${(0.22 + 0.18 * lift).toFixed(2)}))`;
+  }
+
+  animate(t, from, to, ms, arc) {
+    return new Promise((resolve) => {
+      const start = performance.now();
+      const ease = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+      const step = (now) => {
+        const x = Math.min(1, (now - start) / ms);
+        const e = ease(x);
+        // Turned by a tap, the corner lifts as it travels, as a finger would carry it.
+        const up = arc ? -arc * Math.sin(Math.PI * e) : 0;
+        this.pose(t, { x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e + up });
+        if (x < 1) frame(step);
+        else resolve();
+      };
+      frame(step);
+    });
+  }
+
+  async finish(t, from, complete, arc) {
+    const [rest, landed] = this.ends(t, t.C.y);
+    const to = complete === !t.reverse ? landed : rest;
+    const left = Math.abs(to.x - from.x) / (Math.abs(landed.x - rest.x) || 1);
+    await this.animate(t, from, to, TURN_MS * Math.max(0.4, Math.min(1, left)), arc);
+    const done = complete;
+    if (done) this.page = t.target;
+    this.place(this.article, this.page);
+    if (done) this.report();
+    t.layers.forEach((e) => e.remove());
+    this.busy = false;
+    if (this.queued) {
+      const q = this.queued;
+      this.queued = 0;
+      q > 0 ? this.next() : this.prev();
+    }
+  }
+
+  async turn(dir, carry) {
+    const t = this.begin(dir, carry);
+    const H = t.H;
+    t.C = { x: t.C0x, y: H * 0.94 };
+    const [rest] = this.ends(t, t.C.y);
+    this.pose(t, rest);
+    await this.finish(t, rest, true, H * 0.16);
   }
 
   bindPointer() {
     let start = null;
     let drag = null;
     this.book.addEventListener("pointerdown", (e) => {
-      if (this.busy || e.button !== 0) return;
+      if (e.button !== 0) return;
       start = { x: e.clientX, y: e.clientY, time: performance.now() };
     });
     this.book.addEventListener("pointermove", (e) => {
       if (!start) return;
       const dx = e.clientX - start.x;
+      const rect = this.book.getBoundingClientRect();
       if (!drag) {
-        if (Math.abs(dx) < 12 || Math.abs(dx) < Math.abs(e.clientY - start.y)) return;
+        if (this.busy || Math.abs(dx) < 10 || Math.abs(dx) < Math.abs(e.clientY - start.y)) return;
         const dir = dx < 0 ? 1 : -1;
         if ((dir > 0 && this.page + 1 >= this.pages) || (dir < 0 && this.page === 0)) return;
         if (String(window.getSelection()) !== "") return;
         drag = this.begin(dir);
-        this.book.setPointerCapture(e.pointerId);
+        // The sheet is held where you took hold of it: its corner moves with your finger.
+        const y = Math.max(0, Math.min(drag.H, start.y - rect.top));
+        drag.C = { x: drag.C0x, y };
+        const [rest] = this.ends(drag, y);
+        drag.from = rest;
+        try { this.book.setPointerCapture(e.pointerId); } catch (_) {}
       }
-      const reach = this.spread ? this.width * 0.7 : this.width * 0.85;
-      const p = Math.max(0, Math.min(1, Math.abs(dx) / reach));
-      const rect = this.book.getBoundingClientRect();
-      this.pose(drag, drag.start + (drag.end - drag.start) * p, (e.clientY - rect.top) / rect.height);
-      drag.p = p;
+      drag.at = { x: drag.from.x + dx, y: drag.from.y + (e.clientY - start.y) };
+      this.pose(drag, drag.at);
     });
     const release = () => {
       if (drag) {
-        const fast = performance.now() - start.time < 250;
-        const p = drag.p || 0;
-        this.finish(drag, drag.start + (drag.end - drag.start) * p, p > 0.3 || (fast && p > 0.05));
+        const fast = performance.now() - start.time < 300;
+        const p = drag.progress || 0;
+        const moved = drag.reverse ? 1 - p : p;
+        this.finish(drag, drag.at || drag.from, moved > 0.3 || (fast && moved > 0.04));
         // The click that follows a drag isn't a tap.
         this.swallowClick = true;
         setTimeout(() => (this.swallowClick = false), 50);
@@ -486,6 +562,35 @@ class Pager {
       true,
     );
   }
+}
+
+// Sutherland–Hodgman against one half-plane: keeps the points where f(pt) >= 0.
+function clipPoly(pts, f) {
+  const out = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    const fa = f(a), fb = f(b);
+    if (fa >= 0) out.push(a);
+    if ((fa >= 0) !== (fb >= 0)) {
+      const k = fa / (fa - fb);
+      out.push([a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k]);
+    }
+  }
+  return out;
+}
+
+function poly(pts) {
+  return `polygon(${pts.map((p) => `${p[0].toFixed(1)}px ${p[1].toFixed(1)}px`).join(", ")})`;
+}
+
+// A linear gradient across a W×H box running along n, with stops given as signed distances
+// from the line through M perpendicular to n.
+function gradient(W, H, n, M, stops) {
+  const angle = (Math.atan2(n.x, -n.y) * 180) / Math.PI;
+  const len = Math.abs(W * n.x) + Math.abs(H * n.y);
+  const at0 = (M.x - W / 2) * n.x + (M.y - H / 2) * n.y + len / 2;
+  const s = stops.slice().sort((a, b) => a[0] - b[0]).map(([d, c]) => `${c} ${(at0 + d).toFixed(1)}px`);
+  return `linear-gradient(${angle.toFixed(2)}deg, ${s.join(", ")})`;
 }
 
 export function pagerInit(book, article, onNext, onPrev, onPage, spread) {
