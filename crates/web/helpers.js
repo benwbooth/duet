@@ -289,6 +289,13 @@ class CurlGL {
     this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
   }
 
+  // Nothing on the canvas (between turns).
+  clear() {
+    const gl = this.gl;
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  }
+
   draw(p) {
     const gl = this.gl, u = this.u;
     gl.clearColor(0, 0, 0, 0);
@@ -775,7 +782,7 @@ class Pager {
       if (dir > 0) {
         front = curPic;
         back = curPic;
-        if (!carry) this.place(this.article, target);
+        if (!carry) t.placeTarget = true;
       } else {
         // The previous page is laid back down over this one.
         front = nextPic;
@@ -789,7 +796,7 @@ class Pager {
       front = curPic;
       back = nextPic;
       t.layers.push(this.halfLayer(0, this.copy(cur, carry ? carry.snap : null)));
-      if (!carry) this.place(this.article, target);
+      if (!carry) t.placeTarget = true;
     } else {
       t.leaf = [0, half];
       t.hinge = half;
@@ -797,7 +804,7 @@ class Pager {
       front = curPic;
       back = nextPic;
       t.layers.push(this.halfLayer(half, this.copy(cur, carry ? carry.snap : null)));
-      if (!carry) this.place(this.article, target);
+      if (!carry) t.placeTarget = true;
     }
     try {
       this.gl.texture(0, front);
@@ -818,14 +825,16 @@ class Pager {
     t.layers.push(t.under);
     this.book.append(...t.layers);
     this.gl.size(W, H);
-    this.gl.canvas.style.display = "block";
-    t.layers.push({ remove: () => { this.gl.canvas.style.display = "none"; } });
+    // The canvas stays on screen between turns (cleared): shown from hidden, its first frame can
+    // arrive a frame late, and the page underneath would flash through.
+    this.gl.canvas.style.visibility = "visible";
+    t.layers.push({ remove: () => this.gl.clear() });
     return t;
   }
 
   begin3d(dir, carry) {
     this.busy = true;
-    if (this.gl) this.gl.canvas.style.display = "none";
+    if (this.gl) this.gl.clear();
     const W = this.width, H = this.book.clientHeight, half = W / 2;
     const cur = carry ? carry.at : this.page * W;
     const src = carry ? carry.snap : null;
@@ -963,6 +972,7 @@ class Pager {
     const flat = { x0: t.leaf[0], w, W, H, hinge: t.hinge, ghost: !!t.ghost, paper: t.paper, squash: 1 };
     if (d < 0.5) {
       this.gl.draw({ ...flat, L0: { x: -1e5, y: -1e5 }, dir: { x: 1, y: 0 }, R: 1 });
+      this.revealUnder(t);
       t.under.style.opacity = "0";
       t.progress = 0;
       return;
@@ -999,6 +1009,7 @@ class Pager {
     // ...and turns edge-on into it.
     const upright = t.single ? Math.max(0, Math.min(1, (turned - 0.8) / 0.2)) : 0;
     this.gl.draw({ ...flat, L0, dir: { x: -n.x, y: -n.y }, R, squash: 1 - 0.98 * upright });
+    this.revealUnder(t);
     const p = Math.min(1, Math.abs(P.x - C.x) / span);
     t.progress = t.reverse ? 1 - p : p;
     // The sheet's shadow on the page it uncovers, deepest just past the roll.
@@ -1015,6 +1026,15 @@ class Pager {
       [reach * 0.35, `rgba(0,0,0,${(0.12 * lift).toFixed(3)})`],
       [reach, "rgba(0,0,0,0)"],
     ]);
+  }
+
+  // The next page goes under the turning one only once the turning one is drawn over it.
+  revealUnder(t) {
+    if (!t.placeTarget) return;
+    t.placeTarget = false;
+    requestAnimationFrame(() => {
+      if (this.busy && !t.done) this.place(this.article, t.target);
+    });
   }
 
   // Turns the sheet so its free edge is over x = P.x (P.y is where it's held, which tips it).
@@ -1097,6 +1117,7 @@ class Pager {
     const to = complete === !t.reverse ? landed : rest;
     const left = Math.abs(to.x - from.x) / (Math.abs(landed.x - rest.x) || 1);
     await this.animate(t, from, to, TURN_MS * Math.max(0.4, Math.min(1, left)), arc);
+    t.done = true;
     const done = complete;
     if (done) this.page = t.target;
     this.place(this.article, this.page);
@@ -1162,6 +1183,7 @@ class Pager {
       return x > this.width - band || x < band;
     };
     this.book.addEventListener("pointerdown", (e) => {
+      this.swallowClick = false;
       if (e.button !== 0) return;
       if (e.target.closest && e.target.closest("a[data-href]")) return;
       start = { x: e.clientX, y: e.clientY, time: performance.now(), grab: this.curl && grabZone(e) };
@@ -1221,9 +1243,8 @@ class Pager {
         const p = drag.progress || 0;
         const moved = drag.reverse ? 1 - p : p;
         this.finish(drag, drag.at || drag.from, moved > 0.3 || (fast && moved > 0.04));
-        // The click that follows a drag isn't a tap.
+        // The click that follows a drag isn't a tap (however late it arrives).
         this.swallowClick = true;
-        setTimeout(() => (this.swallowClick = false), 50);
       }
       start = null;
       drag = null;
@@ -1251,6 +1272,7 @@ class Pager {
       "click",
       (e) => {
         if (this.swallowClick) {
+          this.swallowClick = false;
           e.stopPropagation();
           e.preventDefault();
           return;

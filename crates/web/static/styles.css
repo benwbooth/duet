@@ -1103,7 +1103,7 @@ input, select { border-radius: 12px; }
 .reader[data-theme="dark"] .p3-face { background: #000; }
 .reader[data-theme="dark"] .p3-back.ghosted .p3-slice { opacity: 0.14; }
 /* The curl drawn on the graphics card (see CurlGL in helpers.js). */
-.page-gl { position: absolute; top: 0; left: 0; z-index: 5; pointer-events: none; display: none; }
+.page-gl { position: absolute; top: 0; left: 0; z-index: 5; pointer-events: none; visibility: hidden; }
 /* The page's curved outline (Pager.warp): beyond it, the page underneath. */
 .page-warp { position: absolute; top: 0; left: 0; z-index: 4; pointer-events: none; }
 .page-warp .warp-under { fill: color-mix(in srgb, var(--page-bg) 88%, #6b5a45); }
