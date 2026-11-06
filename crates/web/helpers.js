@@ -188,8 +188,18 @@ uniform float u_flip;
 uniform vec2 u_view;
 uniform float u_hinge;
 uniform vec3 u_paper;
+uniform vec4 u_edge;   // leaf x0, width, height, hinge x (for the outline)
 varying vec2 v_pos;
 varying float v_theta;
+// A fine light-grey line round the sheet's free edges (not the bound one), so the turning page
+// reads clearly against the page beneath it.
+vec3 outline(vec3 col) {
+  float l = v_pos.x - u_edge.x, r = u_edge.x + u_edge.y - v_pos.x;
+  float side = abs(u_edge.w - u_edge.x) < 1.0 ? r : l;
+  float d = min(side, min(v_pos.y, u_edge.z - v_pos.y));
+  float a = 1.0 - smoothstep(0.6, 1.8, d);
+  return mix(col, vec3(0.72), a * 0.9);
+}
 void main() {
   vec2 uv = v_pos / u_view;
   float c = cos(v_theta);
@@ -197,7 +207,7 @@ void main() {
   if (front) {
     vec3 col = texture2D(u_front, uv).rgb;
     float shade = 0.42 * pow(1.0 - max(c, 0.0), 1.5);
-    gl_FragColor = vec4(col * (1.0 - shade), 1.0);
+    gl_FragColor = vec4(outline(col * (1.0 - shade)), 1.0);
   } else {
     vec3 col;
     if (u_ghost > 0.5) {
@@ -208,7 +218,7 @@ void main() {
     }
     float dark = 0.4 * pow(max(0.0, 1.0 + c) / 2.0, 1.5);
     float gloss = 0.3 * exp(-pow((v_theta - 2.2) / 0.41, 2.0));
-    gl_FragColor = vec4(col * (1.0 - dark) + gloss, 1.0);
+    gl_FragColor = vec4(outline(col * (1.0 - dark) + gloss), 1.0);
   }
 }`;
 
@@ -254,7 +264,7 @@ class CurlGL {
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     this.u = {};
-    for (const n of ["u_leaf", "u_view", "u_L0", "u_dir", "u_R", "u_squash", "u_front", "u_back", "u_ghost", "u_flip", "u_hinge", "u_paper"])
+    for (const n of ["u_leaf", "u_view", "u_L0", "u_dir", "u_R", "u_squash", "u_front", "u_back", "u_ghost", "u_flip", "u_hinge", "u_paper", "u_edge"])
       this.u[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(this.u.u_front, 0);
     gl.uniform1i(this.u.u_back, 1);
@@ -309,6 +319,7 @@ class CurlGL {
     gl.uniform1f(u.u_ghost, p.ghost ? 1 : 0);
     gl.uniform1f(u.u_hinge, p.hinge);
     gl.uniform3f(u.u_paper, p.paper[0], p.paper[1], p.paper[2]);
+    gl.uniform4f(u.u_edge, p.x0, p.w, p.H, p.hinge);
     gl.drawElements(gl.TRIANGLES, this.count, gl.UNSIGNED_SHORT, 0);
   }
 }
