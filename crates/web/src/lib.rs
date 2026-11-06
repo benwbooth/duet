@@ -304,6 +304,10 @@ fn logo() -> impl IntoView {
     }
 }
 
+/// Whether the sidebar is tucked away while reading.
+#[derive(Clone, Copy)]
+pub struct SidebarHidden(pub RwSignal<bool>);
+
 #[component]
 fn App() -> impl IntoView {
     let route = RwSignal::new(Route::parse(&current_hash()));
@@ -318,9 +322,12 @@ fn App() -> impl IntoView {
     provide_context(DownloadsPanel { open: RwSignal::new(false), list: RwSignal::new(Vec::new()), collapsed: RwSignal::new(false) });
     // The reader takes the whole screen on phones.
     let immersive = move || matches!(route.get(), Route::Read(..));
+    // While reading, the sidebar can be tucked away (remembered on this device).
+    let sidebar_hidden = RwSignal::new(sidebar_hidden());
+    provide_context(SidebarHidden(sidebar_hidden));
 
     view! {
-        <div class="app" class:immersive=immersive>
+        <div class="app" class:immersive=immersive class:no-sidebar=move || immersive() && sidebar_hidden.get()>
             <nav class="tabs">
                 <a class="brand" href="#/">{logo()}<span>"duet"</span></a>
                 {TABS.map(|(id, label, path)| view! {
@@ -329,6 +336,15 @@ fn App() -> impl IntoView {
                         {icon(path)}<span>{label}</span>
                     </a>
                 })}
+                <Show when=immersive>
+                    <button class="tabs-hide" title="Hide the sidebar" on:click=move |_| {
+                        sidebar_hidden.set(true);
+                        set_sidebar_hidden(true);
+                    }>
+                        <svg viewBox="0 0 24 24" aria-hidden="true" class="icon"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9 4.5v15M15.5 10l-2 2 2 2"/></svg>
+                        <span>"Hide sidebar"</span>
+                    </button>
+                </Show>
             </nav>
             <main>
                 {move || match route.get() {

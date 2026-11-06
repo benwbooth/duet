@@ -1205,3 +1205,12 @@ input, select { border-radius: 12px; }
   left: 0; opacity: 1;
   background: linear-gradient(to right, color-mix(in srgb, var(--accent) 16%, transparent), color-mix(in srgb, var(--accent) 0%, transparent));
 }
+
+/* "Hide sidebar", at the foot of the sidebar while reading. */
+.tabs .tabs-hide {
+  margin-top: auto; display: flex; align-items: center; gap: 0.6rem; width: 100%; justify-content: flex-start;
+  background: transparent; border: 0; box-shadow: none; color: var(--muted); padding: 0.55rem 0.8rem; border-radius: 12px; font-size: 0.9rem;
+}
+.tabs .tabs-hide:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.tabs .tabs-hide .icon { width: 18px; height: 18px; }
+@media (max-width: 760px) { .tabs .tabs-hide { display: none; } }
