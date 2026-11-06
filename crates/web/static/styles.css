@@ -1086,3 +1086,6 @@ input, select { border-radius: 12px; }
 }
 .curl-strip { transform-origin: 0 0; will-change: transform, clip-path; }
 .reader[data-theme="dark"] .curl-strip { background: #000; }
+/* Dark pages: a fine white edge so the page reads as a sheet against the black. */
+.reader[data-theme="dark"] .bookview { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.55); }
+@media (max-width: 760px) { .reader[data-theme="dark"] .bookview { box-shadow: none; } }

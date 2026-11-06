@@ -433,7 +433,7 @@ class Pager {
     if (r > w) { vx *= w / r; vy *= w / r; }
     P = { x: hp.x + vx, y: hp.y + vy };
     const dx = P.x - C.x, dy = P.y - C.y;
-    const d = Math.hypot(dx, dy);
+    let d = Math.hypot(dx, dy);
     const rect = [[t.leaf[0], 0], [t.leaf[1], 0], [t.leaf[1], H], [t.leaf[0], H]];
     const none = "polygon(0 0, 0 0, 0 0)";
     if (d < 0.5) {
@@ -446,6 +446,13 @@ class Pager {
     t.flapWrap.style.display = "";
     // n points from the corner's resting place toward where it's been pulled.
     const n = { x: dx / d, y: dy / d };
+    // The bound edge stays flat: the sheet may only lift short of the spine, so the corner can't
+    // be pulled further than twice the spine's distance (and the roll shrinks to fit).
+    const toSpine = Math.min((t.hinge - C.x) * n.x + (0 - C.y) * n.y, (t.hinge - C.x) * n.x + (H - C.y) * n.y);
+    if (d > 2 * toSpine) {
+      d = Math.max(0.5, 2 * toSpine);
+      P = { x: C.x + n.x * d, y: C.y + n.y * d };
+    }
     // How tightly the paper rolls: it starts as a small curl at the corner, bows into a wide,
     // soft bend mid-turn, and flexes further the faster it's moved, easing back as it slows.
     const now = performance.now();
@@ -457,7 +464,11 @@ class Pager {
     t.lastP = P;
     t.lastT = now;
     const turned = Math.min(1, d / (Math.abs(2 * t.hinge - 2 * C.x) || W));
-    const R = Math.min(w * 0.4, 6 + d * 0.12 + w * 0.2 * Math.sin(Math.PI * turned) + (t.flex || 0));
+    const R = Math.max(0.5, Math.min(
+      w * 0.4,
+      6 + d * 0.12 + w * 0.2 * Math.sin(Math.PI * turned) + (t.flex || 0),
+      (2 * toSpine - d) / Math.PI,
+    ));
     const sC = (d + Math.PI * R) / 2;
     // The line where the sheet starts to lift; s is measured from it, back toward the corner.
     const L0 = { x: C.x + n.x * sC, y: C.y + n.y * sC };
@@ -569,9 +580,12 @@ class Pager {
     // of the page selects text as usual). A finger can take hold anywhere.
     const grabZone = (e) => {
       if (e.pointerType === "touch") return true;
-      const x = (e.clientX - this.book.getBoundingClientRect().left) / this.width;
-      const band = this.spread ? 0.16 : 0.3;
-      return x > 1 - band || x < band;
+      // The page's outer margins (and a little into them from the text), like the edge of a page
+      // you'd pinch to turn.
+      const x = e.clientX - this.book.getBoundingClientRect().left;
+      const pad = parseFloat(this.article.style.getPropertyValue("--page-pad")) || 40;
+      const band = Math.max(36, pad + 10);
+      return x > this.width - band || x < band;
     };
     this.book.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
