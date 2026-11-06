@@ -1546,14 +1546,11 @@ class Pager {
         if (!this.curl || this.busy || !start.grab || Math.abs(dx) < 6 || Math.abs(dx) < Math.abs(e.clientY - start.y)) return;
         const dir = dx < 0 ? 1 : -1;
         if ((dir > 0 && this.page + 1 >= this.pages) || (dir < 0 && this.page === 0)) {
-          // At the chapter's edge the next page isn't laid out yet: a pull turns into the
-          // neighbouring chapter (animated), as a click would.
-          if (!start.crossed) {
-            start.crossed = true;
-            window.getSelection().removeAllRanges();
-            this.swallowClick = true;
-            dir > 0 ? this.next() : this.prev();
-          }
+          // At the chapter's edge the next page isn't laid out yet: a pull far enough turns into
+          // the neighbouring chapter when you let go (never before).
+          start.cross = dir;
+          start.crossDx = dx;
+          window.getSelection().removeAllRanges();
           return;
         }
         window.getSelection().removeAllRanges();
@@ -1593,6 +1590,13 @@ class Pager {
       this.pose(drag, P);
     });
     const release = () => {
+      if (start && start.cross && !drag) {
+        const fast = performance.now() - start.time < 300;
+        if (Math.abs(start.crossDx) > 80 || (fast && Math.abs(start.crossDx) > 20)) {
+          this.swallowClick = true;
+          start.cross > 0 ? this.next() : this.prev();
+        }
+      }
       if (drag) {
         const fast = performance.now() - start.time < 300;
         const p = drag.progress || 0;
@@ -1605,19 +1609,47 @@ class Pager {
       drag = null;
       this.book.classList.remove("grab-edge");
     };
-    // A sideways two-finger swipe on a trackpad turns the page too.
-    let swipe = 0, swiped = false, swipeTimer = null;
+    // A sideways two-finger swipe on a trackpad moves the page with your fingers, like a drag;
+    // the turn finishes (or falls back) only once the fingers stop.
+    let swipe = null;
+    const endSwipe = () => {
+      const sw = swipe;
+      swipe = null;
+      if (!sw) return;
+      if (sw.cross) {
+        if (Math.abs(sw.total) > 90) sw.cross > 0 ? this.next() : this.prev();
+        return;
+      }
+      const p = sw.t.progress || 0;
+      this.finish(sw.t, sw.t.at || sw.t.from, (sw.t.reverse ? 1 - p : p) > 0.3);
+    };
     this.book.addEventListener("wheel", (e) => {
       if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
       e.preventDefault();
-      swipe += e.deltaX;
-      clearTimeout(swipeTimer);
-      // One turn per swipe: it ends when the trackpad goes quiet.
-      swipeTimer = setTimeout(() => { swipe = 0; swiped = false; }, 250);
-      if (!swiped && Math.abs(swipe) > 60) {
-        swiped = true;
-        swipe > 0 ? this.next() : this.prev();
+      if (!swipe) {
+        if (this.busy || !this.curl) return;
+        const dir = e.deltaX > 0 ? 1 : -1;
+        if ((dir > 0 && this.page + 1 >= this.pages) || (dir < 0 && this.page === 0)) {
+          swipe = { cross: dir, total: 0 };
+        } else {
+          if (!this.noGL && (!this.snap(this.page * this.width) || !this.snap((this.page + dir) * this.width))) {
+            this.pictures([this.page * this.width, (this.page + dir) * this.width]);
+            return;
+          }
+          const t = this.begin(dir);
+          if (!t) return;
+          t.C = { x: t.C0x, y: t.H * 0.75 };
+          [t.from] = this.ends(t, t.C.y);
+          swipe = { t, total: 0 };
+        }
       }
+      swipe.total += e.deltaX;
+      if (swipe.t) {
+        swipe.t.at = { x: swipe.t.from.x - swipe.total * 1.4, y: swipe.t.from.y };
+        this.pose(swipe.t, swipe.t.at);
+      }
+      clearTimeout(swipe.timer);
+      swipe.timer = setTimeout(endSwipe, 160);
     }, { passive: false });
     this.book.addEventListener("pointerleave", () => { if (!drag) this.book.classList.remove("grab-edge"); });
     this.book.addEventListener("pointerup", release);
