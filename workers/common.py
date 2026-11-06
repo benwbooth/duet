@@ -74,12 +74,124 @@ def chat_json(url, model, key, messages):
     return json.loads(match.group(0) if match else text)
 
 
-def whisper(model_name, dev):
-    """faster-whisper on the GPU when CTranslate2 supports it (NVIDIA), otherwise the CPU.
+# Speech recognition on the graphics card when PyTorch has one (NVIDIA CUDA or AMD ROCm: ROCm
+# builds of PyTorch call it "cuda" too). faster-whisper's engine, CTranslate2, only knows
+# NVIDIA, so on AMD it would run on the CPU; this runs Whisper through PyTorch instead.
+GPU_WHISPER = "openai/whisper-large-v3-turbo"
+
+
+class _Word:
+    def __init__(self, word, start, end):
+        self.word, self.start, self.end = word, start, end
+
+
+class _Segment:
+    def __init__(self, words):
+        self.words = words
+        self.start = words[0].start
+        self.end = words[-1].end
+        self.text = "".join(w.word for w in words)
+
+
+class TorchWhisper:
+    """Whisper on PyTorch, answering like faster-whisper's WhisperModel.transcribe:
+    (segments, info), each segment with .start, .end, .text and .words."""
+
+    def __init__(self, model_name=GPU_WHISPER, device="cuda:0"):
+        import torch
+        from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+
+        if getattr(torch.version, "hip", None):
+            # On ROCm, MIOpen searching for the fastest convolution on every new input length
+            # costs far more than it saves (as with Fish).
+            os.environ.setdefault("MIOPEN_FIND_MODE", "FAST")
+            torch.backends.cudnn.enabled = False
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(model_name, dtype=torch.float16, low_cpu_mem_usage=True)
+        model.to(device)
+        processor = AutoProcessor.from_pretrained(model_name)
+        self.pipe = pipeline(
+            "automatic-speech-recognition", model=model, tokenizer=processor.tokenizer,
+            feature_extractor=processor.feature_extractor, dtype=torch.float16, device=device,
+        )
+
+    def transcribe(self, samples, word_timestamps=False, vad_filter=False, language=None, **_):
+        import numpy as np
+
+        samples = np.asarray(samples, dtype=np.float32)
+        # Whisper makes words up out of silence; faster-whisper's VAD would have dropped it.
+        if len(samples) < 1600 or (vad_filter and float(np.sqrt(np.mean(samples ** 2))) < 0.004):
+            return [], None
+        kwargs = {"language": language} if language else {}
+        # (Clips under 30 s, like the microphone's, go through in one piece.)
+        chunked = {"chunk_length_s": 30, "ignore_warning": True} if len(samples) > 30 * 16000 else {}
+        out = self.pipe(
+            {"raw": samples, "sampling_rate": 16000}, **chunked,
+            # (Word timings keep every attention map, which takes a lot of memory per chunk.)
+            batch_size=1 if word_timestamps else 8,
+            return_timestamps="word" if word_timestamps else True, generate_kwargs=kwargs,
+        )
+        chunks = out.get("chunks") or []
+        if not word_timestamps:
+            segs = [_Segment([_Word(c["text"], c["timestamp"][0] or 0.0, c["timestamp"][1] or c["timestamp"][0] or 0.0)]) for c in chunks]
+            if not segs and out.get("text", "").strip():
+                segs = [_Segment([_Word(out["text"], 0.0, len(samples) / 16000)])]
+            return segs, None
+        words = []
+        for c in chunks:
+            start, end = c["timestamp"]
+            start = start or (words[-1].end if words else 0.0)
+            words.append(_Word(c["text"], start, end if end is not None else start))
+        # Segments end at a sentence's end or a pause, as Whisper's own would.
+        segs, cur = [], []
+        for i, w in enumerate(words):
+            cur.append(w)
+            gap = words[i + 1].start - w.end if i + 1 < len(words) else 0
+            if w.word.rstrip().endswith((".", "?", "!")) or gap > 1.0 or len(cur) >= 40:
+                segs.append(_Segment(cur))
+                cur = []
+        if cur:
+            segs.append(_Segment(cur))
+        return segs, None
+
+
+_gpu_whisper = None
+
+
+def release_gpu_whisper():
+    """Lets the card's copy of Whisper go (it's unloaded when idle)."""
+    global _gpu_whisper
+    _gpu_whisper = None
+
+
+def gpu_available():
+    try:
+        import torch
+
+        return torch.cuda.is_available()
+    except Exception:
+        return False
+
+
+def whisper(model_name, dev, words=False):
+    """Whisper on the graphics card when there is one (see TorchWhisper), otherwise faster-whisper
+    on the CPU.
+
+    Word timings (`words`) are the exception on AMD: PyTorch's Whisper gets them by keeping every
+    attention map, which on the card measured slower than faster-whisper on the CPU (and takes
+    gigabytes more memory), so those stay with faster-whisper unless CTranslate2 has an NVIDIA GPU.
 
     On the CPU the large models are slow for a whole audiobook, and alignment only needs word
     timings for text we already have, so it steps down to a smaller model there.
     """
+    if dev == "cuda" and not words and gpu_available():
+        global _gpu_whisper
+        try:
+            # One copy on the card, whoever asks (the microphone, syncing, transcripts).
+            if _gpu_whisper is None:
+                _gpu_whisper = TorchWhisper()
+            return _gpu_whisper, "cuda"
+        except Exception as e:
+            log(f"Whisper can't use the GPU ({e}); using the CPU")
     from faster_whisper import WhisperModel
 
     if dev == "cuda":

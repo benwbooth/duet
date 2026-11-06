@@ -110,6 +110,9 @@ def reaper():
             if whisper and now - last_used["whisper"] > limit:
                 print("unloading speech recognition (idle)", flush=True)
                 whisper.clear()
+                from common import release_gpu_whisper
+
+                release_gpu_whisper()
                 free_gpu()
 
 
@@ -270,23 +273,22 @@ whisper = {}
 
 
 def transcribe(audio, model_name):
-    """faster-whisper on the GPU when CTranslate2 has one (NVIDIA), otherwise the CPU."""
+    """Speech recognition for the microphone: Whisper on the graphics card when there is one
+    (NVIDIA or AMD), otherwise faster-whisper on the CPU."""
     touch("whisper")
     import tempfile
 
-    from faster_whisper import WhisperModel
+    from common import load_audio, whisper as load_whisper
 
-    if model_name not in whisper:
-        try:
-            whisper[model_name] = WhisperModel(model_name, device="cuda", compute_type="float16")
-        except Exception:
-            whisper[model_name] = WhisperModel(model_name, device="cpu", compute_type="int8")
     with tempfile.NamedTemporaryFile(suffix=".audio") as f:
         f.write(audio)
         f.flush()
-        from common import load_audio
-
-        segments, _ = whisper[model_name].transcribe(load_audio(f.name), vad_filter=True)
+        samples = load_audio(f.name)
+    with listen_lock:
+        key = "dictation:" + model_name
+        if key not in whisper:
+            whisper[key], _ = load_whisper(model_name, "cpu" if args.listen_cpu else "cuda")
+        segments, _ = whisper[key].transcribe(samples, vad_filter=True)
         return " ".join(seg.text.strip() for seg in segments).strip()
 
 
@@ -321,7 +323,7 @@ def sync_window(body):
         touch("whisper")
         key = "live:" + args.listen_model
         if key not in whisper:
-            whisper[key], _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda")
+            whisper[key], _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda", words=True)
         segments, _ = whisper[key].transcribe(samples, word_timestamps=True, vad_filter=False, language="en")
         heard = []
         for seg in segments:
@@ -353,7 +355,7 @@ def track_words(body):
         touch("whisper")
         key = "live:" + args.listen_model
         if key not in whisper:
-            whisper[key], _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda")
+            whisper[key], _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda", words=True)
         segments, _ = whisper[key].transcribe(samples, word_timestamps=True, vad_filter=True, language="en")
         out = [
             {"start": round(seg.start, 3), "end": round(seg.end, 3), "text": seg.text.strip(),
@@ -468,7 +470,7 @@ def main():
     ap.add_argument("--fish-no-compile", action="store_true", help="skip torch.compile (faster start, slower speech)")
     ap.add_argument("--fish-decoder", default="", help="codec path, e.g. checkpoints/s2-pro/codec.pth")
     ap.add_argument("--listen-model", default="small.en", help="faster-whisper model for syncing while you listen")
-    ap.add_argument("--listen-cpu", action="store_true", default=True, help="listen on the CPU (CTranslate2 has no ROCm support)")
+    ap.add_argument("--listen-cpu", action="store_true", help="speech recognition on the CPU even when there's a GPU")
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--top-p", type=float, default=0.7)
     ap.add_argument("--design-model", default="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
