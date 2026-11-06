@@ -1476,34 +1476,31 @@ export function pagerSetPlace(book, chapter, chapters) {
   if (book.__pager) book.__pager.edges();
 }
 
-const coverColours = new Map();
+// Cloth and leather colours for the hard cover; a book always gets the same one, picked by its
+// title.
+const COVER_COLOURS = [
+  "#7a2e2e", // oxblood
+  "#2f4a6b", // navy
+  "#2e5e4a", // bottle green
+  "#6b4a2b", // tan leather
+  "#4a3566", // aubergine
+  "#8a5a1e", // ochre
+  "#2c5560", // teal
+  "#5c2a3d", // burgundy
+  "#3b4a2a", // olive
+  "#6e3b22", // rust
+  "#28334a", // midnight
+  "#5a5245", // taupe
+];
 
-// Colours the book's hard cover after its cover picture: the picture's average colour, deepened
-// so it reads as cloth or leather.
-export function bookCover(book, url) {
-  if (!book || !url) return;
-  const apply = (c) => book.style.setProperty("--cover", c);
-  if (coverColours.has(url)) return apply(coverColours.get(url));
-  const img = new Image();
-  img.onload = () => {
-    try {
-      const c = document.createElement("canvas");
-      c.width = c.height = 8;
-      const ctx = c.getContext("2d");
-      ctx.drawImage(img, 0, 0, 8, 8);
-      const d = ctx.getImageData(0, 0, 8, 8).data;
-      let r = 0, g = 0, b = 0;
-      for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
-      const n = d.length / 4;
-      // Darker and a little richer than the average, like a book's board.
-      const mx = Math.max(r, g, b) / n || 1;
-      const k = Math.min(1, 120 / mx);
-      const col = `rgb(${Math.round((r / n) * k)}, ${Math.round((g / n) * k)}, ${Math.round((b / n) * k)})`;
-      coverColours.set(url, col);
-      apply(col);
-    } catch (_) {}
-  };
-  img.src = url;
+export function bookCover(book, title) {
+  if (!book) return;
+  let h = 2166136261;
+  for (const ch of title || "") {
+    h ^= ch.codePointAt(0);
+    h = Math.imul(h, 16777619);
+  }
+  book.style.setProperty("--cover", COVER_COLOURS[(h >>> 0) % COVER_COLOURS.length]);
 }
 
 export function pagerSetSpread(book, spread) {
