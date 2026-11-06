@@ -88,8 +88,35 @@ pub fn title_key(title: &str) -> String {
     n.replace(" unabridged", "").replace(" a novel", "").trim().to_string()
 }
 
+/// A readable name for an audiobook track whose tag is missing or is just the file name
+/// ("wonderland_ch_01_64kb" → "Chapter 1"). Real titles pass through unchanged.
+pub fn track_title(raw: &str, index: usize) -> String {
+    let t = raw.trim();
+    let filename_like = t.is_empty() || (!t.contains(' ') && (t.contains('_') || t.contains('-') || t.chars().all(|c| c.is_ascii_digit())));
+    if !filename_like {
+        return t.to_string();
+    }
+    // Drop bitrate suffixes like "_64kb" before looking for the chapter number.
+    let words: Vec<&str> = t
+        .split(|c: char| c == '_' || c == '-' || c == '.')
+        .filter(|w| !w.is_empty() && !(w.ends_with("kb") && w[..w.len() - 2].chars().all(|c| c.is_ascii_digit())))
+        .collect();
+    match words.iter().rev().find_map(|w| w.parse::<u32>().ok()) {
+        Some(n) => format!("Chapter {n}"),
+        None => format!("Part {}", index + 1),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tidies_track_titles() {
+        assert_eq!(super::track_title("wonderland_ch_01_64kb", 0), "Chapter 1");
+        assert_eq!(super::track_title("wonderland_ch_12", 11), "Chapter 12");
+        assert_eq!(super::track_title("Down the Rabbit-Hole", 0), "Down the Rabbit-Hole");
+        assert_eq!(super::track_title("", 3), "Part 4");
+    }
+
     use super::*;
 
     fn split(t: &str) -> Vec<&str> {

@@ -122,7 +122,8 @@ async fn asset_from_row(db: &SqlitePool, r: &sqlx::sqlite::SqliteRow) -> anyhow:
         .into_iter()
         .map(|t| {
             let index: i64 = t.get("idx");
-            Track { index, title: t.get("title"), duration_secs: t.get("duration_secs"), url: format!("/api/assets/{id}/tracks/{index}") }
+            let raw: String = t.get("title");
+            Track { index, title: duet_common::text::track_title(&raw, index as usize), duration_secs: t.get("duration_secs"), url: format!("/api/assets/{id}/tracks/{index}") }
         })
         .collect();
     Ok(Asset {

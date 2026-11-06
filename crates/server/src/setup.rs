@@ -273,10 +273,8 @@ pub async fn start_server(state: &State) -> anyhow::Result<()> {
 }
 
 pub async fn stop_server(state: &State) {
-    if let Some(mut child) = state.voices.server.lock().await.take() {
-        let _ = child.kill().await;
-    }
-    // A server duet didn't start (left from an earlier run) is asked to shut itself down.
+    // Asked first, so it takes its Fish server down with it; then made to stop if it hasn't.
+    // (This also covers a server duet didn't start, left from an earlier run.)
     if alive(state).await {
         let _ = state
             .http
@@ -284,6 +282,11 @@ pub async fn stop_server(state: &State) {
             .timeout(std::time::Duration::from_secs(5))
             .send()
             .await;
+    }
+    if let Some(mut child) = state.voices.server.lock().await.take() {
+        if tokio::time::timeout(std::time::Duration::from_secs(40), child.wait()).await.is_err() {
+            let _ = child.kill().await;
+        }
     }
 }
 

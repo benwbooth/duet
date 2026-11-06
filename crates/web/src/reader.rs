@@ -36,6 +36,119 @@ pub fn edition_label(a: &Asset) -> String {
     }
 }
 
+/// How the book is enjoyed. Every mode works straight away: the audiobook is matched to the
+/// text as it plays, and the full cast is performed a few sentences ahead of the listener.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Read,
+    ReadAudiobook,
+    ReadCast,
+    ListenAudiobook,
+    ListenCast,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 5] = [Mode::Read, Mode::ReadAudiobook, Mode::ReadCast, Mode::ListenAudiobook, Mode::ListenCast];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Mode::Read => "read",
+            Mode::ReadAudiobook => "read-audiobook",
+            Mode::ReadCast => "read-cast",
+            Mode::ListenAudiobook => "listen",
+            Mode::ListenCast => "listen-cast",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Mode> {
+        Mode::ALL.into_iter().find(|m| m.key() == s)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Read => "Read",
+            Mode::ReadAudiobook => "Read along with the audiobook",
+            Mode::ReadCast => "Read along with the full cast",
+            Mode::ListenAudiobook => "Listen to the audiobook",
+            Mode::ListenCast => "Listen to the full cast",
+        }
+    }
+
+    pub fn short(self) -> &'static str {
+        match self {
+            Mode::Read => "Reading",
+            Mode::ReadAudiobook => "Reading along",
+            Mode::ReadCast => "Full cast",
+            Mode::ListenAudiobook => "Listening",
+            Mode::ListenCast => "Full cast",
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            Mode::Read => "Just the book, no audio.",
+            Mode::ReadAudiobook => "The recording plays and the sentence being read is highlighted.",
+            Mode::ReadCast => "AI voices perform the book, a voice for every character, as you read.",
+            Mode::ListenAudiobook => "Just the recording.",
+            Mode::ListenCast => "AI voices perform the book, a voice for every character.",
+        }
+    }
+
+    pub fn icons(self) -> &'static [&'static str] {
+        use crate::icons::{BOOK, HEADPHONES, MASKS};
+        match self {
+            Mode::Read => &[BOOK],
+            Mode::ReadAudiobook => &[BOOK, HEADPHONES],
+            Mode::ReadCast => &[BOOK, MASKS],
+            Mode::ListenAudiobook => &[HEADPHONES],
+            Mode::ListenCast => &[MASKS],
+        }
+    }
+
+    pub fn cast(self) -> bool {
+        matches!(self, Mode::ReadCast | Mode::ListenCast)
+    }
+
+    pub fn audiobook(self) -> bool {
+        matches!(self, Mode::ReadAudiobook | Mode::ListenAudiobook)
+    }
+
+    pub fn listening_only(self) -> bool {
+        matches!(self, Mode::ListenAudiobook | Mode::ListenCast)
+    }
+
+    /// The modes this book's editions allow.
+    pub fn available(assets: &[Asset]) -> Vec<Mode> {
+        let ebook = assets.iter().any(|a| a.kind == AssetKind::Ebook);
+        let text = assets.iter().any(|a| a.kind == AssetKind::Ebook && readable(a));
+        let audio = assets.iter().any(|a| a.kind == AssetKind::Audiobook);
+        Mode::ALL
+            .into_iter()
+            .filter(|m| match m {
+                Mode::Read => ebook,
+                Mode::ReadAudiobook => ebook && audio,
+                Mode::ReadCast | Mode::ListenCast => text,
+                Mode::ListenAudiobook => audio,
+            })
+            .collect()
+    }
+
+    /// What to open with: the last mode used here, else reading along when there's a recording.
+    pub fn default_for(id: i64, assets: &[Asset]) -> Mode {
+        let available = Mode::available(assets);
+        let last = storage().and_then(|s| s.get_item(&format!("duet-mode-{id}")).ok().flatten()).and_then(|k| Mode::parse(&k));
+        last.filter(|m| available.contains(m))
+            .or_else(|| [Mode::ReadAudiobook, Mode::Read, Mode::ListenAudiobook].into_iter().find(|m| available.contains(m)))
+            .unwrap_or(Mode::Read)
+    }
+
+    fn remember(self, id: i64) {
+        if let Some(s) = storage() {
+            let _ = s.set_item(&format!("duet-mode-{id}"), self.key());
+        }
+    }
+}
+
 /// The edition to read: an original EPUB or text first, then a generated one, then PDF, then
 /// anything (shown as needing conversion).
 fn pick_ebook(assets: &[Asset]) -> Option<Asset> {
@@ -139,8 +252,17 @@ struct Message {
 }
 
 #[component]
-pub fn Reader(id: i64) -> impl IntoView {
+pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoView {
     let work = RwSignal::new(None::<WorkDetail>);
+    let mode = RwSignal::new(start_mode.unwrap_or(Mode::Read));
+    // The full cast's place: (chapter, sentence) being performed.
+    let cast_at = RwSignal::new((0usize, 0usize));
+    // Sentences in each chapter, as chapters are seen.
+    let counts = RwSignal::new(std::collections::HashMap::<usize, usize>::new());
+    // Waiting for the first sentence's voices (directing a chapter or casting can take a while).
+    let cast_wait = RwSignal::new(false);
+    // Where the audiobook was, kept while the full cast plays.
+    let book_pos = RwSignal::new((0usize, 0.0f64));
     let ebook = RwSignal::new(None::<Asset>);
     let audio_asset = RwSignal::new(None::<Asset>);
     let layout = RwSignal::new(None::<BookLayout>);
@@ -205,12 +327,21 @@ pub fn Reader(id: i64) -> impl IntoView {
         }
         ebook.set(e);
         audio_asset.set(a.clone());
+        let available = Mode::available(&w.assets);
+        let m = start_mode.filter(|m| available.contains(m)).unwrap_or_else(|| Mode::default_for(id, &w.assets));
+        m.remember(id);
+        mode.set(m);
         let pos = w.position.clone().unwrap_or_default();
+        crate::set_media_session(&w.title, w.author.as_deref().unwrap_or(""), w.cover_url.as_deref().unwrap_or(""));
         if let Some(a) = a {
-            crate::set_media_session(&w.title, w.author.as_deref().unwrap_or(""), w.cover_url.as_deref().unwrap_or(""));
-            track.set(pos.track.min(a.tracks.len().saturating_sub(1)));
-            pending_seek.set(Some((pos.seconds, false)));
+            let tr = pos.track.min(a.tracks.len().saturating_sub(1));
+            book_pos.set((tr, pos.seconds));
+            track.set(tr);
+            if m.audiobook() {
+                pending_seek.set(Some((pos.seconds, false)));
+            }
         }
+        cast_at.set((pos.chapter, pos.sentence));
         scroll_to.set(Some(pos.sentence as u32));
         chapter.set(pos.chapter);
         work.set(Some(w));
@@ -320,6 +451,7 @@ pub fn Reader(id: i64) -> impl IntoView {
         spawn_local(async move {
             match api::get::<Chapter>(&format!("/api/assets/{}/chapters/{c}", e.id)).await {
                 Ok(ch) => {
+                    counts.update(|m| { m.insert(c, ch.sentences); });
                     html.set(ch.html);
                     // Let the DOM update first.
                     set_timeout(move || lay_out.with_value(|f| f()), std::time::Duration::ZERO);
@@ -330,6 +462,91 @@ pub fn Reader(id: i64) -> impl IntoView {
     });
 
     let audio_el = move || audio.get_untracked();
+
+    // The first sentence at or after (chapter, sentence), skipping chapters with none (covers,
+    // image pages); None past the end of the book.
+    let settle = move |mut c: usize, mut s: usize| async move {
+        let e = ebook.get_untracked()?;
+        let total = layout.get_untracked().map(|l| l.chapters).unwrap_or(0);
+        while c < total {
+            let n = match counts.with_untracked(|m| m.get(&c).copied()) {
+                Some(n) => n,
+                None => {
+                    let n = api::get::<Chapter>(&format!("/api/assets/{}/chapters/{c}", e.id)).await.ok()?.sentences;
+                    counts.update(|m| { m.insert(c, n); });
+                    n
+                }
+            };
+            if s < n {
+                return Some((c, s));
+            }
+            c += 1;
+            s = 0;
+        }
+        None
+    };
+    let cast_url = move |e: i64, (c, s): (usize, usize)| format!("/api/assets/{e}/cast/{c}/{s}");
+    // Moves the full cast to a sentence, carrying on playing if it was.
+    let cast_go = move |c: usize, s: usize, play: bool| {
+        spawn_local(async move {
+            if let Some(at) = settle(c, s).await {
+                pending_seek.set(Some((0.0, play)));
+                cast_at.set(at);
+            } else if !play {
+                cast_at.set((c, s));
+            }
+        });
+    };
+    // The full cast follows itself through the book: highlight what's being performed, and have
+    // the next few sentences voiced ahead of time so there's no wait between them.
+    let prefetched = StoredValue::new(std::collections::HashSet::<(usize, usize)>::new());
+    let prefetching = RwSignal::new(false);
+    Effect::new(move |_| {
+        let (c, s) = cast_at.get();
+        if !mode.get().cast() {
+            return;
+        }
+        sentence.set(s as i32);
+        if c != chapter.get_untracked() {
+            scroll_to.set(Some(s as u32));
+            chapter.set(c);
+        } else if let Some(el) = page.get_untracked() {
+            crate::highlight(&el, s as i32, prefs.get_untracked().follow_audio);
+        }
+        if prefetching.get_untracked() {
+            return;
+        }
+        let Some(e) = ebook.get_untracked().map(|e| e.id) else { return };
+        prefetching.set(true);
+        spawn_local(async move {
+            let mut at = (c, s);
+            // Voices take about as long to perform a line as to speak it here, so run well ahead.
+            for _ in 0..8 {
+                let Some(next) = settle(at.0, at.1 + 1).await else { break };
+                at = next;
+                if prefetched.with_value(|p| p.contains(&at)) {
+                    continue;
+                }
+                prefetched.update_value(|p| { p.insert(at); });
+                crate::prefetch(&cast_url(e, at)).await;
+                // Stop running ahead once the listener has moved somewhere else.
+                if cast_at.get_untracked().0 != c || !mode.get_untracked().cast() {
+                    break;
+                }
+            }
+            // Nearing the end of a chapter, have the next one directed and cast in good time.
+            let left = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(0).saturating_sub(s);
+            if left <= 15 {
+                if let Some(next) = settle(c + 1, 0).await {
+                    if prefetched.with_value(|p| !p.contains(&next)) {
+                        prefetched.update_value(|p| { p.insert(next); });
+                        crate::prefetch(&cast_url(e, next)).await;
+                    }
+                }
+            }
+            prefetching.set(false);
+        });
+    });
 
     // Follow the audio: highlight what's being said, turning chapters as needed.
     // Syncing while you listen: the next half-minute of audio is heard ahead of the narration
@@ -382,7 +599,12 @@ pub fn Reader(id: i64) -> impl IntoView {
         let Some(a) = audio_el() else { return };
         let t = a.current_time();
         time.set(t);
-        if playing.get_untracked() {
+        let m = mode.get_untracked();
+        if !m.audiobook() {
+            return;
+        }
+        book_pos.set((track.get_untracked(), t));
+        if playing.get_untracked() && m == Mode::ReadAudiobook {
             live_sync(t);
         }
         let s = sync.get_untracked();
@@ -429,6 +651,10 @@ pub fn Reader(id: i64) -> impl IntoView {
         }
         if let Some(n) = js_sys::Reflect::get(&target, &JsValue::from_str("sentence")).ok().and_then(|v| v.as_f64()) {
             let n = n as usize;
+            if mode.get_untracked().cast() {
+                cast_go(chapter.get_untracked(), n, playing.get_untracked());
+                return;
+            }
             let s = sync.get_untracked();
             if let Some(span) = s.of(chapter.get_untracked(), n).cloned() {
                 sentence.set(n as i32);
@@ -446,9 +672,8 @@ pub fn Reader(id: i64) -> impl IntoView {
     };
 
     let position = move || -> Position {
-        let a = audio_asset.get_untracked();
-        let t = time.get_untracked();
-        let tr = track.get_untracked();
+        let a = audio_asset.get_untracked().filter(|_| mode.get_untracked().audiobook());
+        let (tr, t) = book_pos.get_untracked();
         let c = chapter.get_untracked();
         let s = if playing.get_untracked() && sentence.get_untracked() >= 0 {
             sentence.get_untracked() as usize
@@ -525,21 +750,6 @@ pub fn Reader(id: i64) -> impl IntoView {
             chapter.set(c);
         });
     };
-    let sync_these = move |_| {
-        let (Some(e), Some(a)) = (ebook.get_untracked(), audio_asset.get_untracked()) else { return };
-        spawn_local(async move {
-            match api::post::<_, i64>(
-                "/api/jobs",
-                &duet_common::NewJob { kind: duet_common::JobKind::Align, work_id: id, ebook_asset: Some(e.id), audiobook_asset: Some(a.id) },
-            )
-            .await
-            {
-                Ok(_) => toast.show("Syncing these editions; follow it in Jobs"),
-                Err(err) => toast.show(err.0),
-            }
-        });
-    };
-
     let save = move || {
         if work.get_untracked().is_none() {
             return;
@@ -566,14 +776,93 @@ pub fn Reader(id: i64) -> impl IntoView {
         }
     };
     let skip = move |d: f64| {
+        if mode.get_untracked().cast() {
+            let (c, s) = cast_at.get_untracked();
+            let play = playing.get_untracked();
+            if d > 0.0 {
+                cast_go(c, s + 1, play);
+            } else if s > 0 {
+                cast_go(c, s - 1, play);
+            } else if c > 0 {
+                // Back into the previous chapter's last sentence.
+                spawn_local(async move {
+                    let n = counts.with_untracked(|m| m.get(&(c - 1)).copied()).unwrap_or(0);
+                    pending_seek.set(Some((0.0, play)));
+                    cast_at.set((c - 1, n.saturating_sub(1)));
+                });
+            }
+            return;
+        }
         if let Some(a) = audio_el() {
             a.set_current_time((a.current_time() + d).max(0.0));
         }
     };
-    let track_url = move || {
-        audio_asset.get().and_then(|a| a.tracks.get(track.get()).map(|t| t.url.clone())).unwrap_or_default()
+    let track_url = move || match mode.get() {
+        m if m.cast() => ebook.get().map(|e| cast_url(e.id, cast_at.get())).unwrap_or_default(),
+        m if m.audiobook() => audio_asset.get().and_then(|a| a.tracks.get(track.get()).map(|t| t.url.clone())).unwrap_or_default(),
+        _ => String::new(),
+    };
+    let has_player = move || match mode.get() {
+        m if m.cast() => ebook.get().is_some(),
+        m if m.audiobook() => audio_asset.get().is_some(),
+        _ => false,
+    };
+    // Switching modes keeps your place: the audiobook picks up at the sentence you're on when the
+    // two are matched there, the full cast starts at the sentence you were hearing or reading.
+    let set_mode = move |m: Mode| {
+        let old = mode.get_untracked();
+        if old == m {
+            return;
+        }
+        m.remember(id);
+        editions_open.set(false);
+        let was_playing = playing.get_untracked();
+        let c = chapter.get_untracked();
+        let s = if sentence.get_untracked() >= 0 {
+            sentence.get_untracked() as usize
+        } else {
+            page.get_untracked().map(|el| crate::visible_sentence(&el) as usize).unwrap_or(0)
+        };
+        if old.cast() != m.cast() || old.audiobook() != m.audiobook() {
+            if let Some(a) = audio_el() {
+                let _ = a.pause();
+            }
+            if m.cast() {
+                let (c, s) = if old.audiobook() {
+                    let (tr, t) = book_pos.get_untracked();
+                    sync.with_untracked(|x| x.at(tr, t).map(|sp| (sp.chapter, sp.sentence))).unwrap_or((c, s))
+                } else {
+                    (c, s)
+                };
+                cast_go(c, s, was_playing);
+            } else if m.audiobook() {
+                if let Some(span) = sync.with_untracked(|x| x.of(c, s).cloned()) {
+                    book_pos.set((span.track, span.start));
+                }
+                let (tr, secs) = book_pos.get_untracked();
+                pending_seek.set(Some((secs, was_playing)));
+                track.set(tr);
+            }
+        }
+        mode.set(m);
+        if old.listening_only() && !m.listening_only() {
+            scroll_to.set(Some(s as u32));
+            set_timeout(move || lay_out.with_value(|f| f()), std::time::Duration::from_millis(30));
+        }
     };
     let chapters = move || layout.get().map(|l| l.chapters).unwrap_or(0);
+    let toc_title = move |c: usize| layout.get().and_then(|l| l.toc.iter().rev().find(|t| t.chapter <= c).map(|t| t.title.clone()));
+    // The chapter being heard: the book's own chapter name when the audio is matched to the text,
+    // otherwise the recording's.
+    let now_chapter = move || {
+        let m = mode.get();
+        let heard = sync.with(|x| x.at(track.get(), time.get()).map(|sp| sp.chapter));
+        match (m.cast(), heard) {
+            (true, _) => toc_title(cast_at.get().0).unwrap_or_default(),
+            (false, Some(c)) => toc_title(c).unwrap_or_default(),
+            _ => audio_asset.get().and_then(|a| a.tracks.get(track.get()).map(|t| t.title.clone())).unwrap_or_default(),
+        }
+    };
     let go_chapter = move |c: usize| {
         scroll_to.set(Some(0));
         chapter.set(c);
@@ -581,8 +870,8 @@ pub fn Reader(id: i64) -> impl IntoView {
     };
 
     view! {
-        <div class="reader" class:paged-mode=paged class:has-player=move || audio_asset.get().is_some()
-            class:chrome-hidden=move || chrome_hidden.get()
+        <div class="reader" class:paged-mode=paged class:has-player=has_player class:listen-mode=move || mode.get().listening_only()
+            class:chrome-hidden=move || chrome_hidden.get() && !mode.get().listening_only()
             on:mousemove=move |ev: web_sys::MouseEvent| {
                 // On a desktop, moving toward the top or bottom edge brings the bars back.
                 let h = window().inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(800.0);
@@ -624,8 +913,11 @@ pub fn Reader(id: i64) -> impl IntoView {
                     }}
                 </button>
                 <button class="icon-button" title="Text and page view" on:click=move |_| view_open.update(|o| *o = !*o)>"Aa"</button>
-                <Show when=move || work.get().is_some_and(|w| w.assets.len() > 1)>
-                    <button class="icon-button" title="Editions" on:click=move |_| editions_open.update(|o| *o = !*o)>"Editions"</button>
+                <Show when=move || work.get().is_some_and(|w| Mode::available(&w.assets).len() > 1 || w.assets.len() > 1)>
+                    <button class="icon-button mode-button" title="Read or listen" on:click=move |_| editions_open.update(|o| *o = !*o)>
+                        {move || mode.get().short()}
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5"/></svg>
+                    </button>
                 </Show>
                 <Show when=move || layout.get().is_some_and(|l| !l.toc.is_empty())>
                     <button class="icon-button" title="Contents" on:click=move |_| toc_open.update(|o| *o = !*o)>"☰"</button>
@@ -678,14 +970,36 @@ pub fn Reader(id: i64) -> impl IntoView {
             </Show>
 
             <Show when=move || editions_open.get()>
-                <div class="editions-panel">
+                <div class="editions-panel modes-panel">
                     {move || work.get().map(|w| {
+                        let available = Mode::available(&w.assets);
                         let of = |k: AssetKind| w.assets.iter().filter(|a| a.kind == k).cloned().collect::<Vec<_>>();
                         let (texts, audios) = (of(AssetKind::Ebook), of(AssetKind::Audiobook));
                         view! {
-                            {(!texts.is_empty()).then(|| view! {
+                            <div class="mode-list">
+                                {Mode::ALL.into_iter().map(|m| {
+                                    let ok = available.contains(&m);
+                                    let why = match m {
+                                        Mode::Read => "Needs an ebook",
+                                        Mode::ReadAudiobook => "Needs an ebook and an audiobook",
+                                        Mode::ListenAudiobook => "Needs an audiobook",
+                                        _ => "Needs an EPUB or text edition",
+                                    };
+                                    view! {
+                                        <button class="mode-choice" class:on=move || mode.get() == m disabled=!ok
+                                            on:click=move |_| set_mode(m)>
+                                            <span class="mode-icon" aria-hidden="true">{m.icons().iter().map(|i| crate::icon(i)).collect_view()}</span>
+                                            <span class="mode-text">
+                                                <strong>{m.label()}</strong>
+                                                <small>{if ok { m.detail() } else { why }}</small>
+                                            </span>
+                                        </button>
+                                    }
+                                }).collect_view()}
+                            </div>
+                            {(texts.len() > 1).then(|| view! {
                                 <div class="edition-group">
-                                    <h4>"Text"</h4>
+                                    <h4>"Text edition"</h4>
                                     {texts.into_iter().map(|a| {
                                         let (aid, label, a2) = (a.id, edition_label(&a), a.clone());
                                         view! {
@@ -698,36 +1012,25 @@ pub fn Reader(id: i64) -> impl IntoView {
                                     }).collect_view()}
                                 </div>
                             })}
-                            {(!audios.is_empty()).then(|| view! {
-                                <div class="edition-group">
-                                    <h4>"Audio"</h4>
-                                    {audios.into_iter().map(|a| {
-                                        let (aid, label, a2) = (a.id, edition_label(&a), a.clone());
-                                        view! {
-                                            <label class="choice" class:on=move || audio_asset.get().is_some_and(|x| x.id == aid)>
-                                                <input type="radio" name="audio-edition" prop:checked=move || audio_asset.get().is_some_and(|x| x.id == aid)
-                                                    on:change=move |_| switch_audio(a2.clone())/>
-                                                {label}
-                                            </label>
-                                        }
-                                    }).collect_view()}
-                                </div>
+                            {(audios.len() > 1).then(|| view! {
+                                <Show when=move || mode.get().audiobook()>
+                                    <div class="edition-group">
+                                        <h4>"Recording"</h4>
+                                        {audios.clone().into_iter().map(|a| {
+                                            let (aid, label, a2) = (a.id, edition_label(&a), a.clone());
+                                            view! {
+                                                <label class="choice" class:on=move || audio_asset.get().is_some_and(|x| x.id == aid)>
+                                                    <input type="radio" name="audio-edition" prop:checked=move || audio_asset.get().is_some_and(|x| x.id == aid)
+                                                        on:change=move |_| switch_audio(a2.clone())/>
+                                                    {label}
+                                                </label>
+                                            }
+                                        }).collect_view()}
+                                    </div>
+                                </Show>
                             })}
                         }
                     })}
-                    {move || match (ebook.get(), audio_asset.get()) {
-                        (Some(e), Some(a)) => {
-                            if pairs.get().contains(&(e.id, a.id)) || !sync.get().is_empty() {
-                                view! { <p class="ok">"✓ These two are in sync."</p> }.into_any()
-                            } else {
-                                view! {
-                                    <p class="muted">"These two aren't synced yet, so the text won't follow the audio."</p>
-                                    <button class="primary" on:click=sync_these>"Sync these editions"</button>
-                                }.into_any()
-                            }
-                        }
-                        _ => view! { <span></span> }.into_any(),
-                    }}
                 </div>
             </Show>
 
@@ -814,7 +1117,25 @@ pub fn Reader(id: i64) -> impl IntoView {
                 }.into_any(),
             }}
 
-            <Show when=move || audio_asset.get().is_some()>
+            <Show when=move || mode.get().listening_only()>
+                <div class="listen-stage">
+                    <div class="listen-cover" class:playing=move || playing.get()>
+                        {move || work.get().map(|w| crate::cover(w.cover_url, w.title))}
+                    </div>
+                    <h2>{move || work.get().map(|w| w.title)}</h2>
+                    <p class="muted">{move || work.get().and_then(|w| w.author)}</p>
+                    <p class="listen-chapter">{move || now_chapter()}</p>
+                    <Show when=move || mode.get().cast()>
+                        <blockquote class="listen-line">{move || {
+                            html.track();
+                            let (_, s) = cast_at.get();
+                            page.get().map(|el| crate::sentence_text(&el, s as i32)).unwrap_or_default()
+                        }}</blockquote>
+                    </Show>
+                </div>
+            </Show>
+
+            <Show when=has_player>
                 <div class="player">
                     <audio node_ref=audio src=track_url preload="metadata"
                         on:timeupdate=on_time
@@ -830,7 +1151,26 @@ pub fn Reader(id: i64) -> impl IntoView {
                                 if play { let _ = a.play(); }
                             }
                         }
+                        on:loadstart=move |_| if mode.get_untracked().cast() { cast_wait.set(true) }
+                        on:canplay=move |_| cast_wait.set(false)
+                        on:error=move |_| {
+                            if !mode.get_untracked().cast() { return }
+                            cast_wait.set(false);
+                            // Ask again to find out why (the audio element doesn't say).
+                            let Some(e) = ebook.get_untracked() else { return };
+                            let url = cast_url(e.id, cast_at.get_untracked());
+                            spawn_local(async move {
+                                if let Err(err) = api::get::<serde_json::Value>(&url).await {
+                                    toast.show(format!("The full cast couldn't perform this: {}", err.0));
+                                }
+                            });
+                        }
                         on:ended=move |_| {
+                            if mode.get_untracked().cast() {
+                                let (c, s) = cast_at.get_untracked();
+                                cast_go(c, s + 1, true);
+                                return;
+                            }
                             let n = audio_asset.get_untracked().map(|a| a.tracks.len()).unwrap_or(0);
                             if track.get_untracked() + 1 < n {
                                 pending_seek.set(Some((0.0, true)));
@@ -842,16 +1182,20 @@ pub fn Reader(id: i64) -> impl IntoView {
                         <div class="np-text">
                             <strong>{move || work.get().map(|w| w.title)}</strong>
                             <small>{move || {
-                                let name = audio_asset.get().and_then(|a| a.tracks.get(track.get()).map(|t| t.title.clone())).unwrap_or_default();
+                                let name = now_chapter();
+                                if mode.get().cast() {
+                                    let status = if cast_wait.get() { " · getting the voices ready…" } else { " · full cast" };
+                                    return format!("{name}{status}");
+                                }
                                 let left = (duration.get() - time.get()).max(0.0);
-                                let listening = if live_busy.get() { " · syncing as you listen" } else { "" };
+                                let listening = if live_busy.get() { " · matching to the text" } else { "" };
                                 format!("{name} · −{}{listening}", format_time(left))
                             }}</small>
                         </div>
                     </div>
                     <div class="transport">
-                        <button class="round" title="Back 30 seconds" on:click=move |_| skip(-30.0)>
-                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4"/></svg><span>"30"</span>
+                        <button class="round" title=move || if mode.get().cast() { "Previous sentence" } else { "Back 30 seconds" } on:click=move |_| skip(-30.0)>
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4"/></svg><span>{move || if mode.get().cast() { "" } else { "30" }}</span>
                         </button>
                         <button class="round play" class:playing=move || playing.get() title="Play or pause" on:click=toggle>
                             {move || if playing.get() {
@@ -861,17 +1205,26 @@ pub fn Reader(id: i64) -> impl IntoView {
                             }}
                             <span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
                         </button>
-                        <button class="round" title="Forward 30 seconds" on:click=move |_| skip(30.0)>
-                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/></svg><span>"30"</span>
+                        <button class="round" title=move || if mode.get().cast() { "Next sentence" } else { "Forward 30 seconds" } on:click=move |_| skip(30.0)>
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/></svg><span>{move || if mode.get().cast() { "" } else { "30" }}</span>
                         </button>
                     </div>
                     <div class="np-extra">
-                        <select title="Chapter of the recording" on:change=move |ev| {
-                            if let Ok(t) = event_target_value(&ev).parse::<usize>() { seek_to(t, 0.0) }
+                        <select title="Chapter" on:change=move |ev| {
+                            let Ok(v) = event_target_value(&ev).parse::<usize>() else { return };
+                            if mode.get_untracked().cast() { cast_go(v, 0, playing.get_untracked()) } else { seek_to(v, 0.0) }
                         }>
-                            {move || audio_asset.get().map(|a| a.tracks.into_iter().enumerate().map(|(i, t)| view! {
-                                <option value=i.to_string() selected=move || track.get() == i>{t.title}</option>
-                            }).collect_view())}
+                            {move || if mode.get().cast() {
+                                layout.get().map(|l| l.toc.into_iter().map(|t| {
+                                    let c = t.chapter;
+                                    let name = format!("{}{}", "\u{2003}".repeat(t.depth), t.title);
+                                    view! { <option value=c.to_string() selected=move || chapter.get() == c>{name}</option> }
+                                }).collect_view().into_any())
+                            } else {
+                                audio_asset.get().map(|a| a.tracks.into_iter().enumerate().map(|(i, t)| view! {
+                                    <option value=i.to_string() selected=move || track.get() == i>{t.title}</option>
+                                }).collect_view().into_any())
+                            }}
                         </select>
                         <select class="speed" title="Speed" on:change=move |ev| {
                             if let Ok(r) = event_target_value(&ev).parse::<f64>() {
@@ -884,7 +1237,23 @@ pub fn Reader(id: i64) -> impl IntoView {
                             })}
                         </select>
                     </div>
-                    <div class="scrub">
+                    <Show when=move || mode.get().cast()>
+                        <div class="scrub">
+                            <span>{move || format!("{}", cast_at.get().1 + 1)}</span>
+                            <input type="range" min="0" step="1"
+                                prop:max=move || counts.with(|m| m.get(&cast_at.get().0).copied().unwrap_or(1)).saturating_sub(1) as f64
+                                prop:value=move || cast_at.get().1 as f64
+                                style=move || {
+                                    let n = counts.with(|m| m.get(&cast_at.get().0).copied().unwrap_or(1)).max(1);
+                                    format!("--pct:{:.2}%", cast_at.get().1 as f64 / (n.saturating_sub(1)).max(1) as f64 * 100.0)
+                                }
+                                on:change=move |ev| {
+                                    if let Ok(v) = event_target_value(&ev).parse::<usize>() { cast_go(cast_at.get_untracked().0, v, playing.get_untracked()) }
+                                }/>
+                            <span>{move || format!("of {} sentences", counts.with(|m| m.get(&cast_at.get().0).copied().unwrap_or(0)))}</span>
+                        </div>
+                    </Show>
+                    <div class="scrub" class:hidden=move || mode.get().cast()>
                         <span>{move || format_time(time.get())}</span>
                         <input type="range" min="0" step="1" prop:max=move || duration.get() prop:value=move || time.get()
                             style=move || format!("--pct:{:.2}%", if duration.get() > 0.0 { time.get() / duration.get() * 100.0 } else { 0.0 })

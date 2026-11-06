@@ -511,3 +511,20 @@ export function pagerTurn(book, dir) {
   if (dir > 0) book.__pager.next();
   else book.__pager.prev();
 }
+
+// The text of sentence n in a chapter (a sentence can be split over several spans).
+export function sentenceText(container, n) {
+  if (!container || n < 0) return "";
+  return Array.from(container.querySelectorAll(`.s[data-s="${n}"]`)).map((e) => e.textContent).join(" ").replace(/\s+/g, " ").trim();
+}
+
+// Asks for a URL ahead of time (the full cast's next sentences), ignoring the answer.
+export async function prefetch(url) {
+  try {
+    const r = await fetch(url);
+    await r.arrayBuffer();
+    return r.ok;
+  } catch (_) {
+    return false;
+  }
+}

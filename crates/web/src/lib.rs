@@ -52,6 +52,9 @@ extern "C" {
     fn pager_end(book: &web_sys::Element);
     #[wasm_bindgen(js_name = pagerTurn)]
     fn pager_turn(book: &web_sys::Element, dir: i32);
+    #[wasm_bindgen(js_name = sentenceText)]
+    fn sentence_text(container: &web_sys::Element, n: i32) -> String;
+    async fn prefetch(url: &str) -> JsValue;
 }
 
 #[wasm_bindgen(start)]
@@ -65,7 +68,7 @@ pub fn start() {
 enum Route {
     Library,
     Work(i64),
-    Read(i64),
+    Read(i64, Option<reader::Mode>),
     Discover,
     Jobs,
     Settings,
@@ -78,7 +81,7 @@ impl Route {
         let id = || parts.get(1).and_then(|s| s.parse().ok());
         match parts.first().copied() {
             Some("work") => id().map(Route::Work).unwrap_or(Route::Library),
-            Some("read") => id().map(Route::Read).unwrap_or(Route::Library),
+            Some("read") => id().map(|i| Route::Read(i, parts.get(2).and_then(|m| reader::Mode::parse(m)))).unwrap_or(Route::Library),
             Some("discover") => Route::Discover,
             Some("jobs") => Route::Jobs,
             Some("settings") => Route::Settings,
@@ -89,7 +92,7 @@ impl Route {
 
     fn tab(&self) -> &'static str {
         match self {
-            Route::Library | Route::Work(_) | Route::Read(_) => "library",
+            Route::Library | Route::Work(_) | Route::Read(..) => "library",
             Route::Discover => "discover",
             Route::Jobs => "jobs",
             Route::Settings | Route::Setup => "settings",
@@ -294,7 +297,7 @@ fn App() -> impl IntoView {
     provide_context(Toast(toast_sig));
     provide_context(DownloadsPanel { open: RwSignal::new(false), list: RwSignal::new(Vec::new()), collapsed: RwSignal::new(false) });
     // The reader takes the whole screen on phones.
-    let immersive = move || matches!(route.get(), Route::Read(_));
+    let immersive = move || matches!(route.get(), Route::Read(..));
 
     view! {
         <div class="app" class:immersive=immersive>
@@ -311,7 +314,10 @@ fn App() -> impl IntoView {
                 {move || match route.get() {
                     Route::Library => view! { <Library/> }.into_any(),
                     Route::Work(id) => view! { <WorkPage id/> }.into_any(),
-                    Route::Read(id) => view! { <reader::Reader id/> }.into_any(),
+                    Route::Read(id, m) => match m {
+                        Some(m) => view! { <reader::Reader id start_mode=m/> }.into_any(),
+                        None => view! { <reader::Reader id/> }.into_any(),
+                    },
                     Route::Discover => view! { <discover::Discover/> }.into_any(),
                     Route::Jobs => view! { <discover::Jobs/> }.into_any(),
                     Route::Settings => view! { <settings::SettingsPage/> }.into_any(),
@@ -601,7 +607,6 @@ fn WorkPage(id: i64) -> impl IntoView {
                                     <div class="pills">
                                         {has_e.then(|| view! { <span class="pill">{icon(icons::BOOK)}"Ebook"</span> })}
                                         {has_a.then(|| view! { <span class="pill">{icon(icons::HEADPHONES)}"Audiobook"</span> })}
-                                        {w.has_sync.then(|| view! { <span class="pill good">{icon(icons::SYNC)}"In sync"</span> })}
                                     </div>
                                     <div class="actions">
                                         <a class="button primary big" href=format!("#/read/{id}")>
@@ -639,24 +644,23 @@ fn WorkPage(id: i64) -> impl IntoView {
                             </section>
 
                             <section class="work-section">
+                                <h2>"Read or listen"</h2>
+                                <div class="mode-cards">
+                                    {reader::Mode::available(&w.assets).into_iter().map(|m| view! {
+                                        <a class="mode-card" href=format!("#/read/{id}/{}", m.key())>
+                                            <span class="mode-icon" aria-hidden="true">{m.icons().iter().map(|i| crate::icon(i)).collect_view()}</span>
+                                            <span class="mode-text">
+                                                <strong>{m.label()}</strong>
+                                                <small>{m.detail()}</small>
+                                            </span>
+                                        </a>
+                                    }).collect_view()}
+                                </div>
+                            </section>
+
+                            <section class="work-section">
                                 <h2>"Make more of it"</h2>
                                 <div class="action-cards">
-                                    {(has_e && has_a).then(|| action_card(
-                                        icons::SYNC,
-                                        if w.has_sync { "Text and audio are in sync" } else { "Sync text and audio" },
-                                        "Follow along as it's read: the sentence being spoken is highlighted, and tapping a sentence jumps the audio there.",
-                                        if w.has_sync { "Sync again" } else { "Sync" },
-                                        busy(JobKind::Align),
-                                        move || spawn_local(start_job(JobKind::Align, id)),
-                                    ))}
-                                    {(has_e && readable).then(|| action_card(
-                                        icons::MASKS,
-                                        "Full-cast audiobook",
-                                        "Every character gets their own voice, designed from how the book describes them, with the narrator in between.",
-                                        "Create",
-                                        busy(JobKind::FullCast),
-                                        move || spawn_local(start_job(JobKind::FullCast, id)),
-                                    ))}
                                     {(has_a && !has_e).then(|| action_card(
                                         icons::QUILL,
                                         "Ebook from the audio",

@@ -48,6 +48,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assets/{id}/pages/{n}", get(page_image))
         .route("/assets/{id}/locate", get(locate))
         .route("/assets/{id}/tracks/{n}", get(track))
+        .route("/assets/{id}/cast/{chapter}/{n}", get(cast_sentence))
         .route("/assets/{id}/link", post(link))
         .route("/jobs", get(list_jobs).post(new_job))
         .route("/settings", get(get_settings).put(put_settings))
@@ -221,6 +222,12 @@ async fn locate(AxState(s): AxState<State>, Path(id): Path<i64>, Query(q): Query
 async fn track(AxState(s): AxState<State>, Path((id, n)): Path<(i64, i64)>, req: Request) -> ApiResult<Response> {
     let path = db::track_path(&s.db, id, n).await?.ok_or_else(|| ApiError::not_found("track"))?;
     serve_path(PathBuf::from(path), req).await
+}
+
+/// One sentence of the full cast, performed on the fly (see cast.rs).
+async fn cast_sentence(AxState(s): AxState<State>, Path((id, chapter, n)): Path<(i64, usize, usize)>) -> ApiResult<Response> {
+    let bytes = crate::cast::sentence(&s, id, chapter, n).await?;
+    Ok(([(header::CONTENT_TYPE, "audio/mpeg"), (header::CACHE_CONTROL, "max-age=86400")], bytes).into_response())
 }
 
 #[derive(Deserialize)]

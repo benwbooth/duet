@@ -3,6 +3,7 @@
 mod ai;
 mod ai_setup;
 mod book;
+mod cast;
 mod db;
 mod dev;
 mod downloads;

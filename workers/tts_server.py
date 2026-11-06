@@ -2,6 +2,7 @@
 """An OpenAI-compatible text-to-speech server for duet.
 
 POST /v1/audio/speech {"input", "voice", "instructions"?, "response_format"?}
+POST /v1/audio/script {"pieces": [{"input", "voice", "instructions"?}], "pause"?, "response_format"?}
 POST /v1/audio/transcriptions (multipart "file"): speech recognition with faster-whisper, so the
 microphone works without a separate server.
 POST /v1/sync-window {"book", "audio", "track", "start", "duration", "near"?}: listens to a short
@@ -22,6 +23,12 @@ fish-speech's api_server itself and stops it while VoiceDesign is casting. With 
 
     tts_server.py --engine fish --fish-dir ~/src/fish-speech --fish-checkpoint checkpoints/s2-pro
 """
+
+import os
+
+# On AMD GPUs, MIOpen otherwise benchmarks every convolution for each new input length, which takes
+# longer than the speech itself (each sentence is a new length). Fish inherits this.
+os.environ.setdefault("MIOPEN_FIND_MODE", "FAST")
 
 import argparse
 import gc
@@ -145,13 +152,17 @@ class Fish:
             raise RuntimeError(f"no fish-speech server at {args.fish_url}")
         host_port = args.fish_url.split("://", 1)[-1].rstrip("/")
         cmd = [
-            args.fish_python, "tools/api_server.py", "--listen", host_port,
+            args.fish_python, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fish_launch.py"),
+            "tools/api_server.py", "--listen", host_port,
             "--llama-checkpoint-path", args.fish_checkpoint, "--device", args.device,
         ]
         if args.fish_decoder:
             cmd += ["--decoder-checkpoint-path", args.fish_decoder]
+        if not args.fish_no_compile:
+            # Compiled, generation runs faster than real time; the first start takes a few minutes longer.
+            cmd += ["--compile"]
         print("starting", " ".join(cmd), flush=True)
-        self.proc = subprocess.Popen(cmd, cwd=os.path.expanduser(args.fish_dir))
+        self.proc = subprocess.Popen(cmd, cwd=os.path.expanduser(args.fish_dir), env=os.environ)
         for _ in range(600):
             if self.healthy():
                 return
@@ -235,10 +246,20 @@ def reference(voice, description, language):
     return wav_path, ref_text
 
 
+# When Fish can't start (a broken install), Qwen3-TTS reads instead until this time.
+fish_broken_until = 0.0
+
+
 def synthesize(text, voice, description, language):
+    global fish_broken_until
     ref_wav, ref_text = reference(voice, description, language)
-    if args.engine == "fish":
-        return fish.tts(text, ref_wav, ref_text)
+    if args.engine == "fish" and time.time() >= fish_broken_until:
+        try:
+            return fish.tts(text, ref_wav, ref_text)
+        except Exception as e:
+            fish.stop()
+            fish_broken_until = time.time() + 600
+            print(f"fish-speech failed ({e}); using Qwen3-TTS for the next 10 minutes", flush=True)
     plain = DIRECTION.sub("", text).strip() or text
     wavs, sr = qwen("base").generate_voice_clone(text=plain, language=language, ref_audio=ref_wav, ref_text=ref_text)
     return wavs[0], sr
@@ -369,6 +390,25 @@ class Handler(BaseHTTPRequestHandler):
                     for v in body.get("voices", []):
                         reference(v["voice"], v.get("instructions"), language)
                 return self.reply(200, b'{"ok":true}', "application/json")
+            if path in ("/v1/audio/script", "/audio/script"):
+                # Several voices in one clip (a sentence with dialogue and narration), for the live full cast.
+                import numpy as np
+
+                out, rate = [], None
+                with lock:
+                    for p in body.get("pieces", []):
+                        wav, sr = synthesize(p["input"], p.get("voice", "narrator"), p.get("instructions"), language)
+                        wav = np.asarray(wav, dtype="float32")
+                        if rate is None:
+                            rate = sr
+                        elif sr != rate:
+                            x = np.linspace(0, len(wav), int(len(wav) * rate / sr), endpoint=False)
+                            wav = np.interp(x, np.arange(len(wav)), wav).astype("float32")
+                        out += [wav, np.zeros(int(0.12 * rate), dtype="float32")]
+                rate = rate or 24000
+                out.append(np.zeros(int(float(body.get("pause", 0.3)) * rate), dtype="float32"))
+                data, mime = encode(np.concatenate(out), rate, body.get("response_format", "mp3"))
+                return self.reply(200, data, mime)
             if path not in ("/v1/audio/speech", "/audio/speech"):
                 return self.send_error(404)
             with lock:  # one generation at a time on the GPU
@@ -393,6 +433,7 @@ def main():
     ap.add_argument("--fish-dir", default="", help="fish-speech checkout; when set, this server starts and stops it")
     ap.add_argument("--fish-python", default="python")
     ap.add_argument("--fish-checkpoint", default="checkpoints/s2-pro", help="checkpoints/s2-pro (24 GB, ROCm or CUDA) or checkpoints/drama-3 (48 GB NVIDIA)")
+    ap.add_argument("--fish-no-compile", action="store_true", help="skip torch.compile (faster start, slower speech)")
     ap.add_argument("--fish-decoder", default="", help="codec path, e.g. checkpoints/s2-pro/codec.pth")
     ap.add_argument("--listen-model", default="small.en", help="faster-whisper model for syncing while you listen")
     ap.add_argument("--listen-cpu", action="store_true", default=True, help="listen on the CPU (CTranslate2 has no ROCm support)")
@@ -407,8 +448,18 @@ def main():
                     help="don't ask Ollama to unload its models before loading voice models")
     args = ap.parse_args()
     print(f"duet TTS ({args.engine}) on http://{args.host}:{args.port}/v1", flush=True)
+    threading.Thread(target=reaper, daemon=True).start()
+
+    # Take the Fish server down too, however this one is stopped, rather than leave it holding the GPU.
+    import signal
+
+    def stop(signum, frame):
+        fish.stop()
+        os._exit(0)
+
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, stop)
     try:
-        threading.Thread(target=reaper, daemon=True).start()
         ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
     finally:
         fish.stop()
