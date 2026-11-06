@@ -308,7 +308,14 @@ pub fn Jobs() -> impl IntoView {
         </header>
         <p class="hint">"Jobs run one at a time and can take a while: a long book can take hours on one graphics card."</p>
         {move || {
-            let list = jobs.get().and_then(|r| r.ok()).unwrap_or_default();
+            let all = jobs.get().and_then(|r| r.ok()).unwrap_or_default();
+            // A failure that a later run of the same job has replaced is history, not news.
+            let list: Vec<Job> = all
+                .iter()
+                .enumerate()
+                .filter(|(i, j)| j.status != "failed" || !all[..*i].iter().any(|n| n.kind == j.kind && n.work_id == j.work_id))
+                .map(|(_, j)| j.clone())
+                .collect();
             if list.is_empty() {
                 return view! {
                     <div class="empty-state">
