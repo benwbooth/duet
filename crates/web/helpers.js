@@ -121,6 +121,8 @@ function pagerOf(container) {
 }
 
 const TURN_MS = 620;
+// Cross-fade between the live page and its picture at each end of a turn.
+const FADE_MS = 90;
 // Strips a turning page is made of (more bends more smoothly, but costs more to draw).
 const STRIPS = 14;
 
@@ -736,6 +738,8 @@ class Pager {
     const c = (from || this.article).cloneNode(true);
     c.classList.remove("synced");
     c.querySelectorAll(".s.now").forEach((e) => e.classList.remove("now"));
+    // Lazy pictures in a fresh copy would start blank and pop in.
+    c.querySelectorAll("img[loading]").forEach((e) => e.removeAttribute("loading"));
     c.style.width = `${this.width}px`;
     c.style.transform = `translateX(${-offset}px)`;
     return c;
@@ -839,7 +843,12 @@ class Pager {
     // The canvas stays on screen between turns (cleared): shown from hidden, its first frame can
     // arrive a frame late, and the page underneath would flash through.
     this.gl.canvas.style.visibility = "visible";
-    t.layers.push({ remove: () => this.gl.clear() });
+    // The pictures and the live page can differ by a pixel here and there; a quick cross-fade at
+    // each end of the turn hides that instead of letting it jump.
+    this.gl.canvas.style.opacity = "0";
+    t.fadeStart = performance.now();
+    t.canvasLayer = { remove: () => this.gl.clear() };
+    t.layers.push(t.canvasLayer);
     return t;
   }
 
@@ -1041,9 +1050,15 @@ class Pager {
 
   // The next page goes under the turning one only once the turning one is drawn over it.
   revealUnder(t) {
+    if (t.fadeStart !== undefined) {
+      const a = Math.min(1, (performance.now() - t.fadeStart) / FADE_MS);
+      this.gl.canvas.style.opacity = a.toFixed(3);
+      if (a < 1) return;
+      t.fadeStart = undefined;
+    }
     if (!t.placeTarget) return;
     t.placeTarget = false;
-    requestAnimationFrame(() => {
+    frame(() => {
       if (this.busy && !t.done) this.place(this.article, t.target);
     });
   }
@@ -1132,6 +1147,23 @@ class Pager {
     const done = complete;
     if (done) this.page = t.target;
     this.place(this.article, this.page);
+    if (t.gl) {
+      // The live page is in place underneath (the copies that stood in for it go now); let the
+      // picture of it fade away.
+      t.layers.forEach((e) => e !== t.canvasLayer && e.remove());
+      t.layers = [t.canvasLayer];
+      this.gl.canvas.style.opacity = "1";
+      await new Promise((resolve) => {
+        const start = performance.now();
+        const step = (now) => {
+          const a = Math.max(0, 1 - (now - start) / FADE_MS);
+          this.gl.canvas.style.opacity = a.toFixed(3);
+          if (a > 0) frame(step);
+          else resolve();
+        };
+        frame(step);
+      });
+    }
     if (done) this.report();
     t.layers.forEach((e) => e.remove());
     this.busy = false;
