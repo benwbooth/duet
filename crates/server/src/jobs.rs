@@ -5,12 +5,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
-use duet_common::{Asset, AssetKind, CastMember, Job, JobKind, SyncMap, SyncSpan};
-use serde::Deserialize;
+use duet_common::{Asset, AssetKind, Job, JobKind, SyncMap, SyncSpan};
 use sqlx::Row;
-use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::{State, book, db, downloads, library};
+use crate::{State, book, db};
 
 /// Queues a job; for syncing, `ebook`/`audio` choose the editions to pair.
 pub async fn enqueue_pair(state: &State, kind: JobKind, work_id: i64, ebook: Option<i64>, audio: Option<i64>) -> anyhow::Result<i64> {
@@ -91,19 +89,7 @@ pub async fn run(state: State) {
     }
 }
 
-fn first(assets: &[Asset], kind: AssetKind) -> Option<&Asset> {
-    // Prefer files the user added over generated ones.
-    assets.iter().filter(|a| a.kind == kind).min_by_key(|a| a.origin == "generated")
-}
 
-/// The ebook to read from: one with chapters, preferring files the user added over generated ones.
-fn readable<'a>(assets: &'a [Asset], data_dir: &Path) -> Option<&'a Asset> {
-    assets
-        .iter()
-        .filter(|a| a.kind == AssetKind::Ebook)
-        .filter(|a| matches!(book::source(a, data_dir), book::Source::Epub(_) | book::Source::Text(_) | book::Source::Html(_)) && a.format != "transcript")
-        .min_by_key(|a| a.origin == "generated")
-}
 
 async fn run_one(
     state: &State,
@@ -111,7 +97,7 @@ async fn run_one(
     kind: JobKind,
     work_id: i64,
     ebook_choice: Option<i64>,
-    audio_choice: Option<i64>,
+    _audio_choice: Option<i64>,
 ) -> anyhow::Result<String> {
     let work = db::work_detail(&state.db, work_id).await?.context("work not found")?;
     let dir = state.data_dir.join("jobs").join(id.to_string());
@@ -137,108 +123,11 @@ async fn run_one(
             }
             Ok("Converted to EPUB".into())
         }
-        JobKind::Align => {
-            let chosen = |want: Option<i64>| want.and_then(|w| work.assets.iter().find(|a| a.id == w));
-            let ebook = chosen(ebook_choice)
-                .or_else(|| readable(&work.assets, &state.data_dir))
-                .context("needs a readable ebook (EPUB/text); convert it first")?;
-            let audio = chosen(audio_choice).or_else(|| first(&work.assets, AssetKind::Audiobook)).context("needs an audiobook")?;
-            write_book_json(state, ebook, &dir).await?;
-            write_audio_json(state, audio, &dir).await?;
-            let s = state.settings.read().await.ai.clone();
-            worker(state, id, "align.py", &dir, &[
-                "--book", "book.json", "--audio", "audio.json", "--out", "sync.json",
-                "--device", &s.device, "--model", &whisper_model(&s.stt_model),
-            ])
-            .await?;
-            store_sync(state, work_id, ebook.id, audio.id, &dir.join("sync.json")).await?;
-            Ok("Text and audio are in sync".into())
-        }
-        JobKind::FullCast => {
-            let ebook = readable(&work.assets, &state.data_dir).context("needs a readable ebook (EPUB/text); convert it first")?;
-            write_book_json(state, ebook, &dir).await?;
-            let s = state.settings.read().await.ai.clone();
-            let llm = llm_args(state, &s);
-            let out = downloads::import_dir(state, AssetKind::Audiobook).await.join(sanitize(&format!(
-                "{} - {} (full cast)",
-                work.author.as_deref().unwrap_or("Unknown"),
-                work.title
-            )));
-            tokio::fs::create_dir_all(&out).await?;
-            let out_s = out.to_string_lossy().to_string();
-            worker(state, id, "full_cast.py", &dir, &[
-                "--book", "book.json", "--title", &work.title, "--author", work.author.as_deref().unwrap_or(""),
-                "--out-dir", &out_s, "--cast", "cast.json", "--sync", "sync.json",
-                "--llm-url", &llm.0, "--llm-model", &llm.1, "--llm-key", &llm.2,
-                "--device", &s.device,
-            ])
-            .await?;
-            let added = library::import_path(state, &out, AssetKind::Audiobook, "generated").await?;
-            let audio_id: (i64,) = sqlx::query_as("SELECT id FROM assets WHERE path = ?").bind(&out_s).fetch_one(&state.db).await?;
-            if let Some(w) = added.filter(|w| *w != work_id) {
-                library::link_asset(&state.db, audio_id.0, work_id).await?;
-                tracing::debug!("linked generated audiobook from work {w}");
-            }
-            if let Ok(cast) = tokio::fs::read(dir.join("cast.json")).await {
-                for m in serde_json::from_slice::<Vec<CastMember>>(&cast)? {
-                    db::upsert_cast(&state.db, work_id, &m).await?;
-                }
-            }
-            // The generator knows exactly when each sentence is spoken.
-            if dir.join("sync.json").exists() {
-                store_sync(state, work_id, ebook.id, audio_id.0, &dir.join("sync.json")).await?;
-            }
-            Ok("Full-cast audiobook created".into())
-        }
-        JobKind::Transcribe => {
-            let audio = first(&work.assets, AssetKind::Audiobook).context("needs an audiobook")?;
-            write_audio_json(state, audio, &dir).await?;
-            let s = state.settings.read().await.ai.clone();
-            let llm = llm_args(state, &s);
-            let out = downloads::import_dir(state, AssetKind::Ebook)
-                .await
-                .join(sanitize(&format!("{} - {} (transcribed).epub", work.author.as_deref().unwrap_or("Unknown"), work.title)));
-            tokio::fs::create_dir_all(out.parent().unwrap()).await?;
-            let out_s = out.to_string_lossy().to_string();
-            worker(state, id, "transcribe.py", &dir, &[
-                "--audio", "audio.json", "--out", &out_s, "--title", &work.title,
-                "--author", work.author.as_deref().unwrap_or(""), "--device", &s.device,
-                "--model", &whisper_model(&s.stt_model),
-                "--llm-url", &llm.0, "--llm-model", &llm.1, "--llm-key", &llm.2,
-            ])
-            .await?;
-            if let Some(w) = library::import_path(state, &out, AssetKind::Ebook, "generated").await?
-                && w != work_id {
-                    let (asset_id,): (i64,) =
-                        sqlx::query_as("SELECT id FROM assets WHERE path = ?").bind(&out_s).fetch_one(&state.db).await?;
-                    library::link_asset(&state.db, asset_id, work_id).await?;
-                }
-            // Sentence numbering comes from the rendered EPUB, so sync it like any other pairing.
-            let (ebook_id,): (i64,) = sqlx::query_as("SELECT id FROM assets WHERE path = ?").bind(&out_s).fetch_one(&state.db).await?;
-            enqueue_pair(state, JobKind::Align, work_id, Some(ebook_id), Some(audio.id)).await?;
-            Ok("Ebook created; syncing queued".into())
-        }
     }
 }
 
-/// Chat model for the workers: a local server directly, anything else through duet's own
-/// OpenAI-compatible proxy (/api/ai/v1), which routes to Claude, OpenAI or the CLIs.
-fn llm_args(state: &State, ai: &duet_common::AiSettings) -> (String, String, String) {
-    if ai.llm_provider == "local" || ai.llm_provider.is_empty() {
-        (ai.llm_url.clone(), ai.llm_model.clone(), ai.llm_api_key.clone())
-    } else {
-        (format!("{}/api/ai/v1", state.self_url), "duet".into(), String::new())
-    }
-}
 
-/// "Systran/faster-whisper-large-v3" -> "large-v3" for faster-whisper; other names pass through.
-fn whisper_model(m: &str) -> String {
-    m.rsplit('/').next().unwrap_or(m).trim_start_matches("faster-whisper-").to_string()
-}
 
-fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c }).collect()
-}
 
 /// The book's sentences as the workers want them, kept between runs (rebuilt if the file is newer).
 pub async fn book_json_cached(state: &State, ebook: &Asset) -> anyhow::Result<PathBuf> {
@@ -305,15 +194,6 @@ async fn write_book_json(state: &State, ebook: &Asset, dir: &Path) -> anyhow::Re
     Ok(())
 }
 
-async fn write_audio_json(state: &State, audio: &Asset, dir: &Path) -> anyhow::Result<()> {
-    let mut tracks = Vec::new();
-    for t in &audio.tracks {
-        let path = db::track_path(&state.db, audio.id, t.index).await?.context("track missing")?;
-        tracks.push(serde_json::json!({ "index": t.index, "path": path, "duration": t.duration_secs, "title": t.title }));
-    }
-    tokio::fs::write(dir.join("audio.json"), serde_json::to_vec_pretty(&serde_json::json!({ "tracks": tracks }))?).await?;
-    Ok(())
-}
 
 async fn store_sync(state: &State, work_id: i64, ebook: i64, audio: i64, path: &Path) -> anyhow::Result<()> {
     let spans: Vec<SyncSpan> = serde_json::from_slice(&tokio::fs::read(path).await.context("worker wrote no sync map")?)?;
@@ -356,70 +236,5 @@ pub async fn synced_pairs(state: &State, work_id: i64) -> anyhow::Result<Vec<(i6
         .await?)
 }
 
-/// The Python and workers folder to run jobs with. The voices installer's venv wins over the
-/// bare default (`python3` has none of the packages), and a relative workers folder that isn't
-/// there falls back to the one installed next to the binary.
-fn worker_env(state: &State, ai: &duet_common::AiSettings) -> (PathBuf, PathBuf) {
-    let venv = state.data_dir.join("venv/bin/python");
-    let python = if (ai.python.is_empty() || ai.python == "python3") && venv.exists() { venv } else { PathBuf::from(&ai.python) };
-    let mut workers = PathBuf::from(&ai.workers_dir);
-    if !workers.join("align.py").exists() {
-        let beside_binary = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.parent()?.join("share/duet/workers")));
-        if let Some(w) = beside_binary.filter(|w| w.join("align.py").exists()) {
-            workers = w;
-        }
-    }
-    (python, workers)
-}
 
-#[derive(Deserialize)]
-struct WorkerLine {
-    progress: Option<f64>,
-    message: Option<String>,
-}
 
-async fn worker(state: &State, job: i64, script: &str, dir: &Path, args: &[&str]) -> anyhow::Result<()> {
-    let ai = state.settings.read().await.ai.clone();
-    let (python, workers) = worker_env(state, &ai);
-    let script_path = std::path::absolute(workers.join(script))?;
-    let mut child = tokio::process::Command::new(&python)
-        .arg(&script_path)
-        .args(args)
-        .current_dir(dir)
-        .env("PYTHONUNBUFFERED", "1")
-        .env("DUET_DATA_DIR", std::path::absolute(&state.data_dir).unwrap_or_else(|_| state.data_dir.clone()))
-        .env("DUET_TTS_URL", &ai.tts_url)
-        .env("DUET_TTS_MODEL", &ai.tts_model)
-        .env("DUET_STT_URL", &ai.stt_url)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("starting {} {}", python.display(), script_path.display()))?;
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
-    let err_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        let mut tail: Vec<String> = Vec::new();
-        while let Ok(Some(l)) = lines.next_line().await {
-            tracing::debug!("worker: {l}");
-            tail.push(l);
-            if tail.len() > 20 {
-                tail.remove(0);
-            }
-        }
-        tail
-    });
-    let mut lines = BufReader::new(stdout).lines();
-    while let Some(line) = lines.next_line().await? {
-        if let Ok(w) = serde_json::from_str::<WorkerLine>(&line) {
-            update(state, job, "running", w.progress, w.message.as_deref().unwrap_or("")).await;
-        }
-    }
-    let status = child.wait().await?;
-    let tail = err_task.await.unwrap_or_default();
-    if !status.success() {
-        bail!("{script} failed: {}", tail.last().cloned().unwrap_or_else(|| status.to_string()));
-    }
-    Ok(())
-}

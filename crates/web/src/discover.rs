@@ -329,9 +329,6 @@ pub fn Jobs() -> impl IntoView {
                 <ul class="jobs">
                     {list.into_iter().map(|j| {
                         let path = match j.kind {
-                            JobKind::Align => crate::icons::SYNC,
-                            JobKind::FullCast => crate::icons::MASKS,
-                            JobKind::Transcribe => crate::icons::QUILL,
                             JobKind::Convert => crate::icons::CONVERT,
                         };
                         let active = j.status == "running" || j.status == "queued";

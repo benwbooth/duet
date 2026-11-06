@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
-"""Aligns an ebook with its audiobook.
+"""Matching heard words to a book's words, for syncing as you listen (tts_server.py's
+/v1/sync-window): each stretch of transcript is located in the book through a phrase index, then
+matched word by word, giving every sentence heard a start and end time."""
 
-Transcribes the audio with word timestamps (faster-whisper), then matches the transcript words
-to the book's words in a moving window, so every sentence the duet server rendered gets a start
-and end time. Writes a list of {chapter, sentence, track, start, end}.
-
-    align.py --book book.json --audio audio.json --out sync.json [--model large-v3] [--device auto]
-"""
-
-import argparse
 import os
 import bisect
 import difflib
 
-from common import device, load, load_audio, log, progress, save, whisper, words
+from common import words
 
 
 def book_words(book):
@@ -37,35 +31,6 @@ def cache_path(path, model_name):
     d = os.path.join(base, "cache", "transcripts")
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, key + ".json")
-
-
-def transcribe(tracks, model_name, dev):
-    model = None
-    used = "cpu"
-    total = sum(t["duration"] for t in tracks) or 1.0
-    done = 0.0
-    out = []  # (word, track, start, end)
-    for t in tracks:
-        cached = cache_path(t["path"], model_name)
-        if os.path.exists(cached):
-            out.extend((w, t["index"], s, e) for w, s, e in load(cached))
-            done += t["duration"]
-            progress(0.8 * done / total, f"Already transcribed {t['title']}")
-            continue
-        if model is None:
-            model, used = whisper(model_name, dev)
-            progress(0.8 * done / total, f"Listening on the {'graphics card' if used == 'cuda' else 'processor'}")
-        mine = []
-        segments, _ = model.transcribe(load_audio(t["path"]), word_timestamps=True, vad_filter=True, language="en")
-        for seg in segments:
-            for w in seg.words or []:
-                for token in words(w.word):
-                    mine.append((token, round(w.start, 3), round(w.end, 3)))
-            progress(0.8 * (done + seg.end) / total, f"Transcribing {t['title']}")
-        save(cached, mine)
-        out.extend((w, t["index"], s, e) for w, s, e in mine)
-        done += t["duration"]
-    return out
 
 
 SHINGLE = 4  # words per phrase in the index
@@ -116,7 +81,6 @@ def align(book, heard, near=0, idx=None):
     for start in range(0, len(hw), CHUNK // 2):
         part = hw[start : start + CHUNK]
         anchor = locate(idx, part, near)
-        progress(0.8 + 0.15 * start / max(1, len(hw)), "Matching text to audio")
         if anchor is None:
             continue
         lo = max(0, anchor - 80)
@@ -178,28 +142,3 @@ def spans(book, heard, mapping):
             track, s, e = prev[0], prev[2], nxt[1]
         out.append({"chapter": ch, "sentence": si, "track": track, "start": round(s, 3), "end": round(max(e, s), 3)})
     return out
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--book", required=True)
-    ap.add_argument("--audio", required=True)
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--model", default="large-v3")
-    ap.add_argument("--device", default="auto")
-    args = ap.parse_args()
-
-    book = book_words(load(args.book))
-    tracks = load(args.audio)["tracks"]
-    progress(0, "Loading speech model")
-    heard = transcribe(tracks, args.model, device(args.device))
-    log(f"{len(book)} book words, {len(heard)} heard words")
-    mapping = align(book, heard)
-    result = spans(book, heard, mapping)
-    matched = len(mapping) / max(1, len(book))
-    save(args.out, result)
-    progress(1, f"Synced {len(result)} sentences ({matched:.0%} of words matched)")
-
-
-if __name__ == "__main__":
-    main()

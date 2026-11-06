@@ -168,12 +168,6 @@ pub struct CastMember {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
-    /// Align an ebook with its audiobook (STT + text matching) to build the sync map.
-    Align,
-    /// Generate a full-cast audiobook from an ebook.
-    FullCast,
-    /// Transcribe an audiobook into a formatted ebook.
-    Transcribe,
     /// Convert an ebook to EPUB with Calibre.
     Convert,
 }
@@ -181,18 +175,12 @@ pub enum JobKind {
 impl JobKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            JobKind::Align => "align",
-            JobKind::FullCast => "full_cast",
-            JobKind::Transcribe => "transcribe",
             JobKind::Convert => "convert",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "align" => Some(JobKind::Align),
-            "full_cast" => Some(JobKind::FullCast),
-            "transcribe" => Some(JobKind::Transcribe),
             "convert" => Some(JobKind::Convert),
             _ => None,
         }
@@ -200,9 +188,6 @@ impl JobKind {
 
     pub fn label(self) -> &'static str {
         match self {
-            JobKind::Align => "Sync text and audio",
-            JobKind::FullCast => "Full-cast audiobook",
-            JobKind::Transcribe => "Ebook from audio",
             JobKind::Convert => "Convert to EPUB",
         }
     }
