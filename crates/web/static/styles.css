@@ -1214,3 +1214,15 @@ input, select { border-radius: 12px; }
 .tabs .tabs-hide:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
 .tabs .tabs-hide .icon { width: 18px; height: 18px; }
 @media (max-width: 760px) { .tabs .tabs-hide { display: none; } }
+
+/* The hidden sidebar's tab, on the window's left edge. */
+.sidebar-tab {
+  position: fixed; left: 0; top: 50%; transform: translateY(-50%); z-index: 6;
+  width: 22px; height: 64px; padding: 0; display: grid; place-items: center;
+  border: 1px solid var(--line); border-left: 0; border-radius: 0 12px 12px 0;
+  background: color-mix(in srgb, var(--bg-2) 85%, transparent); color: var(--muted); box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+}
+.sidebar-tab:hover { color: var(--text); width: 26px; }
+.sidebar-tab:active { transform: translateY(-50%); }
+.sidebar-tab svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+@media (max-width: 760px) { .sidebar-tab { display: none; } }

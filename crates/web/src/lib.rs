@@ -346,6 +346,15 @@ fn App() -> impl IntoView {
                     </button>
                 </Show>
             </nav>
+            // Where the hidden sidebar was: a tab to bring it back.
+            <Show when=move || immersive() && sidebar_hidden.get()>
+                <button class="sidebar-tab" title="Show the sidebar" aria-label="Show the sidebar" on:click=move |_| {
+                    sidebar_hidden.set(false);
+                    set_sidebar_hidden(false);
+                }>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg>
+                </button>
+            </Show>
             <main>
                 {move || match route.get() {
                     Route::Library => view! { <Library/> }.into_any(),

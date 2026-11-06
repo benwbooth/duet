@@ -468,7 +468,6 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     };
 
     // The sidebar can be tucked away while reading (remembered), and the app can go full screen.
-    let no_sidebar = use_context::<crate::SidebarHidden>().map(|c| c.0).unwrap_or_else(|| RwSignal::new(false));
     let fullscreen = RwSignal::new(crate::is_fullscreen());
     let on_fs = Closure::<dyn Fn()>::new(move || fullscreen.set(crate::is_fullscreen()));
     let _ = document().add_event_listener_with_callback("fullscreenchange", on_fs.as_ref().unchecked_ref());
@@ -1198,13 +1197,6 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                         view! { <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg> }.into_any()
                     }}
                 </button>
-                // Hiding is in the sidebar itself; once it's hidden, this brings it back.
-                <Show when=move || no_sidebar.get()>
-                    <button class="icon-button" title="Show the sidebar" aria-label="Sidebar"
-                        on:click=move |_| { no_sidebar.set(false); crate::set_sidebar_hidden(false); }>
-                        <svg viewBox="0 0 24 24" aria-hidden="true" class="bar-icon"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9 4.5v15M13.5 10l2 2-2 2"/></svg>
-                    </button>
-                </Show>
                 <button class="icon-button" title=move || if fullscreen.get() { "Leave full screen" } else { "Full screen" }
                     aria-label="Full screen" on:click=move |_| spawn_local(async move {
                         let on = crate::toggle_fullscreen().await.as_bool().unwrap_or(false);
