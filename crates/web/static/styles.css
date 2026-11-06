@@ -1215,16 +1215,19 @@ input, select { border-radius: 12px; }
 .tabs .tabs-hide .icon { width: 18px; height: 18px; }
 @media (max-width: 760px) { .tabs .tabs-hide { display: none; } }
 
-/* The hidden sidebar's tab, on the window's left edge. */
+/* The hidden sidebar's tab, on the window's left edge: a slim, quiet handle that slides out a
+   little under the pointer. (Placed without a transform, so a press can't nudge it.) */
 .sidebar-tab {
-  position: fixed; left: 0; top: 50%; transform: translateY(-50%); z-index: 6;
-  width: 22px; height: 64px; padding: 0; display: grid; place-items: center;
-  border: 1px solid var(--line); border-left: 0; border-radius: 0 12px 12px 0;
-  background: color-mix(in srgb, var(--bg-2) 85%, transparent); color: var(--muted); box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+  position: fixed; left: 0; top: calc(50% - 28px); z-index: 6;
+  width: 10px; height: 56px; padding: 0; display: grid; place-items: center; overflow: hidden;
+  border: 1px solid var(--line); border-left: 0; border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--bg-2) 70%, transparent); color: var(--muted); box-shadow: none; opacity: 0.55;
+  transition: width 0.18s var(--ease-spring, ease), opacity 0.18s, color 0.18s;
 }
-.sidebar-tab:hover { color: var(--text); width: 26px; }
-.sidebar-tab:active { transform: translateY(-50%); }
-.sidebar-tab svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.sidebar-tab:hover, .sidebar-tab:focus-visible { width: 24px; opacity: 1; color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+.sidebar-tab:active:not(:disabled) { transform: none; }
+.sidebar-tab svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: 0; transition: opacity 0.18s; }
+.sidebar-tab:hover svg, .sidebar-tab:focus-visible svg { opacity: 1; }
 @media (max-width: 760px) { .sidebar-tab { display: none; } }
 
 /* Buttons never take part in text selection: clicking "forward 30" a few times quickly would
