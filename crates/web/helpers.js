@@ -122,7 +122,7 @@ function pagerOf(container) {
 
 const TURN_MS = 620;
 // Strips the rolling part of a turning page is drawn with.
-const STRIPS = 12;
+const STRIPS = 16;
 
 // The next animation frame, or a timer when frames aren't coming (a hidden or throttled page),
 // so a page turn always finishes.
@@ -446,7 +446,18 @@ class Pager {
     t.flapWrap.style.display = "";
     // n points from the corner's resting place toward where it's been pulled.
     const n = { x: dx / d, y: dy / d };
-    const R = Math.min(w * 0.12, 6 + d * 0.16);
+    // How tightly the paper rolls: it starts as a small curl at the corner, bows into a wide,
+    // soft bend mid-turn, and flexes further the faster it's moved, easing back as it slows.
+    const now = performance.now();
+    if (t.lastP) {
+      const dt = Math.max(1, now - t.lastT);
+      const speed = Math.hypot(P.x - t.lastP.x, P.y - t.lastP.y) / dt;
+      t.flex = (t.flex || 0) * 0.8 + Math.min(w * 0.12, speed * 22) * 0.2;
+    }
+    t.lastP = P;
+    t.lastT = now;
+    const turned = Math.min(1, d / (Math.abs(2 * t.hinge - 2 * C.x) || W));
+    const R = Math.min(w * 0.4, 6 + d * 0.12 + w * 0.2 * Math.sin(Math.PI * turned) + (t.flex || 0));
     const sC = (d + Math.PI * R) / 2;
     // The line where the sheet starts to lift; s is measured from it, back toward the corner.
     const L0 = { x: C.x + n.x * sC, y: C.y + n.y * sC };
