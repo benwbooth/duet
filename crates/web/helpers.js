@@ -334,6 +334,7 @@ class Pager {
       // One page: forward, this page peels off to the left; back, the previous one is laid back down.
       t.leaf = [0, W];
       t.hinge = 0;
+      t.single = true;
       t.C0x = W;
       if (dir > 0) {
         front = this.copy(cur, src);
@@ -413,7 +414,9 @@ class Pager {
   // Where the corner rests (flat) and where it lands when the page has turned all the way.
   ends(t, y) {
     const C = { x: t.C0x, y };
-    const F = { x: 2 * t.hinge - t.C0x, y };
+    // Two pages: the corner lands on the facing page. One page: there's no facing page on
+    // screen, so the corner is carried to the spine and the sheet stands up out of sight there.
+    const F = { x: t.single ? t.hinge : 2 * t.hinge - t.C0x, y };
     return t.reverse ? [F, C] : [C, F];
   }
 
@@ -463,12 +466,13 @@ class Pager {
     }
     t.lastP = P;
     t.lastT = now;
-    const turned = Math.min(1, d / (Math.abs(2 * t.hinge - 2 * C.x) || W));
-    const R = Math.max(0.5, Math.min(
-      w * 0.4,
-      6 + d * 0.12 + w * 0.2 * Math.sin(Math.PI * turned) + (t.flex || 0),
-      (2 * toSpine - d) / Math.PI,
-    ));
+    const span = (t.single ? Math.abs(t.hinge - C.x) : Math.abs(2 * t.hinge - 2 * C.x)) || W;
+    const turned = Math.min(1, d / span);
+    const most = (2 * toSpine - d) / Math.PI;
+    let R = Math.min(w * 0.4, 6 + d * 0.12 + w * 0.2 * Math.sin(Math.PI * turned) + (t.flex || 0));
+    // One page, near the end: the whole sheet lifts from the spine and rolls up against it.
+    const tail = t.single ? Math.max(0, Math.min(1, (turned - 0.7) / 0.3)) : 0;
+    R = Math.max(0.5, Math.min(most, R + (most - R) * tail));
     const sC = (d + Math.PI * R) / 2;
     // The line where the sheet starts to lift; s is measured from it, back toward the corner.
     const L0 = { x: C.x + n.x * sC, y: C.y + n.y * sC };
@@ -487,7 +491,6 @@ class Pager {
       return `matrix(${1 + k * ux * ux}, ${k * ux * uy}, ${k * ux * uy}, ${1 + k * uy * uy}, ${T * ux}, ${T * uy})`;
     };
     t.front.style.clipPath = band(null, 0);
-    const span = Math.abs(2 * t.hinge - 2 * C.x) || W;
     const p = Math.min(1, Math.abs(P.x - C.x) / span);
     t.progress = t.reverse ? 1 - p : p;
     const lift = Math.sin(Math.PI * Math.min(1, d / span));
@@ -526,6 +529,11 @@ class Pager {
     ]);
     // The flat page darkens slightly just before it starts to lift.
     t.frontShade.style.background = gradient(W, H, { x: n.x, y: n.y }, L0, [[0, `rgba(0,0,0,${(0.1 * lift).toFixed(3)})`], [Math.min(40, 6 + d * 0.1), "rgba(0,0,0,0)"]]);
+    // ...and then turns edge-on as it passes upright, narrowing into the spine.
+    const upright = t.single ? Math.max(0, Math.min(1, (turned - 0.8) / 0.2)) : 0;
+    t.flapWrap.style.transform = upright
+      ? `translateX(${t.hinge}px) scaleX(${(1 - 0.98 * upright).toFixed(3)}) translateX(${-t.hinge}px)`
+      : "";
     t.flapWrap.style.filter = `drop-shadow(${(n.x * 3 * lift).toFixed(1)}px ${(n.y * 3 * lift).toFixed(1)}px ${(4 + 10 * lift).toFixed(1)}px rgba(0,0,0,${(0.2 + 0.16 * lift).toFixed(2)}))`;
   }
 

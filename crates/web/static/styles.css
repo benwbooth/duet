@@ -1065,7 +1065,7 @@ input, select { border-radius: 12px; }
 .curl-under, .curl-static { z-index: 2; }
 .curl-shadow { z-index: 3; background: none; }
 .curl-front { z-index: 4; }
-.curl-flap-wrap { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+.curl-flap-wrap { position: absolute; inset: 0; z-index: 5; pointer-events: none; transform-origin: 0 0; }
 .curl-flap { transform-origin: 0 0; will-change: transform, clip-path; }
 .curl-back { position: absolute; inset: 0; transform-origin: 0 0; }
 /* A single page's back is the same page seen through the paper. */
