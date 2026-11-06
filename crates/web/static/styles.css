@@ -1199,3 +1199,9 @@ input, select { border-radius: 12px; }
 .dict-card footer { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.55rem 1rem; border-top: 1px solid var(--line); }
 .dict-card footer small { color: var(--muted); }
 .dict-card .hint { color: var(--muted); display: flex; align-items: center; gap: 0.4rem; }
+
+/* Talk button: a drawn microphone (not the emoji), a rounded stop square while recording. */
+.mic-icon { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.mic-icon .fill { fill: currentColor; stroke: none; }
+.assistant .mic { color: var(--text); border-radius: 50%; height: 40px; width: 40px; min-height: 0; }
+.assistant .mic.recording { color: #fff; }
