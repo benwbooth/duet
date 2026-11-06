@@ -439,6 +439,41 @@ async function snapshotPage(pager, article, offset) {
   clone.classList.remove("synced");
   clone.querySelectorAll(".s.now").forEach((e) => e.classList.remove("now"));
   clone.style.width = `${W}px`;
+  // Pictures in the book, and blocks styled by EPUB markup (epub:type, which doesn't survive into
+  // the picture's XML as something CSS can match), keep the size and layout they have live.
+  const liveEls = article.querySelectorAll("img, [epub\\:type]");
+  const copyEls = clone.querySelectorAll("img, [epub\\:type]");
+  liveEls.forEach((el, i) => {
+    const c = copyEls[i];
+    if (!c) return;
+    if (el.tagName === "IMG") {
+      const r = el.getBoundingClientRect();
+      if (r.width && r.height) {
+        c.style.width = `${r.width}px`;
+        c.style.height = `${r.height}px`;
+        c.style.maxWidth = "none";
+        c.style.maxHeight = "none";
+      }
+    } else {
+      const cs = getComputedStyle(el);
+      for (const k of ["display", "flex-direction", "justify-content", "align-items",
+        "margin-top", "margin-bottom", "padding-top", "padding-bottom", "text-align", "break-before", "break-after"]) {
+        c.style.setProperty(k, cs.getPropertyValue(k));
+      }
+      // A fixed height only for page-sized blocks (a full-page illustration): a whole chapter
+      // section's height would be wrong for the cut-down copy.
+      if (el.getBoundingClientRect().height <= H + 1 && /\d/.test(el.style.height + cs.height) && (el.matches("figure, figure *") || cs.display === "flex")) {
+        c.style.height = cs.height;
+      }
+    }
+  });
+  // Paragraph indents follow from what comes before them (first child, after a heading...), which
+  // cutting the picture down to one page changes: each keeps its live indent.
+  const liveP = article.querySelectorAll("p, li, dd, blockquote");
+  const copyP = clone.querySelectorAll("p, li, dd, blockquote");
+  liveP.forEach((el, i) => {
+    if (copyP[i]) copyP[i].style.textIndent = getComputedStyle(el).textIndent;
+  });
   // The picture starts at the very word the live page starts with: laid out from the chapter's
   // beginning, small line-break differences would add up over the pages and the picture would
   // show a few lines more or less than the page.
@@ -457,14 +492,26 @@ async function snapshotPage(pager, article, offset) {
   if (start) {
     const node = start.path.reduce((n, i) => (n ? n.childNodes[i] : null), clone);
     if (node) {
+      // (Found before cutting: the cut renumbers the children before it.)
+      const firstEl = node.nodeType === 1 && node.childNodes[start.index] && node.childNodes[start.index].nodeType === 1
+        ? node.childNodes[start.index] : null;
       const cut = document.createRange();
       cut.setStart(clone, 0);
       cut.setEnd(node, start.index);
       cut.deleteContents();
-      // The block the page begins inside continues a paragraph: no indent, no drop cap.
+      // The block the page begins in keeps the indent it has on the live page: none when the
+      // page begins partway through a paragraph, and otherwise exactly the live one (with what
+      // came before cut away it would count as a first paragraph, which isn't indented).
       let block = node.nodeType === 1 ? node : node.parentElement;
-      while (block && block !== clone && !/^(P|LI|BLOCKQUOTE|DIV|H\d|FIGCAPTION|DD|DT)$/.test(block.tagName)) block = block.parentElement;
-      if (block && block !== clone) block.style.textIndent = "0";
+      while (block && block !== clone && !BLOCK.test(block.tagName)) block = block.parentElement;
+      if (block && block !== clone) block.style.textIndent = start.continues ? "0" : start.indent;
+      // On the live page this content follows a column break, where top margins are dropped;
+      // as the first thing in the picture it would keep them and sit lower.
+      for (let el = node.nodeType === 1 ? node : node.parentElement; el && el !== clone; el = el.parentElement) {
+        el.style.marginTop = "0";
+      }
+      // (A page that starts with a picture: the picture's own top margin goes too.)
+      if (firstEl) firstEl.style.marginTop = "0";
     }
     clone.style.transform = "none";
   } else {
@@ -484,6 +531,20 @@ async function snapshotPage(pager, article, offset) {
     if (src && !src.startsWith("data:")) img.setAttribute("src", await asDataUrl(new URL(src, location.href).href));
   }
   const bookCls = pager.book.className.replace(/\bgrab-edge\b/g, "");
+  // The running head and page number belong in the picture too (they're beside the text, not
+  // in it), with this page's number.
+  let furniture = "";
+  for (const sel of [":scope > .running-head", ":scope > .folio"]) {
+    const el = pager.book.querySelector(sel);
+    if (!el) continue;
+    const c = el.cloneNode(true);
+    const pageEl = c.querySelector(".folio-page");
+    if (pageEl) {
+      const n = pager.pages, p = Math.round(offset / W) + 1, left = n - p;
+      pageEl.textContent = `Page ${p} of ${n} · ${left === 0 ? "last page in chapter" : left === 1 ? "1 page left in chapter" : `${left} pages left in chapter`}`;
+    }
+    furniture += new XMLSerializer().serializeToString(c);
+  }
   // The page must break lines exactly as the live one does: same language (hyphenation), and
   // the body's type settings the styles inherit from (kerning, ligatures, spacing).
   const body = getComputedStyle(document.body);
@@ -497,9 +558,10 @@ async function snapshotPage(pager, article, offset) {
     `style="${xmlAttr(inherit)};${xmlAttr(reader.getAttribute("style") || "")};position:relative;inset:auto;width:${W}px;height:${H}px;margin:0;padding:0;overflow:hidden;min-height:0">` +
     `<style>${xmlText(pageCssText)}</style>` +
     `<div class="${xmlAttr(bookCls)}" style="position:relative;top:0;left:0;right:auto;bottom:auto;width:${W}px;height:${H}px;margin:0;max-width:none;box-shadow:none;border-radius:0;overflow:hidden">` +
-    new XMLSerializer().serializeToString(clone) +
+    new XMLSerializer().serializeToString(clone) + furniture +
     `</div></div>`;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><foreignObject x="0" y="0" width="${W}" height="${H}">${html}</foreignObject></svg>`;
+  if (window.__duetSlow) (window.__duetPictures ||= {})[offset] = svg; // for checking pictures
   const img = new Image();
   img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
   await img.decode();
@@ -516,6 +578,20 @@ async function snapshotPage(pager, article, offset) {
 // Where the page at `offset` (px into the laid-out chapter) begins: the text node (as a path of
 // child indices from the article) and the character in it. Columns run left to right, so it's
 // the first character whose box lies at or past the page's left edge.
+const BLOCK = /^(P|LI|BLOCKQUOTE|DIV|H\d|FIGCAPTION|DD|DT|SECTION|ARTICLE)$/;
+
+// Whether there's text in `node`'s block before character `index` (the page starts
+// mid-paragraph), and the block's first-line indent on the live page.
+function blockAt(article, node, index) {
+  let block = node.nodeType === 1 ? node : node.parentElement;
+  while (block && block !== article && !BLOCK.test(block.tagName)) block = block.parentElement;
+  if (!block || block === article) return { continues: false, indent: "0" };
+  const before = document.createRange();
+  before.setStart(block, 0);
+  before.setEnd(node, index);
+  return { continues: before.toString().trim().length > 0, indent: getComputedStyle(block).textIndent };
+}
+
 function pageStart(article, offset) {
   const left = article.getBoundingClientRect().left;
   // Text, and pictures (a page can begin with one).
@@ -539,7 +615,7 @@ function pageStart(article, offset) {
       const r = node.getBoundingClientRect();
       if (r.width && r.left - left >= offset - 1) {
         const path = pathTo(node);
-        return { path: path.slice(0, -1), index: path[path.length - 1] };
+        return { path: path.slice(0, -1), index: path[path.length - 1], continues: false, indent: "0" };
       }
       continue;
     }
@@ -553,7 +629,7 @@ function pageStart(article, offset) {
       if (x(node, mid) >= offset - 1) hi = mid;
       else lo = mid + 1;
     }
-    return { path: pathTo(node), index: lo };
+    return { path: pathTo(node), index: lo, ...blockAt(article, node, lo) };
   }
   return null;
 }
@@ -1189,7 +1265,9 @@ class Pager {
     let d = Math.hypot(P.x - C.x, P.y - C.y);
     const flat = { x0: t.leaf[0], w, W, H, hinge: t.hinge, ghost: !!t.ghost, paper: t.paper, squash: 1, under: true, still: t.still };
     if (d < 0.5) {
-      this.gl.draw({ ...flat, L0: { x: -1e5, y: -1e5 }, dir: { x: 1, y: 0 }, R: 1 });
+      // Lying flat: the lift line far off on the side away from the corner (s < 0 everywhere),
+      // so the whole sheet is drawn flat, front up, over the page beneath it.
+      this.gl.draw({ ...flat, L0: { x: -1e5, y: 0 }, dir: { x: -1, y: 0 }, R: 1 });
       this.revealUnder(t);
       t.progress = 0;
       return;
