@@ -259,6 +259,9 @@ let sharedCurl = null;
 
 // Takes whatever the curl canvas is showing off the screen.
 function uncover() {
+  // (And whatever was kept for a turn into the next chapter that didn't happen.)
+  document.querySelectorAll(".curl-cover, .carried").forEach((e) => e.remove());
+  document.querySelectorAll(".bookview.turning").forEach((b) => { if (!b.__pager || !b.__pager.busy) b.classList.remove("turning"); });
   if (!sharedCurl || sharedCurl.lost) return;
   sharedCurl.clear();
   sharedCurl.canvas.style.opacity = "0";
@@ -455,17 +458,11 @@ async function asDataUrl(src) {
 const xmlText = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const xmlAttr = (s) => xmlText(s || "").replace(/"/g, "&quot;");
 
-// A picture of the book as it looks with `article` scrolled to `offset`: the page drawn through
-// an SVG foreignObject with the reader's own styles, so it matches the real page.
-async function snapshotPage(pager, article, offset) {
-  if (document.fonts) await document.fonts.ready;
-  const W = pager.width, H = pager.book.clientHeight;
-  const reader = pager.book.closest(".reader") || pager.book.parentElement;
-  if (pageCssText === null) {
-    pageCssText = await fetch("styles.css").then((r) => r.text()).catch(() => "");
-  }
+// A copy of the page at `offset` (and the one after it), cut down from the whole chapter so it
+// lays out quickly, but breaking its lines exactly as the live page does.
+function pageCopy(article, offset, W, H) {
   const clone = article.cloneNode(true);
-  // (The read-along highlight stays: it's on the page, so it's on the picture.)
+  // (The read-along highlight stays: it's on the page, so it's on the copy.)
   clone.style.width = `${W}px`;
   // Pictures in the book, and blocks styled by EPUB markup (epub:type, which doesn't survive into
   // the picture's XML as something CSS can match), keep the size and layout they have live.
@@ -557,6 +554,19 @@ async function snapshotPage(pager, article, offset) {
   } else {
     clone.style.transform = `translateX(${-offset}px)`;
   }
+  return clone;
+}
+
+// A picture of the book as it looks with `article` scrolled to `offset`: the page drawn through
+// an SVG foreignObject with the reader's own styles, so it matches the real page.
+async function snapshotPage(pager, article, offset) {
+  if (document.fonts) await document.fonts.ready;
+  const W = pager.width, H = pager.book.clientHeight;
+  const reader = pager.book.closest(".reader") || pager.book.parentElement;
+  if (pageCssText === null) {
+    pageCssText = await fetch("styles.css").then((r) => r.text()).catch(() => "");
+  }
+  const clone = pageCopy(article, offset, W, H);
   // EPUB markup carries prefixed attributes (epub:type...) that an XML document must declare;
   // epub: is declared below, anything else is dropped.
   for (const el of clone.querySelectorAll("*")) {
@@ -619,6 +629,8 @@ async function snapshotPage(pager, article, offset) {
 // child indices from the article) and the character in it. Columns run left to right, so it's
 // the first character whose box lies at or past the page's left edge.
 const BLOCK = /^(P|LI|BLOCKQUOTE|DIV|H\d|FIGCAPTION|DD|DT|SECTION|ARTICLE)$/;
+// The smallest blocks of a chapter: what a copy of a page shows or hides.
+const LEAF = "p, h1, h2, h3, h4, h5, h6, li, dt, dd, figure, img, hr, pre, table, blockquote > :not(p), .img-page";
 
 // Whether there's text in `node`'s block before character `index` (the page starts
 // mid-paragraph), and the block's first-line indent on the live page.
@@ -695,6 +707,9 @@ class Pager {
     this.busy = false;
     // Pictures of nearby pages for the curl, by offset; made in idle time after each turn.
     this.snaps = new Map();
+    // Pages turn as live copies of the page itself, not pictures of it: a page can't photograph
+    // itself, and a picture redrawn another way never quite matches (type, highlight, layout).
+    this.noGL = true;
     this.layout();
     this.resize = new ResizeObserver(() => (this.book.isConnected ? this.relayout() : this.destroy()));
     this.resize.observe(book.parentElement || book);
@@ -736,7 +751,8 @@ class Pager {
   destroy() {
     this.resize.disconnect();
     document.removeEventListener("keydown", this.onKey);
-    this.book.querySelectorAll(".curl-layer, .page3d, .page-warp, .edge-hint").forEach((e) => e.remove());
+    // (Not what's kept on screen for a turn into the next chapter: the next pager plays it.)
+    this.book.querySelectorAll(".curl-layer:not(.carried), .page3d:not(.carried), .page-warp, .edge-hint").forEach((e) => e.remove());
     // The shared curl canvas stays in the book; it's left showing only while a turn into the
     // next chapter is waiting to play (the old page over the new one).
     if (sharedCurl && !this.book.__carry && sharedCurl.canvas.parentNode === this.book) uncover();
@@ -810,6 +826,8 @@ class Pager {
     this.page = Math.min(this.page, this.pages - 1);
     this.place(this.article, this.page);
     this.snaps.clear();
+    this.dropScenes();
+    this.shownCache = new Map();
     this.warp();
     this.report();
   }
@@ -984,8 +1002,23 @@ class Pager {
 
   // Pictures this page and the ones either side, quietly, so a turn can start at once.
   warm() {
-    if (this.noGL || !this.curl) return;
+    if (!this.curl) return;
     clearTimeout(this.warmTimer);
+    if (this.noGL) {
+      // Lays out the strips for the next turn either way, a little at a time while it's quiet.
+      const sigmas = this.spread ? [1, -1] : [1];
+      const step = (deadline) => {
+        if (this.dead || this.busy) return (this.warmTimer = setTimeout(() => this.warm(), 400));
+        const budget = Math.max(8, Math.min(30, deadline && deadline.timeRemaining ? deadline.timeRemaining() : 12));
+        for (const sg of sigmas) if (!this.fillScene(this.scene(sg), budget)) return idle(step);
+        if (this.spread) this.stillLayer(0, this.page * this.width).remove();
+        // ...and works out what shows on this page and the ones either side.
+        for (const p of [this.page - 1, this.page, this.page + 1]) if (p >= 0 && p < this.pages) this.shownOn(p * this.width);
+      };
+      const idle = (cb) => (window.requestIdleCallback ? requestIdleCallback(cb, { timeout: 500 }) : setTimeout(cb, 30));
+      this.warmTimer = setTimeout(() => idle(step), 150);
+      return;
+    }
     this.warmTimer = setTimeout(async () => {
       for (const p of [this.page, this.page + 1, this.page - 1]) {
         if (this.dead || this.noGL || p < 0 || p >= this.pages) continue;
@@ -1045,10 +1078,53 @@ class Pager {
     if (this.curl && !this.noGL) await Promise.race([this.pictures([this.page * this.width]), new Promise((r) => setTimeout(r, 800))]);
     this.busy = false;
     if (this.dead) return;
+    const kept = this.article.cloneNode(true);
+    kept.__furniture = this.furniture(this.page * this.width);
     this.book.__carry = {
-      dir, snap: this.article.cloneNode(true), at: this.page * this.width, spread: this.spread,
+      dir, snap: kept, at: this.page * this.width, spread: this.spread,
       picture: this.snap(this.page * this.width), key: this.snapKey(),
     };
+    if (this.noGL && this.curl) {
+      // Keep this page on screen (a copy of it) while the next chapter loads underneath, so the
+      // new chapter doesn't show before the page has turned away.
+      const at = this.page * this.width;
+      const cover = this.layer("curl-cover carried", this.copy(at, kept));
+      this.book.appendChild(cover);
+      this.book.classList.add("turning");
+      const carry = this.book.__carry;
+      carry.cover = cover;
+      // This chapter's strips, laid out already, turn the page over in the next chapter: aimed at
+      // this page now, while it can still be measured. (One page turning back is the next
+      // chapter's page, so those are made there.)
+      const sigma = this.spread && dir < 0 ? -1 : 1;
+      if (this.spread || dir > 0) {
+        const scene = this.scene(sigma);
+        this.fillScene(scene);
+        this.aimScene(scene, at, at, !this.spread);
+        for (const st of scene.strips) for (const fc of [st.front, st.back]) {
+          fc.src = kept;
+          fc.furnAt = undefined;
+        }
+        scene.el.classList.add("carried");
+        this.scenes.delete(sigma);
+        carry.scene = scene;
+      }
+      if (this.spread) {
+        const still = this.stillLayer(dir > 0 ? 0 : this.width / 2, at);
+        still.el.classList.add("carried");
+        still.el.querySelectorAll(".furniture-copy").forEach((e) => e.remove());
+        still.el.appendChild(kept.__furniture.cloneNode(true));
+        this.still = null;
+        carry.still = still.el;
+      }
+      setTimeout(() => {
+        if (this.book.__carry !== carry) return;
+        delete this.book.__carry;
+        uncover();
+        for (const e of [carry.scene && carry.scene.el, carry.still]) if (e) e.remove();
+        this.book.classList.remove("turning");
+      }, 6000);
+    }
     // Keep this page on screen (as a picture) while the next chapter loads underneath, so the
     // new chapter doesn't show before the page has turned away.
     const pic = this.book.__carry.picture;
@@ -1067,14 +1143,53 @@ class Pager {
   // A copy of the laid-out chapter (or of a kept one), shifted so `offset` px of it sits at the
   // left edge of the book.
   copy(offset, from) {
-    const c = (from || this.article).cloneNode(true);
-    c.classList.remove("synced");
-    c.querySelectorAll(".s.now").forEach((e) => e.classList.remove("now"));
+    // (The highlight stays: the copy is the page exactly as it is on screen.) Cut down to the
+    // page, as the whole chapter copied a few dozen times over takes too long to lay out.
+    let c;
+    if (from) {
+      c = from.cloneNode(true);
+      c.style.width = `${this.width}px`;
+      c.style.transform = `translateX(${-offset}px)`;
+    } else {
+      c = pageCopy(this.article, offset, this.width, this.book.clientHeight);
+    }
     // Lazy pictures in a fresh copy would start blank and pop in.
     c.querySelectorAll("img[loading]").forEach((e) => e.removeAttribute("loading"));
-    c.style.width = `${this.width}px`;
-    c.style.transform = `translateX(${-offset}px)`;
-    return c;
+    const page = document.createDocumentFragment();
+    // A kept page from the chapter just left has its own running head and number.
+    page.append(c, from && from.__furniture ? from.__furniture.cloneNode(true) : this.furniture(offset));
+    return page;
+  }
+
+  // The running head and page number as they read on the page at `offset` (they're beside the
+  // text, not in it, so a copy of the page needs its own).
+  furniture(offset) {
+    const out = document.createDocumentFragment();
+    // The page's curved outline and (two pages) the fold down the middle go with it too.
+    const warp = this.book.querySelector(":scope > .page-warp");
+    if (warp) {
+      const c = warp.cloneNode(true);
+      c.classList.add("furniture-copy");
+      out.appendChild(c);
+    }
+    if (this.spread) {
+      const fold = document.createElement("div");
+      fold.className = "fold-copy furniture-copy";
+      out.appendChild(fold);
+    }
+    for (const sel of [":scope > .running-head", ":scope > .folio"]) {
+      const el = this.book.querySelector(sel);
+      if (!el) continue;
+      const c = el.cloneNode(true);
+      c.classList.add("furniture-copy");
+      const pageEl = c.querySelector(".folio-page");
+      if (pageEl) {
+        const n = this.pages, p = Math.round(offset / this.width) + 1, left = n - p;
+        pageEl.textContent = `Page ${p} of ${n} · ${left === 0 ? "last page in chapter" : left === 1 ? "1 page left in chapter" : `${left} pages left in chapter`}`;
+      }
+      out.appendChild(c);
+    }
+    return out;
   }
 
   layer(cls, content) {
@@ -1186,103 +1301,309 @@ class Pager {
     if (this.gl) this.gl.clear();
     const W = this.width, H = this.book.clientHeight, half = W / 2;
     const cur = carry ? carry.at : this.page * W;
-    const src = carry ? carry.snap : null;
     const target = carry ? this.page : this.page + dir;
     const next = target * W;
     const t = { dir, target, W, H, layers: [] };
-    let front, back, ghost = false;
+    // Which page each face shows: the turning page's front, and its back (the next page where it
+    // lands once turned, with two pages; this page seen through the paper, with one).
+    let fOff, bOff, ghost = false;
     if (!this.spread) {
       // One page: forward, this page peels off to the left; back, the previous one is laid back down.
       t.leaf = [0, W];
       t.hinge = 0;
       t.single = true;
       t.C0x = W;
-      if (dir > 0) {
-        front = this.copy(cur, src);
-        back = this.copy(cur, src);
-        if (!carry) t.placeTarget = true;
-      } else {
-        front = this.copy(next);
-        back = this.copy(next);
-        if (carry) t.layers.push(this.layer("curl-under", this.copy(cur, src)));
-      }
+      fOff = bOff = dir > 0 ? cur : next;
+      if (dir > 0 && !carry) t.placeTarget = true;
       ghost = true;
       t.reverse = dir < 0;
-    } else if (dir > 0) {
-      // Two pages: the right page turns over the spine; its back is the next left page.
-      t.leaf = [half, W];
-      t.hinge = half;
-      t.C0x = W;
-      front = this.copy(cur, src);
-      back = this.copy(next);
-      t.layers.push(this.halfLayer(0, this.copy(cur, src)));
-      if (!carry) t.placeTarget = true;
     } else {
-      // Two pages, backwards: the left page turns over to the right; its back is the previous right page.
-      t.leaf = [0, half];
+      // Two pages: the right page turns over the spine (its back is the next left page), or
+      // backwards, the left page turns over to the right (its back is the previous right page).
+      t.leaf = dir > 0 ? [half, W] : [0, half];
       t.hinge = half;
-      t.C0x = 0;
-      front = this.copy(cur, src);
-      back = this.copy(next);
-      t.layers.push(this.halfLayer(half, this.copy(cur, src)));
+      t.C0x = dir > 0 ? W : 0;
+      fOff = cur;
+      bOff = next;
       if (!carry) t.placeTarget = true;
     }
+    t.sigma = t.C0x > t.hinge ? 1 : -1;
+    // The strips: kept laid out between turns (a chapter's worth of text copied a few dozen times
+    // takes a while to lay out); a page kept from the chapter just left gets its own.
+    // (Turning into a new chapter, the faces showing the kept page are copies of that.)
+    let scene;
+    if (carry && carry.scene && carry.scene.key === this.sceneKey()) {
+      // The last chapter's strips, aimed at its page already; the faces showing this chapter
+      // are copies of just its page (quick to lay out).
+      scene = carry.scene;
+      if (this.spread) for (const st of scene.strips) this.pageFace(st.back, next, false);
+    } else if (carry && t.single && dir < 0) {
+      scene = this.makeScene(t.sigma);
+      for (const st of scene.strips) {
+        this.pageFace(st.front, next, false);
+        this.pageFace(st.back, next, st.back.frontX);
+      }
+    } else if (carry) {
+      const keptFront = !(t.single && dir < 0);
+      scene = this.makeScene(t.sigma, keptFront ? carry.snap : this.article, keptFront && t.single ? carry.snap : this.article);
+      this.aimScene(scene, fOff, bOff, ghost);
+    } else {
+      scene = this.scene(t.sigma);
+      this.fillScene(scene);
+      this.aimScene(scene, fOff, bOff, ghost);
+    }
+    t.strips = scene.strips;
+    t.scene = scene.el;
+    t.keepScene = !carry;
+    // The page facing the turning one stays put (with two pages); with one page turning back
+    // into the next chapter, the kept page lies underneath.
+    if (this.spread) {
+      t.layers.push(carry
+        ? (carry.still || this.halfLayer(dir > 0 ? 0 : half, this.copy(cur, carry.snap)))
+        : this.stillLayer(dir > 0 ? 0 : half, cur));
+    } else if (dir < 0 && carry) {
+      // The kept page lies underneath: the copy that's been covering the book.
+      const under = carry.cover || this.layer("curl-under", this.copy(cur, carry.snap));
+      under.classList.remove("curl-cover");
+      under.classList.add("curl-under");
+      t.layers.push(under);
+    }
+    // The live running head and page number make way for copies that read right for each page
+    // while it turns: on the turning page itself, and on the page it uncovers.
+    this.book.classList.add("turning");
+    const underAt = !this.spread && dir < 0 && !carry ? cur : next;
+    const furn = this.layer("curl-furniture", this.furniture(underAt));
+    if (this.spread) furn.style.clipPath = `inset(0 ${W - t.leaf[1]}px 0 ${t.leaf[0]}px)`;
+    t.layers.push(furn);
     // The page underneath darkens in the turning page's shadow.
     t.under = this.layer("curl-shadow");
-    const sigma = t.C0x > t.hinge ? 1 : -1;
-    t.sigma = sigma;
-    const w = t.leaf[1] - t.leaf[0];
-    const sw = w / STRIPS;
-    t.sw = sw;
-    const scene = document.createElement("div");
-    scene.className = "page3d";
-    scene.style.perspectiveOrigin = `${t.hinge}px 50%`;
-    // A slice of a laid-out page: the part of the book between x and x + sw.
-    const slice = (content, x, mirrored) => {
-      const face = document.createElement("div");
-      face.className = "p3-content";
-      const inner = document.createElement("div");
-      inner.className = "p3-slice";
-      inner.style.left = `${-x}px`;
-      inner.style.width = `${W}px`;
-      inner.appendChild(content.cloneNode(true));
-      face.appendChild(inner);
-      if (mirrored) face.style.transform = "scaleX(-1)";
-      return face;
+    t.layers.push(t.under);
+    for (const l of t.layers) if (!(l.el || l).isConnected) this.book.appendChild(l.el || l);
+    // (The kept strips stay where they are in the book: moved, they'd be laid out all over again.
+    // They're stacked above the other layers by z-index.)
+    if (scene.el.parentNode !== this.book) this.book.appendChild(scene.el);
+    scene.el.classList.remove("idle");
+    for (const e of [scene.el, carry && carry.still]) if (e) e.classList.remove("carried");
+    // Done with: a kept sheet is hidden away for the next turn, a one-off one goes.
+    t.layers.push(t.keepScene ? { remove: () => scene.el.classList.add("idle") } : scene.el);
+    uncover();
+    return t;
+  }
+
+  // A sheet of strips hinged at the spine, turning over to the left (sigma 1) or to the right
+  // (-1): each strip turns a little further than the one before, so the page bends along its
+  // width as it swings over, the free edge leading and the bound edge lying flat until the page
+  // has to lift from it. Every face holds a whole copy of the chapter (made from `src`, or later
+  // by fillScene), shifted to show the right page.
+  makeScene(sigma, frontSrc, backSrc) {
+    const W = this.width, H = this.book.clientHeight, half = W / 2;
+    const hinge = this.spread ? half : 0;
+    const w = this.spread ? half : W;
+    // Strip edges on whole pixels, so text on the strips lands on the same pixels as on the page.
+    const edge = (i) => Math.round((i * w) / STRIPS);
+    const el = document.createElement("div");
+    el.className = "page3d";
+    el.style.perspectiveOrigin = `${hinge}px 50%`;
+    const face = (cls, x) => {
+      const f = document.createElement("div");
+      f.className = cls;
+      const content = document.createElement("div");
+      content.className = "p3-content";
+      const slice = document.createElement("div");
+      slice.className = "p3-slice";
+      slice.style.width = `${W}px`;
+      slice.style.transform = `translateX(${-x}px)`;
+      content.appendChild(slice);
+      const shade = document.createElement("div");
+      shade.className = "curl-shade";
+      f.append(content, shade);
+      return { f, content, slice, shade, x };
     };
-    t.strips = [];
-    let parent = scene;
+    const strips = [];
+    let parent = el;
     for (let i = 0; i < STRIPS; i++) {
       const strip = document.createElement("div");
       strip.className = "p3-strip";
+      const sw = edge(i + 1) - edge(i);
+      // (A hair wider than its share, so no seam shows between strips as they bend.)
       strip.style.width = `${sw + 0.6}px`;
       strip.style.height = `${H}px`;
       strip.style.transformOrigin = sigma > 0 ? "0 50%" : "100% 50%";
-      strip.style.left = i === 0 ? `${sigma > 0 ? t.hinge : t.hinge - sw}px` : `${sigma > 0 ? sw : -sw}px`;
-      const frontX = sigma > 0 ? t.hinge + i * sw : t.hinge - (i + 1) * sw;
-      const f = document.createElement("div");
-      f.className = "p3-face";
-      f.appendChild(slice(front, frontX, false));
-      const fs = document.createElement("div");
-      fs.className = "curl-shade";
-      f.appendChild(fs);
-      const b = document.createElement("div");
-      b.className = "p3-face p3-back" + (ghost ? " ghosted" : "");
-      // The back: the next page where this strip lands once turned (two pages), or this page
-      // seen through the paper (one page).
-      b.appendChild(ghost ? slice(front, frontX, true) : slice(back, sigma > 0 ? t.hinge - (i + 1) * sw : t.hinge + i * sw, false));
-      const bs = document.createElement("div");
-      bs.className = "curl-shade";
-      b.appendChild(bs);
-      strip.append(f, b);
+      // Each strip hangs off the end of the one before.
+      const prevW = i === 0 ? 0 : edge(i) - edge(i - 1);
+      strip.style.left = i === 0 ? `${sigma > 0 ? hinge : hinge - sw}px` : `${sigma > 0 ? prevW : -sw}px`;
+      const frontX = sigma > 0 ? hinge + edge(i) : hinge - edge(i + 1);
+      const backX = sigma > 0 ? hinge - edge(i + 1) : hinge + edge(i);
+      const front = face("p3-face", frontX);
+      const back = face("p3-face p3-back", backX);
+      back.frontX = frontX;
+      strip.append(front.f, back.f);
       parent.appendChild(strip);
-      t.strips.push({ el: strip, fs, bs });
+      strips.push({ el: strip, fs: front.shade, bs: back.shade, front, back });
       parent = strip;
     }
-    t.scene = scene;
-    t.layers.push(t.under, scene);
-    this.book.append(...t.layers);
-    return t;
+    const scene = { el, strips, sigma, key: this.sceneKey() };
+    if (frontSrc) {
+      for (const st of strips) {
+        this.fillFace(st.front, frontSrc);
+        this.fillFace(st.back, backSrc);
+      }
+      scene.full = true;
+    }
+    return scene;
+  }
+
+  // What the kept strips depend on: the page size and one page or two (the text is the chapter's).
+  sceneKey() {
+    return `${this.width}x${this.book.clientHeight}|${this.spread}`;
+  }
+
+  scene(sigma) {
+    this.scenes = this.scenes || new Map();
+    let sc = this.scenes.get(sigma);
+    if (!sc || sc.key !== this.sceneKey()) {
+      if (sc) sc.el.remove();
+      sc = this.makeScene(sigma);
+      sc.el.classList.add("idle");
+      this.book.appendChild(sc.el);
+      this.scenes.set(sigma, sc);
+    }
+    return sc;
+  }
+
+  // Forgets the kept strips (the chapter was laid out again).
+  dropScenes() {
+    if (this.scenes) for (const sc of this.scenes.values()) sc.el.remove();
+    this.scenes = new Map();
+    this.still = null;
+  }
+
+  fillFace(fc, src) {
+    const c = (src || this.article).cloneNode(true);
+    c.querySelectorAll("img[loading]").forEach((e) => e.removeAttribute("loading"));
+    c.style.width = `${this.width}px`;
+    fc.slice.replaceChildren(c);
+    fc.page = c;
+    fc.src = src || this.article;
+    fc.furniture = null;
+    fc.furnAt = undefined;
+  }
+
+  // Points a face at one page of this chapter with a copy of just that page (made fresh).
+  // `ghostX`: the back of a single page, this page seen through the paper.
+  pageFace(fc, offset, ghostX) {
+    const c = pageCopy(this.article, offset, this.width, this.book.clientHeight);
+    c.querySelectorAll("img[loading]").forEach((e) => e.removeAttribute("loading"));
+    const furn = this.furniture(offset);
+    fc.furniture = [...furn.childNodes];
+    fc.slice.replaceChildren(c, furn);
+    fc.page = c;
+    fc.src = this.article;
+    fc.furnAt = offset;
+    fc.slice.style.transform = `translateX(${-(ghostX === false ? fc.x : ghostX)}px)`;
+    if (fc.f.classList.contains("p3-back")) {
+      fc.content.style.transform = ghostX === false ? "" : "scaleX(-1)";
+      fc.f.classList.toggle("ghosted", ghostX !== false);
+    }
+  }
+
+  // Copies the chapter into any face still without it: all of them now (`budget` 0), or within
+  // `budget` ms (laying out in idle time).
+  fillScene(scene, budget) {
+    if (scene.full) return true;
+    const until = performance.now() + (budget || Infinity);
+    for (const st of scene.strips) {
+      for (const fc of [st.front, st.back]) {
+        if (fc.page) continue;
+        if (performance.now() > until) return false;
+        this.fillFace(fc);
+        // Laid out now, while it's quiet, not when the page starts to turn.
+        if (budget) fc.page.getBoundingClientRect();
+      }
+    }
+    scene.full = true;
+    return true;
+  }
+
+  // Which of the chapter's blocks show on the page at `offset` (by their order in the chapter).
+  // A copy hides the rest: they keep their place in the layout, but drawing a whole chapter for
+  // every strip is what makes a turn slow to start.
+  shownOn(offset) {
+    this.shownCache = this.shownCache || new Map();
+    const hit = this.shownCache.get(offset);
+    if (hit && hit.key === this.sceneKey()) return hit.shown;
+    const left = this.article.getBoundingClientRect().left;
+    const shown = [...this.article.querySelectorAll(LEAF)].map((el) =>
+      [...el.getClientRects()].some((r) => r.right - left > offset - 2 && r.left - left < offset + this.width + 2));
+    this.shownCache.set(offset, { key: this.sceneKey(), shown });
+    return shown;
+  }
+
+  showOnly(copy, offset) {
+    if (copy.__shownAt === offset) return;
+    const shown = this.shownOn(offset);
+    copy.querySelectorAll(LEAF).forEach((el, i) => (el.style.visibility = shown[i] ? "" : "hidden"));
+    copy.__shownAt = offset;
+  }
+
+  // Points every face of the strips at its page, with the highlight as it is now.
+  aimScene(scene, fOff, bOff, ghost) {
+    const nowIds = [...this.article.querySelectorAll(".s.now")].map((e) => e.dataset.s);
+    const nowId = nowIds.join(",");
+    for (const st of scene.strips) {
+      for (const [fc, off, isBack] of [[st.front, fOff, false], [st.back, bOff, true]]) {
+        const c = fc.page;
+        if (!c) continue;
+        const x = isBack && ghost ? st.back.frontX : fc.x;
+        fc.slice.style.transform = `translateX(${-x}px)`;
+        c.style.transform = `translateX(${-off}px)`;
+        if (fc.src === this.article) this.showOnly(c, off);
+        if (c.__now !== nowId) {
+          c.querySelectorAll(".s.now").forEach((e) => e.classList.remove("now"));
+          for (const id of nowIds) c.querySelectorAll(`.s[data-s="${id}"]`).forEach((e) => e.classList.add("now"));
+          c.__now = nowId;
+        }
+        if (isBack) {
+          fc.content.style.transform = ghost ? "scaleX(-1)" : "";
+          fc.f.classList.toggle("ghosted", ghost);
+        }
+        // This page's running head and number, on the face (only where the face shows them).
+        if (fc.furnAt !== off) {
+          if (fc.furniture) fc.furniture.forEach((e) => e.remove());
+          // (A page kept from the chapter just left has its own.)
+          const furn = fc.src.__furniture ? fc.src.__furniture.cloneNode(true) : this.furniture(off);
+          fc.furniture = [...furn.childNodes];
+          fc.slice.appendChild(furn);
+          fc.furnAt = off;
+        }
+      }
+    }
+  }
+
+  // The facing page that stays put while the other turns: a kept copy too.
+  stillLayer(x, offset) {
+    if (!this.still || this.still.key !== this.sceneKey()) {
+      if (this.still) this.still.el.remove();
+      const el = this.layer("curl-static");
+      const c = this.article.cloneNode(true);
+      c.querySelectorAll("img[loading]").forEach((e) => e.removeAttribute("loading"));
+      c.style.width = `${this.width}px`;
+      el.appendChild(c);
+      el.classList.add("idle");
+      this.book.appendChild(el);
+      this.still = { el, page: c, key: this.sceneKey() };
+    }
+    const { el, page } = this.still;
+    page.style.transform = `translateX(${-offset}px)`;
+    this.showOnly(page, offset);
+    page.querySelectorAll(".s.now").forEach((e) => e.classList.remove("now"));
+    for (const now of this.article.querySelectorAll(".s.now")) page.querySelectorAll(`.s[data-s="${now.dataset.s}"]`).forEach((e) => e.classList.add("now"));
+    el.querySelectorAll(".furniture-copy").forEach((e) => e.remove());
+    el.appendChild(this.furniture(offset));
+    el.style.clipPath = `inset(0 ${this.width - x - this.width / 2}px 0 ${x}px)`;
+    el.classList.remove("idle");
+    // Taken off the page with the turn's other layers, but kept for the next one.
+    return { remove: () => el.classList.add("idle"), el, keep: true };
   }
 
   halfLayer(x, content) {
@@ -1503,7 +1824,10 @@ class Pager {
       });
     }
     if (done) this.report();
+    // The live running head and number have caught up (a frame for the reader to redraw them).
+    await new Promise((r) => frame(r));
     t.layers.forEach((e) => e.remove());
+    this.book.classList.remove("turning");
     this.busy = false;
     if (this.relayoutAfter) {
       this.relayoutAfter = false;

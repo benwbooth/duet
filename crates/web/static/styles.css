@@ -543,7 +543,7 @@ button.link { background: none; border: 0; color: var(--muted); padding: 0; text
 
 /* Two facing pages: wider book, with a fold down the middle. */
 .reader.paged-mode .bookview.spread { width: calc(100% - 4.5rem); max-width: none; }
-.bookview.spread::after {
+.bookview.spread::after, .bookview.spread .fold-copy {
   content: ""; position: absolute; top: 0; bottom: 0; left: calc(50% - 40px); width: 80px; z-index: 1; pointer-events: none;
   background: linear-gradient(to right, rgba(0,0,0,0) 0%, rgba(0,0,0,0.06) 35%, rgba(0,0,0,0.16) 50%, rgba(0,0,0,0.06) 65%, rgba(0,0,0,0) 100%);
 }
@@ -1006,7 +1006,7 @@ input, select { border-radius: 12px; }
 .reader[data-theme="dark"] { --page-bg: #000000; --page-text: #d4cfc8; --page-muted: #6f6a64; --now: #3d3212; background: #000; }
 .reader[data-theme="dark"].paged-mode { background: #000; }
 .reader[data-theme="dark"] .bookview { background: #000; box-shadow: none; }
-.reader[data-theme="dark"] .bookview::before, .reader[data-theme="dark"] .bookview.spread::after { opacity: 0.35; }
+.reader[data-theme="dark"] .bookview::before, .reader[data-theme="dark"] .bookview.spread::after, .reader[data-theme="dark"] .bookview.spread .fold-copy { opacity: 0.35; }
 .reader[data-theme="dark"] .reader-bar, .reader[data-theme="dark"] .player { background: rgba(18, 18, 18, 0.72); border-color: rgba(255, 255, 255, 0.08); }
 .swatch-dark { background: #000; }
 
@@ -1230,3 +1230,15 @@ input, select { border-radius: 12px; }
 /* Buttons never take part in text selection: clicking "forward 30" a few times quickly would
    select its label and paint it as a dark block. */
 button, .transport { -webkit-user-select: none; user-select: none; }
+
+/* While a page turns, copies of the running head and page number stand in for the live ones. */
+.bookview.turning > .running-head:not(.furniture-copy), .bookview.turning > .folio:not(.furniture-copy),
+.bookview.turning > .page-warp:not(.furniture-copy) { visibility: hidden; }
+.bookview.spread.turning::after { display: none; }
+.reader .curl-layer.curl-furniture { z-index: 4; background: none; }
+.curl-cover { z-index: 6; }
+/* Strips and copies kept laid out for the next page turn, out of sight. */
+.page3d.idle, .curl-layer.idle { visibility: hidden; }
+.p3-slice { left: 0; }
+/* Copies of the page show the highlight as it already is, not glowing in afresh. */
+.page3d .s, .curl-layer .s { animation: none !important; transition: none !important; }
