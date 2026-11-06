@@ -505,29 +505,61 @@ class Pager {
   bindPointer() {
     let start = null;
     let drag = null;
+    // Where a mouse can take hold of the page: the outer part of the page being turned (the rest
+    // of the page selects text as usual). A finger can take hold anywhere.
+    const grabZone = (e) => {
+      if (e.pointerType === "touch") return true;
+      const x = (e.clientX - this.book.getBoundingClientRect().left) / this.width;
+      const band = this.spread ? 0.16 : 0.3;
+      return x > 1 - band || x < band;
+    };
     this.book.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
-      start = { x: e.clientX, y: e.clientY, time: performance.now() };
+      if (e.target.closest && e.target.closest("a[data-href]")) return;
+      start = { x: e.clientX, y: e.clientY, time: performance.now(), grab: grabZone(e) };
+      // Holding the page, not selecting its words.
+      if (start.grab && e.pointerType !== "touch") e.preventDefault();
     });
     this.book.addEventListener("pointermove", (e) => {
-      if (!start) return;
+      if (!start) {
+        if (e.pointerType === "mouse") this.book.style.cursor = !this.busy && grabZone(e) ? "grab" : "";
+        return;
+      }
       const dx = e.clientX - start.x;
       const rect = this.book.getBoundingClientRect();
       if (!drag) {
-        if (this.busy || Math.abs(dx) < 10 || Math.abs(dx) < Math.abs(e.clientY - start.y)) return;
+        if (this.busy || !start.grab || Math.abs(dx) < 6 || Math.abs(dx) < Math.abs(e.clientY - start.y)) return;
         const dir = dx < 0 ? 1 : -1;
         if ((dir > 0 && this.page + 1 >= this.pages) || (dir < 0 && this.page === 0)) return;
-        if (String(window.getSelection()) !== "") return;
+        window.getSelection().removeAllRanges();
         drag = this.begin(dir);
-        // The sheet is held where you took hold of it: its corner moves with your finger.
         const y = Math.max(0, Math.min(drag.H, start.y - rect.top));
         drag.C = { x: drag.C0x, y };
+        drag.G = { x: start.x - rect.left, y };
         const [rest] = this.ends(drag, y);
         drag.from = rest;
+        this.book.style.cursor = "grabbing";
         try { this.book.setPointerCapture(e.pointerId); } catch (_) {}
       }
-      drag.at = { x: drag.from.x + dx, y: drag.from.y + (e.clientY - start.y) };
-      this.pose(drag, drag.at);
+      // The paper under your finger stays under it: the fold is halfway between where you took
+      // hold and where your finger is now, and the corner is wherever that fold carries it.
+      const F = { x: e.clientX - rect.left, y: Math.max(-drag.H * 0.2, Math.min(drag.H * 1.2, e.clientY - rect.top)) };
+      const G = drag.reverse ? { x: 2 * drag.hinge - drag.G.x, y: drag.G.y } : drag.G;
+      const vx = F.x - G.x, vy = F.y - G.y;
+      const d = Math.hypot(vx, vy);
+      let P = drag.from;
+      if (drag.reverse) {
+        // Laying the previous page back down: the corner comes in with your finger.
+        P = { x: drag.from.x + (F.x - drag.G.x) * 2, y: drag.from.y + (F.y - drag.G.y) };
+      } else if (d > 0.5) {
+        const n = { x: vx / d, y: vy / d };
+        const M = { x: (G.x + F.x) / 2, y: (G.y + F.y) / 2 };
+        const C = drag.C;
+        const k = 2 * ((C.x - M.x) * n.x + (C.y - M.y) * n.y);
+        P = { x: C.x - k * n.x, y: C.y - k * n.y };
+      }
+      drag.at = P;
+      this.pose(drag, P);
     });
     const release = () => {
       if (drag) {
@@ -541,7 +573,22 @@ class Pager {
       }
       start = null;
       drag = null;
+      this.book.style.cursor = "";
     };
+    // A sideways two-finger swipe on a trackpad turns the page too.
+    let swipe = 0, swiped = false, swipeTimer = null;
+    this.book.addEventListener("wheel", (e) => {
+      if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+      e.preventDefault();
+      swipe += e.deltaX;
+      clearTimeout(swipeTimer);
+      // One turn per swipe: it ends when the trackpad goes quiet.
+      swipeTimer = setTimeout(() => { swipe = 0; swiped = false; }, 250);
+      if (!swiped && Math.abs(swipe) > 60) {
+        swiped = true;
+        swipe > 0 ? this.next() : this.prev();
+      }
+    }, { passive: false });
     this.book.addEventListener("pointerup", release);
     this.book.addEventListener("pointercancel", release);
     // Taps on the outer edges turn the page; taps elsewhere reach the sentences.
