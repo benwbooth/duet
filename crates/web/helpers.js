@@ -604,7 +604,7 @@ class Pager {
     });
     this.book.addEventListener("pointermove", (e) => {
       if (!start) {
-        if (e.pointerType === "mouse") this.book.style.cursor = !this.busy && grabZone(e) ? "grab" : "";
+        if (e.pointerType === "mouse") this.book.classList.toggle("grab-edge", !this.busy && grabZone(e));
         return;
       }
       const dx = e.clientX - start.x;
@@ -620,7 +620,7 @@ class Pager {
         drag.G = { x: start.x - rect.left, y };
         const [rest] = this.ends(drag, y);
         drag.from = rest;
-        this.book.style.cursor = "grabbing";
+        this.book.classList.add("grab-edge");
         try { this.book.setPointerCapture(e.pointerId); } catch (_) {}
       }
       // The paper under your finger stays under it: the fold is halfway between where you took
@@ -655,7 +655,7 @@ class Pager {
       }
       start = null;
       drag = null;
-      this.book.style.cursor = "";
+      this.book.classList.remove("grab-edge");
     };
     // A sideways two-finger swipe on a trackpad turns the page too.
     let swipe = 0, swiped = false, swipeTimer = null;
@@ -671,6 +671,7 @@ class Pager {
         swipe > 0 ? this.next() : this.prev();
       }
     }, { passive: false });
+    this.book.addEventListener("pointerleave", () => { if (!drag) this.book.classList.remove("grab-edge"); });
     this.book.addEventListener("pointerup", release);
     this.book.addEventListener("pointercancel", release);
     // Taps on the outer edges turn the page; taps elsewhere reach the sentences.
