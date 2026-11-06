@@ -406,8 +406,9 @@ class Pager {
       // A pager whose book has left the page (the reader re-rendered it) must not keep turning.
       if (!this.book.isConnected) return this.destroy();
       if (e.target.closest && e.target.closest("input, textarea, select")) return;
-      if (["ArrowRight", "PageDown", " "].includes(e.key)) { e.preventDefault(); this.next(); }
-      if (["ArrowLeft", "PageUp"].includes(e.key)) { e.preventDefault(); this.prev(); }
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      if (["ArrowRight", "ArrowDown", "PageDown", " "].includes(e.key)) { e.preventDefault(); this.next(); }
+      if (["ArrowLeft", "ArrowUp", "PageUp"].includes(e.key)) { e.preventDefault(); this.prev(); }
     };
     document.addEventListener("keydown", this.onKey);
     this.bindPointer();

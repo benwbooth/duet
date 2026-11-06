@@ -467,6 +467,43 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         });
     };
 
+    // Home and End: the very beginning and the very end of the book (arrows and Page Up/Down
+    // turn pages; see the pager in helpers.js).
+    let on_key = Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
+        if e.alt_key() || e.ctrl_key() || e.meta_key() {
+            return;
+        }
+        let typing = e
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .is_some_and(|el| el.closest("input, textarea, select, [contenteditable]").ok().flatten().is_some());
+        if typing {
+            return;
+        }
+        let total = layout.get_untracked().map(|l| l.chapters).unwrap_or(0);
+        match e.key().as_str() {
+            "Home" => {
+                e.prevent_default();
+                scroll_to.set(Some(0));
+                start_at_end.set(false);
+                chapter.set(usize::MAX);
+                chapter.set(0);
+            }
+            "End" if total > 0 => {
+                e.prevent_default();
+                start_at_end.set(true);
+                chapter.set(usize::MAX);
+                chapter.set(total - 1);
+            }
+            _ => {}
+        }
+    });
+    let _ = document().add_event_listener_with_callback("keydown", on_key.as_ref().unchecked_ref());
+    let on_key = on_key.into_js_value();
+    on_cleanup(move || {
+        let _ = document().remove_event_listener_with_callback("keydown", on_key.unchecked_ref());
+    });
+
     // Load a chapter whenever it changes.
     Effect::new(move |_| {
         let c = chapter.get();
