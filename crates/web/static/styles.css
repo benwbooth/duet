@@ -1110,3 +1110,20 @@ input, select { border-radius: 12px; }
 .page-warp .warp-edge { stroke: rgba(0, 0, 0, 0.14); stroke-width: 1; }
 .reader[data-theme="dark"] .page-warp .warp-under { fill: #0d0d0d; }
 .reader[data-theme="dark"] .page-warp .warp-edge { stroke: rgba(255, 255, 255, 0.5); }
+
+/* ---------- The paged reader owns the whole window ----------
+   Fixed to the window beside the sidebar (not inside the page's padded, width-capped column), so
+   nothing scrolls and the book fills everything between the bar and the player. */
+.reader.paged-mode {
+  position: fixed; top: 0; bottom: 0; left: var(--nav-w); right: 0;
+  margin: 0; padding: 0; min-height: 0; overflow: hidden;
+}
+.reader.paged-mode.listen-mode { overflow-y: auto; }
+.reader.paged-mode .bookview, .reader.paged-mode .bookview.spread {
+  position: absolute; margin: 0; width: auto; height: auto; max-width: none;
+  top: 84px; bottom: calc(var(--player-h, 0px) + 44px); left: 44px; right: 44px;
+}
+@media (max-width: 760px) {
+  .reader.paged-mode { left: 0; }
+  .reader.paged-mode .bookview, .reader.paged-mode .bookview.spread { top: 62px; bottom: calc(var(--player-h, 0px) + 8px); left: 0; right: 0; }
+}
