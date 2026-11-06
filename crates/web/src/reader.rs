@@ -1588,11 +1588,19 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     let short = if text.chars().count() > 28 { format!("{}…", text.chars().take(26).collect::<String>()) } else { text.clone() };
                     let word = !text.contains(char::is_whitespace);
                     let (t1, t2, t3, t4) = (text.clone(), text.clone(), text.clone(), text.clone());
+                    // The sentence the words are in, so the answer is about this use of them.
+                    let context = at
+                        .and_then(|(_, n)| page.get_untracked().map(|el| crate::sentence_text(&el, n as i32)))
+                        .filter(|s| !s.is_empty() && s.trim() != text.trim());
                     view! {
                         <div class="context-menu" style=format!("left:{x}px;top:{y}px") on:contextmenu=|ev| ev.prevent_default()>
                             {(!text.is_empty()).then(|| view! {
                                 <button on:click=move |_| { menu.set(None); assist.set(Some((
-                                    if word { format!("What does \"{t1}\" mean here?") } else { format!("What does \"{t1}\" mean in this passage?") }, true))); }>
+                                    match &context {
+                                        Some(sent) if word => format!("What does \"{t1}\" mean in this sentence: \"{sent}\"?"),
+                                        Some(sent) => format!("What does \"{t1}\" mean here: \"{sent}\"?"),
+                                        None => format!("What does \"{t1}\" mean here?"),
+                                    }, true))); }>
                                     <span>"Define"</span><small>{format!("“{short}”")}</small>
                                 </button>
                                 <button on:click=move |_| { menu.set(None); assist.set(Some((format!("Explain this passage: \"{t2}\""), true))); }>
@@ -1647,6 +1655,7 @@ fn Assistant(
     let speak = RwSignal::new(true);
     let recording = RwSignal::new(false);
     let thinking = RwSignal::new(false);
+    let speaking = RwSignal::new(false);
     let toast = toast();
 
     let ask = move |question: String| {
@@ -1675,20 +1684,32 @@ fn Assistant(
             question,
             persona: persona.get_untracked(),
             position: Some(position()),
-            speak: speak.get_untracked(),
+            // The text first; the voice is fetched after (it can take a while to perform).
+            speak: false,
             history,
         };
+        let persona_id = persona.get_untracked();
         spawn_local(async move {
             match api::post::<_, AskReply>("/api/assistant/ask", &req).await {
                 Ok(r) => {
-                    if let Some(a) = &r.audio {
-                        crate::play_data_url(a);
-                    }
+                    let spoken = if r.spoken.is_empty() { r.answer.clone() } else { r.spoken.clone() };
                     messages.update(|m| m.push(Message { speaker: r.speaker, text: r.answer, mine: false }));
+                    thinking.set(false);
+                    if speak.get_untracked() {
+                        speaking.set(true);
+                        let say = duet_common::SayRequest { work_id: Some(id), persona: persona_id, text: spoken };
+                        match api::post::<_, String>("/api/assistant/say", &say).await {
+                            Ok(a) => crate::play_data_url(&a),
+                            Err(e) => leptos::logging::warn!("speaking the answer: {}", e.0),
+                        }
+                        let _ = speaking.try_set(false);
+                    }
                 }
-                Err(e) => toast.show(e.0),
+                Err(e) => {
+                    toast.show(e.0);
+                    thinking.set(false);
+                }
             }
-            thinking.set(false);
         });
     };
 
@@ -1781,10 +1802,11 @@ fn Assistant(
                     <For each=numbered key=|(i, _)| *i let:item>
                         <div class="message" class:mine=item.1.mine>
                             <small>{item.1.speaker.clone()}</small>
-                            <p>{item.1.text.clone()}</p>
+                            <p inner_html=light_markdown(&item.1.text)></p>
                         </div>
                     </For>
-                    <Show when=move || thinking.get()><p class="hint">"Thinking…"</p></Show>
+                    <Show when=move || thinking.get()><p class="hint thinking"><span class="spinner small"></span>"Thinking…"</p></Show>
+                    <Show when=move || speaking.get()><p class="hint thinking"><span class="spinner small"></span>"Getting the voice ready…"</p></Show>
                 </div>
                 <form on:submit=move |ev| { ev.prevent_default(); ask(input.get_untracked()) }>
                     <input type="text" placeholder="Type a question" prop:value=move || input.get()
@@ -1797,6 +1819,29 @@ fn Assistant(
             </aside>
         </Show>
     }
+}
+
+/// Chat answers use a little Markdown: **bold**, *italic*, `code`. Everything else is escaped.
+fn light_markdown(text: &str) -> String {
+    let escaped = text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let mut out = String::new();
+    let mut rest = escaped.as_str();
+    // Pairs of markers become tags; an unpaired one is left as it is.
+    'outer: while !rest.is_empty() {
+        for (mark, tag) in [("**", "strong"), ("*", "em"), ("`", "code")] {
+            if let Some(body) = rest.strip_prefix(mark) {
+                if let Some(end) = body.find(mark).filter(|&e| e > 0) {
+                    out.push_str(&format!("<{tag}>{}</{tag}>", &body[..end]));
+                    rest = &body[end + mark.len()..];
+                    continue 'outer;
+                }
+            }
+        }
+        let c = rest.chars().next().unwrap();
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
 }
 
 fn js_error(e: &JsValue) -> String {

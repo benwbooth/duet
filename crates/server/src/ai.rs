@@ -133,10 +133,7 @@ pub async fn ask(state: &State, req: AskRequest) -> anyhow::Result<AskReply> {
     }
     let speaker = persona.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "Assistant".into());
     let audio = if req.speak {
-        let (voice, instructions) = match &persona {
-            Some(p) => (p.voice.clone().unwrap_or_else(|| ai.narrator_voice.clone()), Some(p.description.clone())),
-            None => (ai.narrator_voice.clone(), Some(ai.assistant_voice.clone())),
-        };
+        let (voice, instructions) = voice_for(&ai, persona.as_ref());
         match speak(state, &spoken, &voice, instructions.as_deref()).await {
             Ok(a) => Some(a),
             Err(e) => {
@@ -147,7 +144,30 @@ pub async fn ask(state: &State, req: AskRequest) -> anyhow::Result<AskReply> {
     } else {
         None
     };
-    Ok(AskReply { question: req.question, answer, audio, speaker })
+    Ok(AskReply { question: req.question, answer, audio, speaker, spoken })
+}
+
+/// The voice an answer is spoken in: the character's own, or the narrator's.
+fn voice_for(ai: &duet_common::AiSettings, persona: Option<&CastMember>) -> (String, Option<String>) {
+    match persona {
+        Some(p) => (p.voice.clone().unwrap_or_else(|| ai.narrator_voice.clone()), Some(p.description.clone())),
+        None => (ai.narrator_voice.clone(), Some(ai.assistant_voice.clone())),
+    }
+}
+
+/// Speaks an answer that's already been shown.
+pub async fn say(state: &State, req: duet_common::SayRequest) -> anyhow::Result<String> {
+    let ai = state.settings.read().await.ai.clone();
+    let work = match req.work_id {
+        Some(id) => db::work_detail(&state.db, id).await?,
+        None => None,
+    };
+    let persona = match (&work, req.persona) {
+        (Some(w), Some(p)) => w.cast.iter().find(|c| c.id == p).cloned(),
+        _ => None,
+    };
+    let (voice, instructions) = voice_for(&ai, persona.as_ref());
+    speak(state, &req.text, &voice, instructions.as_deref()).await
 }
 
 /// Model names an OpenAI-compatible server offers (GET {url}/models), for the settings picker.

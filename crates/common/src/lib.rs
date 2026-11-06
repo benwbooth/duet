@@ -480,6 +480,18 @@ pub struct AskReply {
     /// data: URL with the spoken answer, when requested and TTS is configured.
     pub audio: Option<String>,
     pub speaker: String,
+    /// The answer as it should be voiced (characters' acting directions included); fetch the
+    /// audio separately with /api/assistant/say so the text shows straight away.
+    #[serde(default)]
+    pub spoken: String,
+}
+
+/// Voice an assistant answer: in the speaker's voice (a character, the narrator, or the companion).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SayRequest {
+    pub work_id: Option<i64>,
+    pub persona: Option<i64>,
+    pub text: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

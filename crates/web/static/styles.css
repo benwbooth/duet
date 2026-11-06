@@ -1161,3 +1161,21 @@ input, select { border-radius: 12px; }
 .context-menu button:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .context-menu button:active:not(:disabled) { transform: none; }
 .context-menu small { color: var(--muted); font-size: 0.75rem; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Ask panel: the app's own colours (not the page's, which it would otherwise inherit inside the
+   reader), solid enough to read over the book, with clear bubbles. */
+.assistant {
+  color: var(--text); background: color-mix(in srgb, var(--surface) 94%, transparent);
+  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+}
+.assistant header select, .assistant form input {
+  background: var(--bg); color: var(--text); border: 1px solid var(--line);
+}
+.assistant .check { color: var(--text); }
+.assistant .message { background: var(--bg-2, var(--bg)); color: var(--text); border: 1px solid var(--line); }
+.assistant .message small { color: var(--muted); }
+.assistant .message.mine { background: var(--accent); color: var(--accent-text, #fff); border-color: transparent; }
+.assistant .message.mine small { color: color-mix(in srgb, var(--accent-text, #fff) 80%, transparent); }
+.assistant .hint { color: var(--muted); }
+.assistant .hint.thinking { display: flex; align-items: center; gap: 0.5rem; }
+.assistant header .icon-button { color: var(--text); }

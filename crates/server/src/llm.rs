@@ -56,12 +56,18 @@ async fn openai_compatible(
 ) -> anyhow::Result<String> {
     let mut messages = vec![json!({ "role": "system", "content": system })];
     messages.extend(turns.iter().map(|(role, content)| json!({ "role": role, "content": content })));
+    let mut body = json!({ "model": model, "messages": messages });
+    // Ollama's reasoning models think at length first (20 s+ for a definition); answers here are
+    // short and conversational, so skip it.
+    if url.contains(":11434") {
+        body["reasoning_effort"] = json!("none");
+    }
     let resp: serde_json::Value = state
         .http
         .post(format!("{}/chat/completions", url.trim_end_matches('/')))
         .bearer_auth(key)
         .timeout(std::time::Duration::from_secs(300))
-        .json(&json!({ "model": model, "messages": messages }))
+        .json(&body)
         .send()
         .await
         .context("the chat model isn't answering")?
