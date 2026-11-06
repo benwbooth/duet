@@ -1226,3 +1226,7 @@ input, select { border-radius: 12px; }
 .sidebar-tab:active { transform: translateY(-50%); }
 .sidebar-tab svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 @media (max-width: 760px) { .sidebar-tab { display: none; } }
+
+/* Buttons never take part in text selection: clicking "forward 30" a few times quickly would
+   select its label and paint it as a dark block. */
+button, .transport { -webkit-user-select: none; user-select: none; }
