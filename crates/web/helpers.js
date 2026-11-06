@@ -511,36 +511,43 @@ class Pager {
     return s && s.key === this.snapKey() && s.canvas ? s.canvas : null;
   }
 
+  // Pictures of these pages (by offset), making any that are missing.
+  async pictures(offsets) {
+    const key = this.snapKey();
+    const out = [];
+    for (const offset of offsets) {
+      let entry = this.snaps.get(offset);
+      if (!entry || entry.key !== key) {
+        entry = { key, canvas: null };
+        entry.promise = snapshotPage(this, this.article, offset).then((c) => (entry.canvas = c));
+        this.snaps.set(offset, entry);
+      }
+      try {
+        await entry.promise;
+      } catch (e) {
+        // No pictures in this browser: page turns use the 3D strips instead.
+        console.warn("page pictures unavailable:", e);
+        this.noGL = true;
+        return null;
+      }
+      out.push(entry.canvas);
+    }
+    return out;
+  }
+
   // Pictures this page and the ones either side, quietly, so a turn can start at once.
   warm() {
     if (this.noGL) return;
     clearTimeout(this.warmTimer);
     this.warmTimer = setTimeout(async () => {
-      const key = this.snapKey();
       for (const p of [this.page, this.page + 1, this.page - 1]) {
-        if (this.dead || p < 0 || p >= this.pages) continue;
-        const offset = p * this.width;
-        const have = this.snaps.get(offset);
-        if (have && have.key === key) continue;
-        const entry = { key, canvas: null };
-        this.snaps.set(offset, entry);
-        try {
-          entry.canvas = await snapshotPage(this, this.article, offset);
-        } catch (e) {
-          // No pictures in this browser: page turns use the 3D strips instead.
-          console.warn("page pictures unavailable:", e);
-          this.noGL = true;
-          return;
-        }
+        if (this.dead || this.noGL || p < 0 || p >= this.pages) continue;
+        await this.pictures([p * this.width]);
         await new Promise((r) => (window.requestIdleCallback ? requestIdleCallback(r, { timeout: 300 }) : setTimeout(r, 30)));
       }
     }, 150);
   }
 
-  showElement(el, animate) {
-    const p = this.pageOf(el);
-    if (p !== this.page) this.go(p, animate);
-  }
 
   go(p, animate) {
     p = Math.max(0, Math.min(this.pages - 1, p));
@@ -690,6 +697,7 @@ class Pager {
 
   begin3d(dir, carry) {
     this.busy = true;
+    if (this.gl) this.gl.canvas.style.display = "none";
     const W = this.width, H = this.book.clientHeight, half = W / 2;
     const cur = carry ? carry.at : this.page * W;
     const src = carry ? carry.snap : null;
@@ -831,9 +839,18 @@ class Pager {
       t.progress = 0;
       return;
     }
-    const n = { x: (P.x - C.x) / d, y: (P.y - C.y) / d };
+    let n = { x: (P.x - C.x) / d, y: (P.y - C.y) / d };
+    // Held at the spine, a page can only be pulled toward it: the fold stays within about 25°
+    // of upright, so it can't be dragged round to lie sideways or folded top to bottom.
+    const toward = Math.sign(t.hinge - C.x) || -1;
+    if (n.x * toward < 0.05) n = { x: 0.05 * toward, y: n.y };
+    const maxTilt = 0.47;
+    if (Math.abs(n.y) > maxTilt * Math.abs(n.x)) n = { x: n.x, y: Math.sign(n.y) * maxTilt * Math.abs(n.x) };
+    const nl = Math.hypot(n.x, n.y);
+    n = { x: n.x / nl, y: n.y / nl };
     const toSpine = Math.min((t.hinge - C.x) * n.x - C.y * n.y, (t.hinge - C.x) * n.x + (H - C.y) * n.y);
     if (d > 2 * toSpine) d = Math.max(0.5, 2 * toSpine);
+    P = { x: C.x + n.x * d, y: C.y + n.y * d };
     const span = (t.single ? Math.abs(t.hinge - C.x) : Math.abs(2 * t.hinge - 2 * C.x)) || W;
     const turned = Math.min(1, d / span);
     // Flex: a small curl at the corner, a wide soft bend mid-turn, more when moved quickly.
@@ -963,6 +980,16 @@ class Pager {
   }
 
   async turn(dir, carry) {
+    // Every turn is the same curl: wait (briefly) for the pictures it needs rather than fall
+    // back to the strips mid-book.
+    if (!this.noGL) {
+      this.busy = true;
+      const target = carry ? this.page : this.page + dir;
+      const need = carry ? [target * this.width] : [this.page * this.width, target * this.width];
+      await Promise.race([this.pictures(need), new Promise((r) => setTimeout(r, 1500))]);
+      this.busy = false;
+      if (this.dead) return;
+    }
     const t = this.begin(dir, carry);
     const H = t.H;
     t.C = { x: t.C0x, y: H * 0.94 };
@@ -1004,6 +1031,11 @@ class Pager {
         const dir = dx < 0 ? 1 : -1;
         if ((dir > 0 && this.page + 1 >= this.pages) || (dir < 0 && this.page === 0)) return;
         window.getSelection().removeAllRanges();
+        if (!this.noGL && (!this.snap(this.page * this.width) || !this.snap((this.page + dir) * this.width))) {
+          // Pictures still being made: take hold once they're ready (a moment).
+          this.pictures([this.page * this.width, (this.page + dir) * this.width]);
+          return;
+        }
         drag = this.begin(dir);
         const y = Math.max(0, Math.min(drag.H, start.y - rect.top));
         drag.C = { x: drag.C0x, y };
