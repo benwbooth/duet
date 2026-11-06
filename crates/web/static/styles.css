@@ -1064,15 +1064,8 @@ input, select { border-radius: 12px; }
 .curl-layer .page { height: 100%; max-width: none; margin: 0; color: var(--page-text); }
 .curl-under, .curl-static { z-index: 2; }
 .curl-shadow { z-index: 3; background: none; }
-.curl-front { z-index: 4; }
-.curl-flap-wrap { position: absolute; inset: 0; z-index: 5; pointer-events: none; transform-origin: 0 0; }
-.curl-flap { transform-origin: 0 0; will-change: transform, clip-path; }
-.curl-back { position: absolute; inset: 0; transform-origin: 0 0; }
-/* A single page's back is the same page seen through the paper. */
-.curl-back.ghosted .page { opacity: 0.07; filter: blur(0.3px); }
 .curl-shade { position: absolute; inset: 0; pointer-events: none; }
 .reader[data-theme="dark"] .curl-layer { background: #000; }
-.reader[data-theme="dark"] .curl-back.ghosted .page { opacity: 0.12; }
 
 /* The scrub bar is the recording's waveform; the range input sits invisibly on top of it. */
 .player .scrub { width: 100%; justify-self: stretch; box-sizing: border-box; }
@@ -1084,8 +1077,6 @@ input, select { border-radius: 12px; }
 .player .scrub .wave input[type="range"] {
   position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; background: none;
 }
-.curl-strip { transform-origin: 0 0; will-change: transform, clip-path; }
-.reader[data-theme="dark"] .curl-strip { background: #000; }
 /* Dark pages: a fine white edge so the page reads as a sheet against the black. */
 .reader[data-theme="dark"] .bookview { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.55); }
 @media (max-width: 760px) { .reader[data-theme="dark"] .bookview { box-shadow: none; } }
@@ -1094,3 +1085,16 @@ input, select { border-radius: 12px; }
 .bookview.grab-edge, .bookview.grab-edge * {
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cpath d='M9.5 13.5V11a1.8 1.8 0 0 1 3.6 0v1.2V9.6a1.8 1.8 0 0 1 3.6 0v2.6V10.4a1.8 1.8 0 0 1 3.6 0v2.4-.8a1.8 1.8 0 0 1 3.6 0v6.6c0 4.4-3 7.9-7.4 7.9h-1.3c-2.4 0-4.2-1-5.6-2.9l-3-4.3a1.9 1.9 0 0 1 2.9-2.4l1.9 1.9z' fill='white' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M13.1 12.2v4M16.7 12.2v4M20.3 12.8v3.4' stroke='black' stroke-width='1.2' stroke-linecap='round'/%3E%3C/svg%3E") 16 16, grabbing !important;
 }
+
+/* The turning page, in 3D: nested strips, each turned a little more than the last. */
+.page3d { position: absolute; inset: 0; z-index: 5; pointer-events: none; perspective: 2400px; transform-style: preserve-3d; }
+.p3-strip { position: absolute; top: 0; transform-style: preserve-3d; }
+.p3-face { position: absolute; inset: 0; backface-visibility: hidden; -webkit-backface-visibility: hidden; overflow: hidden; background: var(--page-bg); }
+.p3-back { transform: rotateY(180deg); }
+.p3-content { position: absolute; inset: 0; overflow: hidden; }
+.p3-slice { position: absolute; top: 0; bottom: 0; }
+.p3-slice .page { height: 100%; max-width: none; margin: 0; color: var(--page-text); }
+/* A single page's back is the same page seen through the paper. */
+.p3-back.ghosted .p3-slice { opacity: 0.08; }
+.reader[data-theme="dark"] .p3-face { background: #000; }
+.reader[data-theme="dark"] .p3-back.ghosted .p3-slice { opacity: 0.14; }
