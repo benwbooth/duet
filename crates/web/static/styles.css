@@ -1088,16 +1088,10 @@ input, select { border-radius: 12px; }
 
 /* The turning page, in 3D: nested strips, each turned a little more than the last. */
 .page3d { position: absolute; inset: 0; z-index: 5; pointer-events: none; perspective: 2400px; transform-style: preserve-3d; }
-.p3-strip { position: absolute; top: 0; transform-style: preserve-3d; }
-.p3-face { position: absolute; inset: 0; backface-visibility: hidden; -webkit-backface-visibility: hidden; overflow: hidden; background: var(--page-bg); }
-.p3-back { transform: rotateY(180deg); }
 .p3-content { position: absolute; inset: 0; overflow: hidden; }
 .p3-slice { position: absolute; top: 0; bottom: 0; }
 .p3-slice .page { height: 100%; max-width: none; margin: 0; color: var(--page-text); }
 /* A single page's back is the same page seen through the paper. */
-.p3-back.ghosted .p3-slice { opacity: 0.08; }
-.reader[data-theme="dark"] .p3-face { background: #000; }
-.reader[data-theme="dark"] .p3-back.ghosted .p3-slice { opacity: 0.14; }
 /* The curl drawn on the graphics card (see CurlGL in helpers.js). */
 .page-gl { position: absolute; top: 0; left: 0; z-index: 5; pointer-events: none; visibility: hidden; }
 /* The page's curved outline (Pager.warp): beyond it, the page underneath. */
@@ -1248,3 +1242,15 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 /* While recording, a ring around the mic swells with your voice: it's hearing you. */
 .assistant .mic.recording { animation: none; box-shadow: 0 0 0 calc(2px + var(--level, 0) * 10px) color-mix(in srgb, var(--danger) 35%, transparent); transition: box-shadow 0.08s linear; }
 .assistant .mic.starting { opacity: 0.6; }
+
+/* The turning page as a curl: bands of the page, each placed in 3D on the roll. */
+.page3d.curl3d { perspective: 2600px; perspective-origin: 50% 50%; }
+.cb-face { position: absolute; left: 0; top: 0; transform-origin: 0 0; overflow: hidden; background: var(--page-bg); pointer-events: none; }
+.cb-sheet { position: absolute; inset: 0; transform-origin: 0 0; }
+.cb-face .p3-slice { transform-origin: 0 0; }
+.cb-face .p3-content { position: absolute; inset: 0; overflow: hidden; background: var(--page-bg); }
+.cb-face .curl-shade { position: absolute; inset: 0; }
+.cb-back.ghosted .p3-slice { opacity: 0.08; }
+.curl-rim { position: absolute; top: 0; bottom: 0; border: 1px solid rgba(184, 184, 184, 0.9); pointer-events: none; }
+.reader[data-theme="dark"] .cb-face, .reader[data-theme="dark"] .cb-face .p3-content { background: #000; }
+.reader[data-theme="dark"] .cb-back.ghosted .p3-slice { opacity: 0.14; }

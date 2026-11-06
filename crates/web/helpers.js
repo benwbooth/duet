@@ -193,8 +193,8 @@ const TURN_MS = 620;
 const FADE_MS = 90;
 // For checking page turns frame by frame: window.__duetSlow = 10 plays them ten times slower.
 const slow = () => window.__duetSlow || 1;
-// Strips a turning page is made of (more bends more smoothly, but costs more to draw).
-const STRIPS = 14;
+// Bands a turning page is cut into across its roll (plus the flat parts either side of it).
+const BANDS = 14;
 
 // The next animation frame, or a timer when frames aren't coming (a hidden or throttled page),
 // so a page turn always finishes.
@@ -1380,7 +1380,7 @@ class Pager {
       scene = this.makeScene(t.sigma);
       for (const st of scene.strips) {
         this.pageFace(st.front, next, false);
-        this.pageFace(st.back, next, st.back.frontX);
+        this.pageFace(st.back, next, true);
       }
     } else if (carry) {
       const keptFront = !(t.single && dir < 0);
@@ -1393,6 +1393,16 @@ class Pager {
     }
     t.strips = scene.strips;
     t.scene = scene.el;
+    // A fine light-grey line round the turning page's free edges (not the bound one), so it reads
+    // clearly against the page beneath it.
+    const hingeLeft = t.hinge <= t.leaf[0] + 0.5;
+    for (const st of scene.strips) for (const fc of [st.front, st.back]) {
+      const r = fc.rim.style;
+      r.left = `${t.leaf[0]}px`;
+      r.width = `${t.leaf[1] - t.leaf[0]}px`;
+      r.borderLeftWidth = hingeLeft ? "0" : "1px";
+      r.borderRightWidth = hingeLeft ? "1px" : "0";
+    }
     t.keepScene = !carry;
     // The page facing the turning one stays put (with two pages); with one page turning back
     // into the next chapter, the kept page lies underneath.
@@ -1435,51 +1445,40 @@ class Pager {
   // has to lift from it. Every face holds a whole copy of the chapter (made from `src`, or later
   // by fillScene), shifted to show the right page.
   makeScene(sigma, frontSrc, backSrc) {
-    const W = this.width, H = this.book.clientHeight, half = W / 2;
-    const hinge = this.spread ? half : 0;
-    const w = this.spread ? half : W;
-    // Strip edges on whole pixels, so text on the strips lands on the same pixels as on the page.
-    const edge = (i) => Math.round((i * w) / STRIPS);
+    const W = this.width, H = this.book.clientHeight;
     const el = document.createElement("div");
-    el.className = "page3d";
-    el.style.perspectiveOrigin = `${hinge}px 50%`;
-    const face = (cls, x) => {
+    el.className = "page3d curl3d";
+    const face = (cls) => {
       const f = document.createElement("div");
       f.className = cls;
+      f.style.width = `${W}px`;
+      f.style.height = `${H}px`;
+      // Everything on the sheet, in the sheet's own coordinates (for a back face, reflected
+      // across the lift line so the face itself is never drawn flipped over).
+      const sheet = document.createElement("div");
+      sheet.className = "cb-sheet";
       const content = document.createElement("div");
       content.className = "p3-content";
       const slice = document.createElement("div");
       slice.className = "p3-slice";
       slice.style.width = `${W}px`;
-      slice.style.transform = `translateX(${-x}px)`;
       content.appendChild(slice);
       const shade = document.createElement("div");
       shade.className = "curl-shade";
-      f.append(content, shade);
-      return { f, content, slice, shade, x };
+      const rim = document.createElement("div");
+      rim.className = "curl-rim";
+      sheet.append(content, shade, rim);
+      f.appendChild(sheet);
+      return { f, sheet, content, slice, shade, rim, x: 0 };
     };
+    // Bands across the sheet, parallel to the line it lifts along: the flat part still lying on
+    // the book, the bands bent round the roll, and the part lying flat again back up beyond it.
     const strips = [];
-    let parent = el;
-    for (let i = 0; i < STRIPS; i++) {
-      const strip = document.createElement("div");
-      strip.className = "p3-strip";
-      const sw = edge(i + 1) - edge(i);
-      // (A hair wider than its share, so no seam shows between strips as they bend.)
-      strip.style.width = `${sw + 0.6}px`;
-      strip.style.height = `${H}px`;
-      strip.style.transformOrigin = sigma > 0 ? "0 50%" : "100% 50%";
-      // Each strip hangs off the end of the one before.
-      const prevW = i === 0 ? 0 : edge(i) - edge(i - 1);
-      strip.style.left = i === 0 ? `${sigma > 0 ? hinge : hinge - sw}px` : `${sigma > 0 ? prevW : -sw}px`;
-      const frontX = sigma > 0 ? hinge + edge(i) : hinge - edge(i + 1);
-      const backX = sigma > 0 ? hinge - edge(i + 1) : hinge + edge(i);
-      const front = face("p3-face", frontX);
-      const back = face("p3-face p3-back", backX);
-      back.frontX = frontX;
-      strip.append(front.f, back.f);
-      parent.appendChild(strip);
-      strips.push({ el: strip, fs: front.shade, bs: back.shade, front, back });
-      parent = strip;
+    for (let i = 0; i < BANDS; i++) {
+      const front = face("cb-face");
+      const back = face("cb-face cb-back");
+      el.append(front.f, back.f);
+      strips.push({ front, back });
     }
     const scene = { el, strips, sigma, key: this.sceneKey() };
     if (frontSrc) {
@@ -1490,6 +1489,14 @@ class Pager {
       scene.full = true;
     }
     return scene;
+  }
+
+  // Which way a face shows its page: a front as it lies; the back of a page that turns over to
+  // become the facing page mirrored about the spine (so it reads right once over); the back of a
+  // single page is the page itself, faintly, through the paper.
+  faceSide(fc, isBack, ghost) {
+    fc.slice.style.transform = isBack && !ghost ? `matrix(-1,0,0,1,${(2 * (this.spread ? this.width / 2 : 0)).toFixed(2)},0)` : "";
+    if (isBack) fc.f.classList.toggle("ghosted", !!ghost);
   }
 
   // What the kept strips depend on: the page size and one page or two (the text is the chapter's).
@@ -1529,8 +1536,8 @@ class Pager {
   }
 
   // Points a face at one page of this chapter with a copy of just that page (made fresh).
-  // `ghostX`: the back of a single page, this page seen through the paper.
-  pageFace(fc, offset, ghostX) {
+  // `ghost`: the back of a single page, this page seen through the paper.
+  pageFace(fc, offset, ghost) {
     const c = pageCopy(this.article, offset, this.width, this.book.clientHeight);
     c.querySelectorAll("img[loading]").forEach((e) => e.removeAttribute("loading"));
     const furn = this.furniture(offset);
@@ -1539,11 +1546,7 @@ class Pager {
     fc.page = c;
     fc.src = this.article;
     fc.furnAt = offset;
-    fc.slice.style.transform = `translateX(${-(ghostX === false ? fc.x : ghostX)}px)`;
-    if (fc.f.classList.contains("p3-back")) {
-      fc.content.style.transform = ghostX === false ? "" : "scaleX(-1)";
-      fc.f.classList.toggle("ghosted", ghostX !== false);
-    }
+    this.faceSide(fc, fc.f.classList.contains("cb-back"), ghost);
   }
 
   // Copies the chapter into any face still without it: all of them now (`budget` 0), or within
@@ -1593,18 +1596,13 @@ class Pager {
       for (const [fc, off, isBack] of [[st.front, fOff, false], [st.back, bOff, true]]) {
         const c = fc.page;
         if (!c) continue;
-        const x = isBack && ghost ? st.back.frontX : fc.x;
-        fc.slice.style.transform = `translateX(${-x}px)`;
+        this.faceSide(fc, isBack, ghost);
         c.style.transform = `translateX(${-off}px)`;
         if (fc.src === this.article) this.showOnly(c, off);
         if (c.__now !== nowId) {
           c.querySelectorAll(".s.now").forEach((e) => e.classList.remove("now"));
           for (const id of nowIds) c.querySelectorAll(`.s[data-s="${id}"]`).forEach((e) => e.classList.add("now"));
           c.__now = nowId;
-        }
-        if (isBack) {
-          fc.content.style.transform = ghost ? "scaleX(-1)" : "";
-          fc.f.classList.toggle("ghosted", ghost);
         }
         // This page's running head and number, on the face (only where the face shows them).
         if (fc.furnAt !== off) {
@@ -1655,13 +1653,13 @@ class Pager {
   ends(t, y) {
     const C = { x: t.C0x, y };
     // On the graphics card a single page rolls up into the spine; otherwise it swings over it.
-    const F = { x: t.gl && t.single ? t.hinge : 2 * t.hinge - t.C0x, y };
+    const F = { x: t.single ? t.hinge : 2 * t.hinge - t.C0x, y };
     return t.reverse ? [F, C] : [C, F];
   }
 
   pose(t, P) {
     if (t.gl) this.poseGL(t, P);
-    else this.pose3d(t, P);
+    else this.poseCurl(t, P);
   }
 
   // The curl: the corner of the sheet pulled to P. The sheet is flat up to a lift line, rolls
@@ -1760,63 +1758,182 @@ class Pager {
   }
 
   // Turns the sheet so its free edge is over x = P.x (P.y is where it's held, which tips it).
-  pose3d(t, P) {
-    const { H } = t;
-    // (The page underneath changes once the strips are drawn over it.)
-    this.revealUnder(t);
-    const sigma = t.sigma, w = t.leaf[1] - t.leaf[0];
-    const theta = Math.acos(Math.max(-1, Math.min(1, (sigma * (P.x - t.hinge)) / w)));
-    // Faster movement flexes the paper more; it eases back as it slows.
+  // Where the page is held (P) sets the curl, worked out as on the graphics card (see poseGL):
+  // a lift line, and a cylinder of radius R the sheet rolls over beyond it. The sheet is drawn
+  // in bands parallel to the line, each a copy of the page clipped to its band and placed in 3D
+  // on the chord of the roll it spans, so the bands meet edge to edge.
+  curlGeometry(t, P) {
+    const { W, H } = t;
+    const C = { x: t.C0x, y: t.C.y };
+    const w = t.leaf[1] - t.leaf[0];
+    const hp = { x: t.hinge, y: C.y };
+    let vx = P.x - hp.x, vy = P.y - hp.y;
+    const r = Math.hypot(vx, vy);
+    if (r > w) { vx *= w / r; vy *= w / r; }
+    P = { x: hp.x + vx, y: hp.y + vy };
+    let d = Math.hypot(P.x - C.x, P.y - C.y);
+    if (d < 0.5) return null;
+    let n = { x: (P.x - C.x) / d, y: (P.y - C.y) / d };
+    const toward = Math.sign(t.hinge - C.x) || -1;
+    if (n.x * toward < 0.05) n = { x: 0.05 * toward, y: n.y };
+    const maxTilt = 0.47;
+    if (Math.abs(n.y) > maxTilt * Math.abs(n.x)) n = { x: n.x, y: Math.sign(n.y) * maxTilt * Math.abs(n.x) };
+    const nl = Math.hypot(n.x, n.y);
+    n = { x: n.x / nl, y: n.y / nl };
+    const toSpine = Math.min((t.hinge - C.x) * n.x - C.y * n.y, (t.hinge - C.x) * n.x + (H - C.y) * n.y);
+    if (d > 2 * toSpine) d = Math.max(0.5, 2 * toSpine);
+    P = { x: C.x + n.x * d, y: C.y + n.y * d };
+    const span = (t.single ? Math.abs(t.hinge - C.x) : Math.abs(2 * t.hinge - 2 * C.x)) || W;
+    const turned = Math.min(1, d / span);
     const now = performance.now();
     if (t.lastP) {
-      const dt = Math.max(1, now - t.lastT);
-      const speed = Math.abs(P.x - t.lastP.x) / dt;
-      t.flex = (t.flex || 0) * 0.8 + Math.min(0.6, speed * 0.25) * 0.2;
+      const speed = Math.hypot(P.x - t.lastP.x, P.y - t.lastP.y) / Math.max(1, now - t.lastT);
+      t.flex = (t.flex || 0) * 0.8 + Math.min(w * 0.12, speed * 22) * 0.2;
     }
     t.lastP = P;
     t.lastT = now;
-    // The free edge leads; the bound edge stays flat until the page has to lift from the spine.
-    const bend = Math.min(1.5, (0.95 + (t.flex || 0)) * Math.sin(theta));
-    const hinge = Math.max(0, theta - bend);
-    const hold = Math.max(-0.5, Math.min(0.5, (t.C ? t.C.y : H / 2) / H - 0.5));
-    let prev = 0, reach = 0, x = 0;
-    t.strips.forEach(({ el, fs, bs }, i) => {
-      const u = (i + 1) / STRIPS;
-      const a = hinge + (theta - hinge) * u * u;
-      const turn = a - prev;
-      prev = a;
-      const tilt = i === 0 ? `rotateX(${(-hold * 14 * Math.sin(theta)).toFixed(2)}deg) ` : "";
-      el.style.transform = `${tilt}rotateY(${(-sigma * turn).toFixed(4)}rad)`;
-      // Light from in front: paper darkens as it turns edge-on, the back brightens as it comes
-      // round to face you, with a gloss where it catches the light.
-      // Shaded smoothly across each strip, from the angle at its inner edge to its outer one.
-      const a0 = a - turn;
-      const frontShade = (ang) => `rgba(0,0,0,${(0.42 * (1 - Math.max(0, Math.cos(ang))) ** 1.5).toFixed(3)})`;
-      const backShade = (ang) => {
-        const gloss = 0.3 * Math.exp(-(((ang - 0.7 * Math.PI) / (0.13 * Math.PI)) ** 2));
-        const dark = 0.4 * (Math.max(0, 1 + Math.cos(ang)) / 2) ** 1.5;
-        // Gloss lightens, shade darkens: one colour that does both.
-        return gloss > dark ? `rgba(255,255,255,${(gloss - dark).toFixed(3)})` : `rgba(0,0,0,${(dark - gloss).toFixed(3)})`;
-      };
-      const out = sigma > 0 ? "to right" : "to left";
-      const back = sigma > 0 ? "to left" : "to right";
-      fs.style.background = `linear-gradient(${out}, ${frontShade(a0)}, ${frontShade(a)})`;
-      bs.style.background = `linear-gradient(${back}, ${backShade(a0)}, ${backShade(a)})`;
-      const c = Math.cos(a);
-      x += (w / STRIPS) * c;
-      reach = Math.max(reach, x);
-    });
-    t.progress = t.reverse ? 1 - theta / Math.PI : theta / Math.PI;
-    // The turning page's shadow on the page it uncovers, just past its furthest reach.
-    const lift = Math.sin(theta);
-    const edge = t.hinge + sigma * Math.max(0, reach);
-    const fade = 30 + 140 * lift;
-    const dir = sigma > 0 ? "to right" : "to left";
-    const from = sigma > 0 ? edge : t.W - edge;
-    t.under.style.opacity = lift > 0.01 ? "1" : "0";
-    t.under.style.background =
-      `linear-gradient(${dir}, rgba(0,0,0,0) ${(from - 4).toFixed(0)}px, rgba(0,0,0,${(0.34 * lift).toFixed(3)}) ${from.toFixed(0)}px, rgba(0,0,0,0) ${(from + fade).toFixed(0)}px)`;
-    t.under.style.clipPath = `inset(0 ${t.W - t.leaf[1]}px 0 ${t.leaf[0]}px)`;
+    const most = (2 * toSpine - d) / Math.PI;
+    let R = Math.min(w * 0.35, 8 + d * 0.12 + w * 0.18 * Math.sin(Math.PI * turned) + (t.flex || 0));
+    const tail = t.single ? Math.max(0, Math.min(1, (turned - 0.7) / 0.3)) : 0;
+    R = Math.max(0.5, Math.min(most, R + (most - R) * tail));
+    const sC = (d + Math.PI * R) / 2;
+    const L0 = { x: C.x + n.x * sC, y: C.y + n.y * sC };
+    const upright = t.single ? Math.max(0, Math.min(1, (turned - 0.8) / 0.2)) : 0;
+    const p = Math.min(1, Math.abs(P.x - C.x) / span);
+    return { L0, u: { x: -n.x, y: -n.y }, R, squash: 1 - 0.98 * upright, turned, progress: t.reverse ? 1 - p : p };
+  }
+
+  poseCurl(t, P) {
+    const { W, H } = t;
+    const g = this.curlGeometry(t, P);
+    const bands = t.strips;
+    const leaf = [[t.leaf[0], 0], [t.leaf[1], 0], [t.leaf[1], H], [t.leaf[0], H]];
+    const show = (fc, on) => { if (fc.on !== on) { fc.f.style.visibility = on ? "" : "hidden"; fc.on = on; } };
+    if (!g) {
+      // Lying flat: the whole sheet as it rests, front up.
+      bands.forEach((b, i) => {
+        show(b.back, false);
+        show(b.front, i === 0);
+        if (i === 0) {
+          b.front.f.style.transform = "none";
+          b.front.f.style.clipPath = `polygon(${leaf.map(([x, y]) => `${x}px ${y}px`).join(",")})`;
+          b.front.shade.style.background = "none";
+        }
+      });
+      t.under.style.opacity = "0";
+      t.progress = 0;
+      this.revealUnder(t);
+      return;
+    }
+    const { L0, u, R, squash } = g;
+    t.progress = g.progress;
+    const roll = Math.PI * R;
+    const c = u.x * L0.x + u.y * L0.y;
+    const h = t.hinge;
+    // Band edges along the sheet (s, the distance past the lift line): the flat part, the roll
+    // in equal chords, and the far flat part (out past any corner).
+    const nRoll = BANDS - 2;
+    const far = 4 * (W + H);
+    const edges = [-far, 0];
+    for (let i = 1; i <= nRoll; i++) edges.push((roll * i) / nRoll);
+    edges.push(far);
+    // Where a point s along the sheet ends up: across (x) and up (z).
+    const at = (s) => (s <= 0 ? [s, 0] : s < roll ? [R * Math.sin(s / R), R * (1 - Math.cos(s / R))] : [roll - s, 2 * R]);
+    // The leaf clipped to a <= s <= b.
+    const clip = (a, b) => {
+      let poly = leaf;
+      for (const [k, sign] of [[a, 1], [b, -1]]) {
+        const out = [];
+        const f = ([x, y]) => sign * (u.x * x + u.y * y - c - k);
+        for (let i = 0; i < poly.length; i++) {
+          const p0 = poly[i], p1 = poly[(i + 1) % poly.length];
+          const f0 = f(p0), f1 = f(p1);
+          if (f0 >= 0) out.push(p0);
+          if ((f0 >= 0) !== (f1 >= 0)) {
+            const m = f0 / (f0 - f1);
+            out.push([p0[0] + (p1[0] - p0[0]) * m, p0[1] + (p1[1] - p0[1]) * m]);
+          }
+        }
+        poly = out;
+        if (!poly.length) break;
+      }
+      return poly;
+    };
+    const frontShade = (th) => 0.42 * (1 - Math.max(0, Math.cos(th))) ** 1.5;
+    const backTone = (th) => {
+      const dark = 0.4 * (Math.max(0, 1 + Math.cos(th)) / 2) ** 1.5;
+      const gloss = 0.3 * Math.exp(-(((th - 2.2) / 0.41) ** 2));
+      return gloss > dark ? `rgba(255,255,255,${(gloss - dark).toFixed(3)})` : `rgba(0,0,0,${(dark - gloss).toFixed(3)})`;
+    };
+    for (let i = 0; i < BANDS; i++) {
+      const b = bands[i];
+      const s0 = edges[i], s1 = edges[i + 1];
+      // (Each band reaches a little into its neighbours, so no hairline seam shows between them.)
+      const poly = s1 > s0 ? clip(s0 - 0.8, s1 + 0.8) : [];
+      if (poly.length < 3) {
+        show(b.front, false);
+        show(b.back, false);
+        continue;
+      }
+      // The band's chord: x and z change linearly with s between its two edges.
+      const a0 = at(Math.max(0, Math.min(roll, s0))), a1 = at(Math.max(0, Math.min(roll, s1)));
+      let kx, kz, x0, z0, sRef;
+      if (s1 <= 0) { kx = 1; kz = 0; x0 = 0; z0 = 0; sRef = 0; }
+      else if (s0 >= roll) { kx = -1; kz = 0; x0 = 0; z0 = 2 * R; sRef = roll; }
+      else { kx = (a1[0] - a0[0]) / (s1 - s0); kz = (a1[1] - a0[1]) / (s1 - s0); x0 = a0[0]; z0 = a0[1]; sRef = s0; }
+      // X -> X + u((kx - 1) s + x0 - sRef kx) + z (kz s + z0 - sRef kz), with s = u.X - c,
+      // then (one page, at the end) squashed toward the spine.
+      const A = -(kx - 1) * c + x0 - sRef * kx, B = -kz * c + z0 - sRef * kz;
+      const q = s1 <= 0 ? 1 : squash;
+      let M = [
+        [q * (1 + u.x * (kx - 1) * u.x), q * u.x * (kx - 1) * u.y, 0, q * u.x * A + h * (1 - q)],
+        [u.y * (kx - 1) * u.x, 1 + u.y * (kx - 1) * u.y, 0, u.y * A],
+        [kz * u.x, kz * u.y, 1, B],
+        [0, 0, 0, 1],
+      ];
+      // Which side faces you: the front while the band's slope across is still forward. A back
+      // face is drawn reflected across the lift line and placed by M after that reflection, so
+      // it reads the right way round without the element itself being turned over.
+      const front = kx > 0;
+      const fc = front ? b.front : b.back;
+      show(b.front, front);
+      show(b.back, !front);
+      let poly2 = poly;
+      if (!front) {
+        const Rl = [
+          [1 - 2 * u.x * u.x, -2 * u.x * u.y, 0, 2 * c * u.x],
+          [-2 * u.x * u.y, 1 - 2 * u.y * u.y, 0, 2 * c * u.y],
+          [0, 0, 1, 0],
+          [0, 0, 0, 1],
+        ];
+        M = M.map((row) => [0, 1, 2, 3].map((j) => row.reduce((acc, v, k) => acc + v * Rl[k][j], 0)));
+        poly2 = poly.map(([x, y]) => [x - 2 * u.x * (u.x * x + u.y * y - c), y - 2 * u.y * (u.x * x + u.y * y - c)]);
+        fc.sheet.style.transform = `matrix(${Rl[0][0].toFixed(5)},${Rl[1][0].toFixed(5)},${Rl[0][1].toFixed(5)},${Rl[1][1].toFixed(5)},${Rl[0][3].toFixed(3)},${Rl[1][3].toFixed(3)})`;
+      } else if (fc.sheet.style.transform) {
+        fc.sheet.style.transform = "";
+      }
+      const mat = [0, 1, 2, 3].flatMap((j) => [0, 1, 2, 3].map((i) => M[i][j]));
+      fc.f.style.transform = `matrix3d(${mat.map((v) => +v.toFixed(5)).join(",")})`;
+      fc.f.style.clipPath = `polygon(${poly2.map(([x, y]) => `${x.toFixed(2)}px ${y.toFixed(2)}px`).join(",")})`;
+      // Light: as on the graphics card, by the angle round the roll at each edge of the band.
+      const th0 = Math.max(0, Math.min(Math.PI, s0 / R)), th1 = Math.max(0, Math.min(Math.PI, s1 / R));
+      if (s1 <= 0) fc.shade.style.background = "none";
+      else if (front) {
+        fc.shade.style.background = lineGradient(W, H, u, L0, [[s0, `rgba(0,0,0,${frontShade(th0).toFixed(3)})`], [s1, `rgba(0,0,0,${frontShade(th1).toFixed(3)})`]]);
+      } else {
+        fc.shade.style.background = s0 >= roll ? backTone(Math.PI) : lineGradient(W, H, u, L0, [[s0, backTone(th0)], [s1, backTone(th1)]]);
+      }
+    }
+    // The sheet's shadow on the page it uncovers, deepest just past the roll.
+    const lift = Math.sin(Math.PI * Math.min(1, g.turned));
+    const reach = Math.min(170, 30 + roll * 0.5 + 40 * lift);
+    const strength = 0.4 * lift + 0.06;
+    t.under.style.opacity = "1";
+    t.under.style.background = lineGradient(W, H, u, { x: L0.x + u.x * R, y: L0.y + u.y * R }, [
+      [-2, "rgba(0,0,0,0)"], [0, `rgba(0,0,0,${strength.toFixed(3)})`], [reach, "rgba(0,0,0,0)"],
+    ]);
+    t.under.style.clipPath = `inset(0 ${W - t.leaf[1]}px 0 ${t.leaf[0]}px)`;
+    this.revealUnder(t);
   }
 
   animate(t, from, to, ms, arc) {
@@ -1824,7 +1941,8 @@ class Pager {
       const start = performance.now();
       const ease = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
       const step = (now) => {
-        const x = Math.min(1, (now - start) / ms);
+        // (A frame's timestamp can be a little before the animation started: never run it backwards.)
+        const x = Math.max(0, Math.min(1, (now - start) / ms));
         const e = ease(x);
         // Turned by a tap, the corner lifts as it travels, as a finger would carry it.
         const up = arc ? -arc * Math.sin(Math.PI * e) : 0;
