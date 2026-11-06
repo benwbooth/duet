@@ -1179,3 +1179,23 @@ input, select { border-radius: 12px; }
 .assistant .hint { color: var(--muted); }
 .assistant .hint.thinking { display: flex; align-items: center; gap: 0.5rem; }
 .assistant header .icon-button { color: var(--text); }
+
+/* Dictionary card beside a looked-up word. */
+.dict-card {
+  position: fixed; z-index: 31; width: 360px; max-height: min(460px, calc(100vh - 24px)); display: flex; flex-direction: column;
+  background: color-mix(in srgb, var(--surface) 96%, transparent); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  color: var(--text); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow-lg);
+  font-family: var(--sans); animation: panel-in 0.18s var(--ease-out);
+}
+.dict-card header { display: flex; align-items: baseline; gap: 0.6rem; padding: 0.8rem 0.8rem 0.4rem 1rem; }
+.dict-card .dict-word { font-family: var(--serif); font-size: 1.35rem; }
+.dict-card .dict-phonetic { color: var(--muted); font-size: 0.9rem; flex: 1; }
+.dict-card header .icon-button { margin-left: auto; align-self: center; }
+.dict-card .dict-body { overflow: auto; padding: 0 1rem 0.6rem; }
+.dict-card section { margin-top: 0.5rem; }
+.dict-card .dict-pos { color: var(--accent); font-size: 0.85rem; }
+.dict-card ol { margin: 0.25rem 0 0; padding-left: 1.2rem; display: grid; gap: 0.35rem; font-size: 0.92rem; line-height: 1.4; }
+.dict-card .dict-example { display: block; color: var(--muted); font-style: italic; font-size: 0.85rem; margin-top: 0.1rem; }
+.dict-card footer { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.55rem 1rem; border-top: 1px solid var(--line); }
+.dict-card footer small { color: var(--muted); }
+.dict-card .hint { color: var(--muted); display: flex; align-items: center; gap: 0.4rem; }

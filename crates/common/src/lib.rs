@@ -591,3 +591,23 @@ pub struct FolderEntry {
     /// Ebooks and audio files directly inside (capped), to show what's there.
     pub books: usize,
 }
+
+/// A dictionary entry (from Wiktionary through the Free Dictionary API).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct DictEntry {
+    pub word: String,
+    pub phonetic: Option<String>,
+    pub meanings: Vec<DictMeaning>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct DictMeaning {
+    pub part_of_speech: String,
+    pub definitions: Vec<DictSense>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct DictSense {
+    pub definition: String,
+    pub example: Option<String>,
+}

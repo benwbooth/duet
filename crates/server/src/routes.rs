@@ -70,6 +70,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/ai/speak", post(ai_speak))
         .route("/assistant/ask", post(ask))
         .route("/assistant/say", post(say))
+        .route("/define", get(define))
         .route("/assistant/transcribe", post(transcribe))
         // Positions, sync maps and job status change under the browser; covers and book
         // resources set their own caching.
@@ -375,6 +376,15 @@ async fn list_downloads(AxState(s): AxState<State>) -> ApiResult<Json<Vec<Downlo
 async fn new_download(AxState(s): AxState<State>, Json(d): Json<NewDownload>) -> ApiResult<StatusCode> {
     downloads::start(&s, d).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(Deserialize)]
+struct DefineQuery {
+    word: String,
+}
+
+async fn define(AxState(s): AxState<State>, Query(q): Query<DefineQuery>) -> ApiResult<Json<Vec<duet_common::DictEntry>>> {
+    Ok(Json(crate::dict::define(&s, &q.word).await?))
 }
 
 async fn say(AxState(s): AxState<State>, Json(r): Json<duet_common::SayRequest>) -> ApiResult<Json<String>> {

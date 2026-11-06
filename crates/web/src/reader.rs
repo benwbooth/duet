@@ -1072,6 +1072,8 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     // Right-click on the page: look up, explain or ask about the words there, or play from them.
     let menu = RwSignal::new(None::<(f64, f64, String, Option<(usize, usize)>)>);
     let assist = RwSignal::new(None::<(String, bool)>);
+    // The dictionary card: where it shows, the word, and the sentence it's in.
+    let dict = RwSignal::new(None::<(f64, f64, String, Option<String>)>);
     let on_context = move |ev: web_sys::MouseEvent| {
         ev.prevent_default();
         // The sentence first (selecting the word below would hide it).
@@ -1098,15 +1100,16 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     };
     // Any click or key elsewhere closes it.
     let close_menu = Closure::<dyn Fn(web_sys::Event)>::new(move |ev: web_sys::Event| {
-        if menu.get_untracked().is_none() {
+        if menu.get_untracked().is_none() && dict.get_untracked().is_none() {
             return;
         }
         let inside = ev
             .target()
             .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-            .is_some_and(|el| el.closest(".context-menu").ok().flatten().is_some());
+            .is_some_and(|el| el.closest(".context-menu, .dict-card").ok().flatten().is_some());
         if !inside {
             menu.set(None);
+            dict.set(None);
         }
     });
     for kind in ["pointerdown", "keydown", "wheel"] {
@@ -1586,7 +1589,6 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             <Show when=move || menu.get().is_some()>
                 {move || menu.get().map(|(x, y, text, at)| {
                     let short = if text.chars().count() > 28 { format!("{}…", text.chars().take(26).collect::<String>()) } else { text.clone() };
-                    let word = !text.contains(char::is_whitespace);
                     let (t1, t2, t3, t4) = (text.clone(), text.clone(), text.clone(), text.clone());
                     // The sentence the words are in, so the answer is about this use of them.
                     let context = at
@@ -1595,12 +1597,24 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     view! {
                         <div class="context-menu" style=format!("left:{x}px;top:{y}px") on:contextmenu=|ev| ev.prevent_default()>
                             {(!text.is_empty()).then(|| view! {
-                                <button on:click=move |_| { menu.set(None); assist.set(Some((
-                                    match &context {
-                                        Some(sent) if word => format!("What does \"{t1}\" mean in this sentence: \"{sent}\"?"),
-                                        Some(sent) => format!("What does \"{t1}\" mean here: \"{sent}\"?"),
-                                        None => format!("What does \"{t1}\" mean here?"),
-                                    }, true))); }>
+                                <button on:click={
+                                    let context = context.clone();
+                                    move |_| {
+                                        menu.set(None);
+                                        if t1.split_whitespace().count() <= 3 {
+                                            // Words and short phrases: the dictionary.
+                                            dict.set(Some((x, y, t1.clone(), context.clone())));
+                                        } else {
+                                            assist.set(Some((
+                                                match &context {
+                                                    Some(sent) => format!("What does \"{t1}\" mean here: \"{sent}\"?"),
+                                                    None => format!("What does \"{t1}\" mean here?"),
+                                                },
+                                                true,
+                                            )));
+                                        }
+                                    }
+                                }>
                                     <span>"Define"</span><small>{format!("“{short}”")}</small>
                                 </button>
                                 <button on:click=move |_| { menu.set(None); assist.set(Some((format!("Explain this passage: \"{t2}\""), true))); }>
@@ -1632,7 +1646,75 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     }
                 })}
             </Show>
-            <Assistant id work audio playing position request=assist/>
+            {move || dict.get().map(|(x, y, word, context)| view! { <DictCard x y word context dict assist/> })}
+            <Assistant id work audio playing position request=assist dict/>
+        </div>
+    }
+}
+
+/// A word looked up in the dictionary, in a card beside it; the AI is one click away for what
+/// the word means in this particular sentence.
+#[component]
+fn DictCard(
+    x: f64,
+    y: f64,
+    word: String,
+    context: Option<String>,
+    dict: RwSignal<Option<(f64, f64, String, Option<String>)>>,
+    assist: RwSignal<Option<(String, bool)>>,
+) -> impl IntoView {
+    let entries = RwSignal::new(None::<Result<Vec<duet_common::DictEntry>, String>>);
+    let w = word.clone();
+    spawn_local(async move {
+        let r = api::get::<Vec<duet_common::DictEntry>>(&format!("/api/define?word={}", js_sys::encode_uri_component(&w))).await;
+        let _ = entries.try_set(Some(r.map_err(|e| e.0)));
+    });
+    let (vw, vh) = (
+        window().inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(1000.0),
+        window().inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(800.0),
+    );
+    let style = format!("left:{}px;top:{}px", x.min(vw - 380.0).max(8.0), y.min(vh - 120.0).max(8.0));
+    let ask_ai = {
+        let word = word.clone();
+        move |_| {
+            dict.set(None);
+            assist.set(Some((
+                match &context {
+                    Some(sent) => format!("What does \"{word}\" mean in this sentence: \"{sent}\"?"),
+                    None => format!("What does \"{word}\" mean here?"),
+                },
+                true,
+            )));
+        }
+    };
+    view! {
+        <div class="dict-card" style=style on:contextmenu=|ev| ev.prevent_default()>
+            <header>
+                <strong class="dict-word">{move || entries.with(|e| match e { Some(Ok(v)) if !v.is_empty() => v[0].word.clone(), _ => word.clone() })}</strong>
+                <span class="dict-phonetic">{move || entries.with(|e| match e { Some(Ok(v)) => v.iter().find_map(|x| x.phonetic.clone()), _ => None })}</span>
+                <button class="icon-button" aria-label="Close" on:click=move |_| dict.set(None)>"×"</button>
+            </header>
+            <div class="dict-body">
+                {move || match entries.get() {
+                    None => view! { <p class="hint"><span class="spinner small"></span>" Looking it up…"</p> }.into_any(),
+                    Some(Err(e)) => view! { <p class="hint">{format!("The dictionary isn't reachable ({e}).")}</p> }.into_any(),
+                    Some(Ok(v)) if v.is_empty() => view! { <p class="hint">"Not in the dictionary."</p> }.into_any(),
+                    Some(Ok(v)) => v.into_iter().flat_map(|e| e.meanings).take(4).map(|m| view! {
+                        <section>
+                            <em class="dict-pos">{m.part_of_speech}</em>
+                            <ol>
+                                {m.definitions.into_iter().take(4).map(|d| view! {
+                                    <li>{d.definition}{d.example.map(|ex| view! { <span class="dict-example">{format!("“{ex}”")}</span> })}</li>
+                                }).collect_view()}
+                            </ol>
+                        </section>
+                    }).collect_view().into_any(),
+                }}
+            </div>
+            <footer>
+                <small>"Wiktionary"</small>
+                <button class="link" on:click=ask_ai>"What does it mean here? Ask AI"</button>
+            </footer>
         </div>
     }
 }
@@ -1647,6 +1729,7 @@ fn Assistant(
     position: impl Fn() -> Position + Copy + Send + Sync + 'static,
     // Something to ask from elsewhere (the page's right-click menu): (text, ask now or just fill in).
     request: RwSignal<Option<(String, bool)>>,
+    dict: RwSignal<Option<(f64, f64, String, Option<String>)>>,
 ) -> impl IntoView {
     let open = RwSignal::new(false);
     let input = RwSignal::new(String::new());
@@ -1769,6 +1852,10 @@ fn Assistant(
         let sel = crate::selected_text();
         if sel.is_empty() {
             toast.show("Select a word or phrase first");
+        } else if sel.split_whitespace().count() <= 3 {
+            let w = window().inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(1000.0);
+            let h = window().inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(800.0);
+            dict.set(Some(((w - 400.0).max(8.0), (h - 480.0).max(8.0), sel.trim().to_string(), None)));
         } else {
             open.set(true);
             ask(format!("What does \"{sel}\" mean in this passage?"));

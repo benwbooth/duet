@@ -7,6 +7,7 @@ mod book;
 mod cast;
 mod db;
 mod dev;
+mod dict;
 mod downloads;
 mod error;
 mod free;
