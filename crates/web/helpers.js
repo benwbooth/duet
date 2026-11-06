@@ -790,6 +790,7 @@ class Pager {
   destroy() {
     this.resize.disconnect();
     document.removeEventListener("keydown", this.onKey);
+    if (this.listening) this.listening.abort();
     // (Not what's kept on screen for a turn into the next chapter: the next pager plays it.)
     this.book.querySelectorAll(".curl-layer:not(.carried), .page3d:not(.carried), .page-warp, .edge-hint").forEach((e) => e.remove());
     // The shared curl canvas stays in the book; it's left showing only while a turn into the
@@ -2019,6 +2020,7 @@ class Pager {
     t.layers.forEach((e) => e.remove());
     this.book.classList.remove("turning");
     this.busy = false;
+    if (this.hover) this.hover();
     if (this.relayoutAfter) {
       this.relayoutAfter = false;
       this.relayout();
@@ -2080,6 +2082,10 @@ class Pager {
   }
 
   bindPointer() {
+    // Every listener goes when this pager does (the book itself stays for the next chapter's).
+    this.listening = new AbortController();
+    const on = (type, fn, opts) =>
+      this.book.addEventListener(type, fn, { ...(typeof opts === "boolean" ? { capture: opts } : opts || {}), signal: this.listening.signal });
     let start = null;
     let drag = null;
     // Where a mouse can take hold of the page: the outer part of the page being turned (the rest
@@ -2093,7 +2099,7 @@ class Pager {
       const band = Math.max(36, pad + 10);
       return x > this.width - band || x < band;
     };
-    this.book.addEventListener("pointerdown", (e) => {
+    on("pointerdown", (e) => {
       this.swallowClick = false;
       if (e.button !== 0) return;
       if (e.target.closest && e.target.closest("a[data-href]")) return;
@@ -2104,13 +2110,29 @@ class Pager {
       // Holding the page, not selecting its words.
       if (start.grab && e.pointerType !== "touch") e.preventDefault();
     });
-    this.book.addEventListener("pointermove", (e) => {
+    // The hand and margin tint where the mouse is; worked out again when a turn ends, so they
+    // come back without the mouse having to move. (Kept on the book: a turn into the next
+    // chapter ends in the next chapter's pager.)
+    this.hover = () => {
+      const m = this.book.__mouse;
+      if (!m || this.busy) {
+        this.book.classList.remove("grab-edge");
+        this.edgeHint("");
+        return;
+      }
+      const on = grabZone(m);
+      this.book.classList.toggle("grab-edge", this.curl && on);
+      this.edgeHint(on ? (m.clientX - this.book.getBoundingClientRect().left < this.width / 2 ? "left" : "right") : "");
+    };
+    on("pointerleave", (e) => {
+      if (e.pointerType !== "mouse") return;
+      this.book.__mouse = null;
+      this.hover();
+    });
+    on("pointermove", (e) => {
+      if (e.pointerType === "mouse") this.book.__mouse = { clientX: e.clientX, clientY: e.clientY, pointerType: "mouse" };
       if (!start) {
-        if (e.pointerType === "mouse") {
-          const on = !this.busy && grabZone(e);
-          this.book.classList.toggle("grab-edge", this.curl && on);
-          this.edgeHint(on ? (e.clientX - this.book.getBoundingClientRect().left < this.width / 2 ? "left" : "right") : "");
-        }
+        if (e.pointerType === "mouse") this.hover();
         return;
       }
       const dx = e.clientX - start.x;
@@ -2196,7 +2218,7 @@ class Pager {
       const p = sw.t.progress || 0;
       this.finish(sw.t, sw.t.at || sw.t.from, (sw.t.reverse ? 1 - p : p) > 0.3);
     };
-    this.book.addEventListener("wheel", (e) => {
+    on("wheel", (e) => {
       if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
       e.preventDefault();
       if (!swipe) {
@@ -2224,15 +2246,15 @@ class Pager {
       clearTimeout(swipe.timer);
       swipe.timer = setTimeout(endSwipe, 160);
     }, { passive: false });
-    this.book.addEventListener("pointerleave", () => {
+    on("pointerleave", () => {
       if (!drag) this.book.classList.remove("grab-edge");
       this.edgeHint("");
     });
-    this.book.addEventListener("pointerup", release);
-    this.book.addEventListener("pointercancel", release);
+    on("pointerup", release);
+    on("pointercancel", release);
     // Double-click selects a word (the browser's own), drag selects any stretch of text, and a
     // triple-click selects the whole sentence (rather than the paragraph).
-    this.book.addEventListener("click", (e) => {
+    on("click", (e) => {
       if (e.detail !== 3) return;
       const sentence = e.target.closest && e.target.closest(".s");
       if (!sentence) return;
@@ -2245,7 +2267,7 @@ class Pager {
       sel.addRange(range);
     });
     // Taps on the outer edges turn the page; taps elsewhere reach the sentences.
-    this.book.addEventListener(
+    on(
       "click",
       (e) => {
         if (this.swallowClick) {
