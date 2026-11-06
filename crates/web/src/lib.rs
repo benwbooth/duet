@@ -50,6 +50,14 @@ extern "C" {
     fn pager_destroy(book: &web_sys::Element);
     #[wasm_bindgen(js_name = pagerEnd)]
     fn pager_end(book: &web_sys::Element);
+    #[wasm_bindgen(js_name = sidebarHidden)]
+    fn sidebar_hidden() -> bool;
+    #[wasm_bindgen(js_name = setSidebarHidden)]
+    fn set_sidebar_hidden(hidden: bool);
+    #[wasm_bindgen(js_name = isFullscreen)]
+    fn is_fullscreen() -> bool;
+    #[wasm_bindgen(js_name = toggleFullscreen)]
+    async fn toggle_fullscreen() -> JsValue;
     #[wasm_bindgen(js_name = pagerSetCurl)]
     fn pager_set_curl(book: &web_sys::Element, on: bool);
     #[wasm_bindgen(js_name = pagerSetPlace)]

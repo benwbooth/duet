@@ -1514,3 +1514,27 @@ export function drawWave(canvas, peaks, fraction) {
     ctx.fill();
   }
 }
+
+// The sidebar beside the reader: hidden or shown, remembered on this device.
+export function sidebarHidden() {
+  try { return localStorage.getItem("duet-sidebar") === "hidden"; } catch (_) { return false; }
+}
+
+export function setSidebarHidden(hidden) {
+  const app = document.querySelector(".app");
+  if (app) app.classList.toggle("no-sidebar", hidden);
+  try { localStorage.setItem("duet-sidebar", hidden ? "hidden" : "shown"); } catch (_) {}
+}
+
+export function isFullscreen() {
+  return !!document.fullscreenElement;
+}
+
+// Full screen for the whole app (the browser's own Esc also leaves it).
+export async function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen({ navigationUI: "hide" });
+  } catch (_) {}
+  return !!document.fullscreenElement;
+}

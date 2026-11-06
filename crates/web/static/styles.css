@@ -1137,3 +1137,11 @@ input, select { border-radius: 12px; }
   .reader.paged-mode { left: 0; }
   .reader.paged-mode .bookview, .reader.paged-mode .bookview.spread { top: 62px; bottom: calc(var(--player-h, 0px) + 8px); left: 0; right: 0; }
 }
+
+/* Sidebar tucked away while reading: everything that leaves room for it takes that room back. */
+.app.immersive.no-sidebar { --nav-w: 0px; }
+.app.immersive.no-sidebar .tabs { display: none; }
+.app.immersive.no-sidebar main { margin-left: 0; }
+.reader-bar .bar-icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.reader-bar .icon-button.active { background: color-mix(in srgb, var(--page-text) 12%, transparent); }
+@media (max-width: 760px) { .reader-bar .icon-button[aria-label="Sidebar"] { display: none; } }

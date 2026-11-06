@@ -467,6 +467,23 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         });
     };
 
+    // The sidebar can be tucked away while reading (remembered), and the app can go full screen.
+    let no_sidebar = RwSignal::new(crate::sidebar_hidden());
+    crate::set_sidebar_hidden(no_sidebar.get_untracked());
+    on_cleanup(|| {
+        // Other pages always have the sidebar.
+        if let Some(app) = document().query_selector(".app").ok().flatten() {
+            let _ = app.class_list().remove_1("no-sidebar");
+        }
+    });
+    let fullscreen = RwSignal::new(crate::is_fullscreen());
+    let on_fs = Closure::<dyn Fn()>::new(move || fullscreen.set(crate::is_fullscreen()));
+    let _ = document().add_event_listener_with_callback("fullscreenchange", on_fs.as_ref().unchecked_ref());
+    let on_fs = on_fs.into_js_value();
+    on_cleanup(move || {
+        let _ = document().remove_event_listener_with_callback("fullscreenchange", on_fs.unchecked_ref());
+    });
+
     // Home and End: the very beginning and the very end of the book (arrows and Page Up/Down
     // turn pages; see the pager in helpers.js).
     let on_key = Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
@@ -1046,6 +1063,22 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                         view! { <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg> }.into_any()
                     } else {
                         view! { <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg> }.into_any()
+                    }}
+                </button>
+                <button class="icon-button" title=move || if no_sidebar.get() { "Show the sidebar" } else { "Hide the sidebar" }
+                    aria-label="Sidebar" class:active=move || no_sidebar.get()
+                    on:click=move |_| { let h = !no_sidebar.get_untracked(); no_sidebar.set(h); crate::set_sidebar_hidden(h); }>
+                    <svg viewBox="0 0 24 24" aria-hidden="true" class="bar-icon"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9 4.5v15"/></svg>
+                </button>
+                <button class="icon-button" title=move || if fullscreen.get() { "Leave full screen" } else { "Full screen" }
+                    aria-label="Full screen" on:click=move |_| spawn_local(async move {
+                        let on = crate::toggle_fullscreen().await.as_bool().unwrap_or(false);
+                        fullscreen.set(on);
+                    })>
+                    {move || if fullscreen.get() {
+                        view! { <svg viewBox="0 0 24 24" aria-hidden="true" class="bar-icon"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg> }.into_any()
+                    } else {
+                        view! { <svg viewBox="0 0 24 24" aria-hidden="true" class="bar-icon"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg> }.into_any()
                     }}
                 </button>
                 <button class="icon-button" title="Text and page view" on:click=move |_| view_open.update(|o| *o = !*o)>"Aa"</button>
