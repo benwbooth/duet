@@ -212,10 +212,14 @@ void main() {
   }
 }`;
 
+let sharedCurl = null;
+
 class CurlGL {
   constructor(book) {
     this.canvas = document.createElement("canvas");
     this.canvas.className = "page-gl";
+    // The GPU can drop the context (driver reset, too many tabs); make a new one next turn.
+    this.canvas.addEventListener("webglcontextlost", (e) => { e.preventDefault(); this.lost = true; });
     const gl = this.canvas.getContext("webgl", { antialias: true, alpha: true, premultipliedAlpha: true });
     if (!gl) throw new Error("no WebGL");
     this.gl = gl;
@@ -388,20 +392,33 @@ class Pager {
     // Pictures of nearby pages for the curl, by offset; made in idle time after each turn.
     this.snaps = new Map();
     this.layout();
-    this.resize = new ResizeObserver(() => this.relayout());
+    this.resize = new ResizeObserver(() => (this.book.isConnected ? this.relayout() : this.destroy()));
     this.resize.observe(book.parentElement || book);
     this.onKey = (e) => {
+      // A pager whose book has left the page (the reader re-rendered it) must not keep turning.
+      if (!this.book.isConnected) return this.destroy();
       if (e.target.closest && e.target.closest("input, textarea, select")) return;
       if (["ArrowRight", "PageDown", " "].includes(e.key)) { e.preventDefault(); this.next(); }
       if (["ArrowLeft", "PageUp"].includes(e.key)) { e.preventDefault(); this.prev(); }
     };
     document.addEventListener("keydown", this.onKey);
     this.bindPointer();
+    // Pictures and fonts arriving after the first layout add pages: count them again then.
+    for (const img of article.querySelectorAll("img")) {
+      if (!img.complete) img.addEventListener("load", () => this.relayoutSoon(), { once: true });
+    }
+    if (document.fonts) document.fonts.ready.then(() => this.relayoutSoon());
     // Arriving from the neighbouring chapter: finish the page turn that started there (after the
     // reader has gone to this chapter's first or last page).
+    // (The reader may lay the chapter out twice; whichever pager is still alive plays it.)
     const carry = book.__carry;
-    delete book.__carry;
-    if (carry && carry.spread === this.spread) setTimeout(() => this.turn(carry.dir, carry), 0);
+    if (carry) {
+      setTimeout(() => {
+        if (this.dead || book.__carry !== carry) return;
+        delete book.__carry;
+        if (carry.spread === this.spread) this.turn(carry.dir, carry);
+      }, 0);
+    }
   }
 
   destroy() {
@@ -409,17 +426,27 @@ class Pager {
     document.removeEventListener("keydown", this.onKey);
     this.book.querySelectorAll(".curl-layer, .page3d, .page-gl, .page-warp").forEach((e) => e.remove());
     this.dead = true;
+    clearTimeout(this.warmTimer);
     this.book.classList.remove("spread");
     delete this.book.__pager;
   }
 
   // Lays out again (resize, one/two pages) keeping the same text on screen.
   relayout() {
-    if (this.busy) return;
+    if (this.busy) {
+      this.relayoutAfter = true;
+      return;
+    }
     const anchor = this.firstSentence();
     this.layout();
+    if (this.atEnd) return this.go(this.pages - 1, false);
     const e = this.article.querySelector(`.s[data-s="${anchor}"]`);
     if (e) this.showElement(e, false);
+  }
+
+  relayoutSoon() {
+    clearTimeout(this.relayoutTimer);
+    this.relayoutTimer = setTimeout(() => !this.dead && this.relayout(), 120);
   }
 
   setSpread(pref) {
@@ -457,6 +484,9 @@ class Pager {
     this.article.style.columnWidth = "auto";
     this.article.style.columnCount = this.spread ? "2" : "1";
     this.article.style.columnGap = `${2 * pad}px`;
+    // Measured from the first page: shifted to a later one, the book's scroll width only counts
+    // what's to the right of it.
+    this.article.style.transform = "none";
     this.pages = Math.max(1, Math.round(this.book.scrollWidth / w));
     // Columns can leave a sliver; trust the last element's position too.
     const last = this.article.lastElementChild;
@@ -616,9 +646,18 @@ class Pager {
     }, 150);
   }
 
+  showElement(el, animate) {
+    const p = this.pageOf(el);
+    if (p !== this.page) this.go(p, animate);
+  }
 
   go(p, animate) {
     p = Math.max(0, Math.min(this.pages - 1, p));
+    // Mid-turn, moving the page underneath would tear the turn; go there when it lands.
+    if (this.busy) {
+      this.pendingGo = p;
+      return;
+    }
     if (p === this.page) return;
     if (animate && Math.abs(p - this.page) === 1 && !this.busy) {
       this.turn(p > this.page ? 1 : -1);
@@ -629,17 +668,22 @@ class Pager {
     this.report();
   }
 
+  // Opens on the last page (coming back from the next chapter), and stays there if pictures or
+  // fonts arriving later add pages.
   end() {
+    this.atEnd = true;
     this.go(this.pages - 1, false);
   }
 
   next() {
+    this.atEnd = false;
     if (this.busy) { this.queued = 1; return; }
     if (this.page + 1 < this.pages) this.turn(1);
     else if (this.h.onNext) this.carryInto(1, this.h.onNext);
   }
 
   prev() {
+    this.atEnd = false;
     if (this.busy) { this.queued = -1; return; }
     if (this.page > 0) this.turn(-1);
     else if (this.h.onPrev) this.carryInto(-1, this.h.onPrev);
@@ -647,7 +691,11 @@ class Pager {
 
   // Turning past the chapter's first or last page: the page on screen is kept, the neighbouring
   // chapter is laid out underneath, and the kept page turns away over it.
-  carryInto(dir, go) {
+  async carryInto(dir, go) {
+    this.busy = true;
+    if (!this.noGL) await Promise.race([this.pictures([this.page * this.width]), new Promise((r) => setTimeout(r, 800))]);
+    this.busy = false;
+    if (this.dead) return;
     this.book.__carry = {
       dir, snap: this.article.cloneNode(true), at: this.page * this.width, spread: this.spread,
       picture: this.snap(this.page * this.width), key: this.snapKey(),
@@ -696,7 +744,10 @@ class Pager {
     const nextPic = this.snap(target * W);
     if (!curPic || !nextPic) return null;
     try {
-      if (!this.gl) this.gl = new CurlGL(this.book);
+      // One WebGL context for the whole app (browsers allow only a few), moved into this book.
+      if (!sharedCurl || sharedCurl.lost) sharedCurl = new CurlGL(this.book);
+      this.gl = sharedCurl;
+      if (this.gl.canvas.parentNode !== this.book) this.book.appendChild(this.gl.canvas);
     } catch (e) {
       console.warn("no WebGL page curl:", e);
       this.noGL = true;
@@ -947,7 +998,10 @@ class Pager {
     const edge = { x: L0.x - n.x * R, y: L0.y - n.y * R };
     t.under.style.opacity = "1";
     t.under.style.clipPath = `inset(0 ${W - t.leaf[1]}px 0 ${t.leaf[0]}px)`;
+    // Transparent on the page's side of the edge, so it never shows round the curl or under a
+    // page that's rolling up.
     t.under.style.background = lineGradient(W, H, { x: -n.x, y: -n.y }, edge, [
+      [-0.5, "rgba(0,0,0,0)"],
       [0, `rgba(0,0,0,${(0.4 * lift + 0.06).toFixed(3)})`],
       [reach * 0.35, `rgba(0,0,0,${(0.12 * lift).toFixed(3)})`],
       [reach, "rgba(0,0,0,0)"],
@@ -1040,6 +1094,15 @@ class Pager {
     if (done) this.report();
     t.layers.forEach((e) => e.remove());
     this.busy = false;
+    if (this.relayoutAfter) {
+      this.relayoutAfter = false;
+      this.relayout();
+    }
+    if (this.pendingGo !== undefined) {
+      const p = this.pendingGo;
+      this.pendingGo = undefined;
+      this.go(p, false);
+    }
     if (this.queued) {
       const q = this.queued;
       this.queued = 0;
@@ -1084,6 +1147,7 @@ class Pager {
       if (e.button !== 0) return;
       if (e.target.closest && e.target.closest("a[data-href]")) return;
       start = { x: e.clientX, y: e.clientY, time: performance.now(), grab: grabZone(e) };
+      this.selecting = !start.grab;
       // Holding the page, not selecting its words.
       if (start.grab && e.pointerType !== "touch") e.preventDefault();
     });
@@ -1173,11 +1237,16 @@ class Pager {
           e.preventDefault();
           return;
         }
-        if (e.target.closest("a[data-href]") || String(window.getSelection()) !== "") return;
+        if (e.target.closest("a[data-href]")) return;
         const x = (e.clientX - this.book.getBoundingClientRect().left) / this.width;
         const edge = this.spread ? 0.12 : 0.22;
-        if (x < edge) { e.stopPropagation(); this.prev(); }
-        else if (x > 1 - edge) { e.stopPropagation(); this.next(); }
+        const onEdge = x < edge || x > 1 - edge;
+        // A click that ends a text selection isn't a turn; any other click on an edge is, even if
+        // something elsewhere happens to be selected.
+        if (!onEdge || (this.selecting && String(window.getSelection()) !== "")) return;
+        e.stopPropagation();
+        window.getSelection().removeAllRanges();
+        x < edge ? this.prev() : this.next();
       },
       true,
     );

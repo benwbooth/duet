@@ -498,9 +498,9 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             match got {
                 Ok(ch) => {
                     counts.update(|m| { m.insert(c, ch.sentences); });
+                    // Laid out by the Effect that watches `html` (once: laying out twice would
+                    // lose "open at the end" when coming back from the next chapter).
                     html.set(ch.html);
-                    // Let the DOM update first.
-                    set_timeout(move || lay_out.with_value(|f| f()), std::time::Duration::ZERO);
                 }
                 Err(err) => toast.show(err.0),
             }
