@@ -296,9 +296,21 @@ class Pager {
     const shade = document.createElement("div");
     shade.className = "leaf-shade";
     shade.style.background = `linear-gradient(to ${hinge === "left" ? "left" : "right"}, rgba(0,0,0,0.38), rgba(0,0,0,0.06) 30%, rgba(255,255,255,0.12) 55%, rgba(0,0,0,0) 80%)`;
-    f.appendChild(shade);
-    leaf.append(f, this.face("leaf-back", back));
-    return { leaf, shade };
+    // A soft highlight where the paper bends toward the light.
+    const gloss = document.createElement("div");
+    gloss.className = "leaf-gloss";
+    gloss.style.background = `linear-gradient(to ${hinge === "left" ? "left" : "right"}, rgba(255,255,255,0) 0%, rgba(255,255,255,0.35) 6%, rgba(255,255,255,0) 16%)`;
+    f.append(shade, gloss);
+    const b = this.face("leaf-back", back);
+    if (back === null && front !== null) {
+      // A single page's back: the same page seen through the paper, faint and mirrored.
+      const wrap = document.createElement("div");
+      wrap.className = "ghost";
+      wrap.appendChild(this.copy(front));
+      b.appendChild(wrap);
+    }
+    leaf.append(f, b);
+    return { leaf, shade, gloss };
   }
 
   // A still copy of half a spread, kept on top until the turning leaf lands on it.
@@ -312,22 +324,42 @@ class Pager {
   }
 
   // Sets the leaf's turn: 0 = flat where it started, 1 = turned all the way over.
-  pose(t, x) {
+  // `y` (0 top .. 1 bottom) is where the page is being held: pulling from a corner tips the page
+  // that way, so it curls from the corner instead of turning like a door.
+  pose(t, x, y) {
     const p = t.parts;
+    if (y !== undefined) t.y = y;
+    const hold = (t.y === undefined ? 0.5 : t.y) - 0.5;
     const angle = t.sign * 180 * x;
     // A slight lift and skew in mid-turn reads as paper bending rather than a rigid card.
     const lift = Math.sin(Math.PI * x);
+    const tilt = -hold * 14 * lift;
     // Perspective lives on the leaf, not the book, so the book still clips what's outside it.
-    p.leaf.style.transform = `perspective(2400px) rotateY(${angle}deg) skewY(${(t.sign * 3 * lift).toFixed(2)}deg)`;
+    p.leaf.style.transform =
+      `perspective(2200px) rotateY(${angle.toFixed(2)}deg) rotateX(${tilt.toFixed(2)}deg) ` +
+      `skewY(${(t.sign * (3 + hold * 6) * lift).toFixed(2)}deg) scale(${(1 + 0.015 * lift).toFixed(4)})`;
     p.shade.style.opacity = (0.55 * lift).toFixed(3);
-    p.shadow.style.opacity = (0.4 * (t.spread ? lift : 1 - x)).toFixed(3);
-    if (!t.spread) p.shadow.style.transform = `translateX(${(-this.width * x * 0.6).toFixed(1)}px)`;
+    p.gloss.style.opacity = (0.9 * lift).toFixed(3);
+    p.gloss.style.transform = `translateX(${(t.sign * -40 * lift).toFixed(1)}px)`;
+    if (t.spread) {
+      p.shadow.style.opacity = (0.4 * lift).toFixed(3);
+    } else {
+      // The shadow falls just beyond the lifted edge, on the page being uncovered.
+      const W = this.width;
+      const edge = Math.max(0, W * Math.cos(Math.PI * x));
+      p.shadow.style.opacity = (0.9 * Math.min(1, lift * 1.4)).toFixed(3);
+      p.shadow.style.transform = "none";
+      p.shadow.style.background =
+        `linear-gradient(to right, rgba(0,0,0,0) ${Math.max(0, edge - 2).toFixed(0)}px, ` +
+        `rgba(0,0,0,${(0.32 * lift).toFixed(3)}) ${edge.toFixed(0)}px, rgba(0,0,0,0) ${(edge + 90 * lift + 10).toFixed(0)}px)`;
+    }
   }
 
   animate(t, from, to, ms) {
     return new Promise((resolve) => {
       const start = performance.now();
-      const ease = (x) => 1 - Math.pow(1 - x, 3);
+      // Quick to lift, gentle as it settles.
+      const ease = (x) => 1 - Math.pow(1 - x, 4);
       const step = (now) => {
         const x = Math.min(1, (now - start) / ms);
         this.pose(t, from + (to - from) * ease(x));
@@ -394,6 +426,7 @@ class Pager {
 
   async turn(dir) {
     const t = this.begin(dir);
+    t.y = 0.78;
     await this.finish(t, t.start, true);
   }
 
@@ -417,7 +450,8 @@ class Pager {
       }
       const reach = this.spread ? this.width * 0.7 : this.width * 0.85;
       const p = Math.max(0, Math.min(1, Math.abs(dx) / reach));
-      this.pose(drag, drag.start + (drag.end - drag.start) * p);
+      const rect = this.book.getBoundingClientRect();
+      this.pose(drag, drag.start + (drag.end - drag.start) * p, (e.clientY - rect.top) / rect.height);
       drag.p = p;
     });
     const release = () => {
