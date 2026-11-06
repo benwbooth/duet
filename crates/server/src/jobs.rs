@@ -340,6 +340,7 @@ async fn worker(state: &State, job: i64, script: &str, dir: &Path, args: &[&str]
         .args(args)
         .current_dir(dir)
         .env("PYTHONUNBUFFERED", "1")
+        .env("DUET_DATA_DIR", std::path::absolute(&state.data_dir).unwrap_or_else(|_| state.data_dir.clone()))
         .env("DUET_TTS_URL", &ai.tts_url)
         .env("DUET_TTS_MODEL", &ai.tts_model)
         .env("DUET_STT_URL", &ai.stt_url)
