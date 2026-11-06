@@ -1245,7 +1245,7 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 
 /* The turning page as a curl: bands of the page, each placed in 3D on the roll. */
 .page3d.curl3d { perspective: 2600px; perspective-origin: 50% 50%; }
-.cb-face { position: absolute; left: 0; top: 0; transform-origin: 0 0; overflow: hidden; background: var(--page-bg); pointer-events: none; }
+.cb-face { position: absolute; left: 0; top: 0; transform-origin: 0 0; overflow: hidden; background: var(--page-bg); pointer-events: none; will-change: transform; }
 .cb-sheet { position: absolute; inset: 0; transform-origin: 0 0; }
 .cb-face .p3-slice { transform-origin: 0 0; }
 .cb-face .p3-content { position: absolute; inset: 0; overflow: hidden; background: var(--page-bg); }

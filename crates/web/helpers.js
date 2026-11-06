@@ -1393,15 +1393,18 @@ class Pager {
     }
     t.strips = scene.strips;
     t.scene = scene.el;
+    t.ghost = ghost;
     // A fine light-grey line round the turning page's free edges (not the bound one), so it reads
     // clearly against the page beneath it.
     const hingeLeft = t.hinge <= t.leaf[0] + 0.5;
     for (const st of scene.strips) for (const fc of [st.front, st.back]) {
+      // (The back of a page that turns over is laid out mirrored about the spine.)
+      const mirrored = fc === st.back && !ghost;
       const r = fc.rim.style;
-      r.left = `${t.leaf[0]}px`;
+      r.left = `${mirrored ? 2 * t.hinge - t.leaf[1] : t.leaf[0]}px`;
       r.width = `${t.leaf[1] - t.leaf[0]}px`;
-      r.borderLeftWidth = hingeLeft ? "0" : "1px";
-      r.borderRightWidth = hingeLeft ? "1px" : "0";
+      r.borderLeftWidth = hingeLeft !== mirrored ? "0" : "1px";
+      r.borderRightWidth = hingeLeft !== mirrored ? "1px" : "0";
     }
     t.keepScene = !carry;
     // The page facing the turning one stays put (with two pages); with one page turning back
@@ -1434,7 +1437,9 @@ class Pager {
     scene.el.classList.remove("idle");
     for (const e of [scene.el, carry && carry.still]) if (e) e.classList.remove("carried");
     // Done with: a kept sheet is hidden away for the next turn, a one-off one goes.
-    t.layers.push(t.keepScene ? { remove: () => scene.el.classList.add("idle") } : scene.el);
+    t.sceneLayer = t.keepScene ? { remove: () => scene.el.classList.add("idle") } : scene.el;
+    t.sceneEl = scene.el;
+    t.layers.push(t.sceneLayer);
     uncover();
     return t;
   }
@@ -1495,7 +1500,9 @@ class Pager {
   // become the facing page mirrored about the spine (so it reads right once over); the back of a
   // single page is the page itself, faintly, through the paper.
   faceSide(fc, isBack, ghost) {
-    fc.slice.style.transform = isBack && !ghost ? `matrix(-1,0,0,1,${(2 * (this.spread ? this.width / 2 : 0)).toFixed(2)},0)` : "";
+    // (The mirroring of a turned-over page is done by the face's own 3D placement, never inside
+    // it: type drawn mirrored comes out lighter, and would change as the page lands.)
+    fc.slice.style.transform = "";
     if (isBack) fc.f.classList.toggle("ghosted", !!ghost);
   }
 
@@ -1795,7 +1802,9 @@ class Pager {
     const most = (2 * toSpine - d) / Math.PI;
     let R = Math.min(w * 0.35, 8 + d * 0.12 + w * 0.18 * Math.sin(Math.PI * turned) + (t.flex || 0));
     const tail = t.single ? Math.max(0, Math.min(1, (turned - 0.7) / 0.3)) : 0;
-    R = Math.max(0.5, Math.min(most, R + (most - R) * tail));
+    // (Landed, the roll closes to nothing, so the sheet lies exactly on the facing page and the
+    // copy on it matches the page underneath to the pixel when it's swapped for the real one.)
+    R = Math.max(0.001, Math.min(most, R + (most - R) * tail));
     const sC = (d + Math.PI * R) / 2;
     const L0 = { x: C.x + n.x * sC, y: C.y + n.y * sC };
     const upright = t.single ? Math.max(0, Math.min(1, (turned - 0.8) / 0.2)) : 0;
@@ -1863,13 +1872,16 @@ class Pager {
     const backTone = (th) => {
       const dark = 0.4 * (Math.max(0, 1 + Math.cos(th)) / 2) ** 1.5;
       const gloss = 0.3 * Math.exp(-(((th - 2.2) / 0.41) ** 2));
+      if (Math.abs(gloss - dark) < 0.004) return "transparent";
       return gloss > dark ? `rgba(255,255,255,${(gloss - dark).toFixed(3)})` : `rgba(0,0,0,${(dark - gloss).toFixed(3)})`;
     };
     for (let i = 0; i < BANDS; i++) {
       const b = bands[i];
       const s0 = edges[i], s1 = edges[i + 1];
       // (Each band reaches a little into its neighbours, so no hairline seam shows between them.)
-      const poly = s1 > s0 ? clip(s0 - 0.8, s1 + 0.8) : [];
+      // (A band the roll has closed to nothing is left out: drawn as a hairline turned edge-on,
+      // it would have the browser resample the whole sheet, softening it.)
+      const poly = s1 - s0 > 0.5 ? clip(s0 - 0.8, s1 + 0.8) : [];
       if (poly.length < 3) {
         show(b.front, false);
         show(b.back, false);
@@ -1899,7 +1911,18 @@ class Pager {
       show(b.front, front);
       show(b.back, !front);
       let poly2 = poly;
-      if (!front) {
+      let gU = u, gL = L0;
+      if (!front && !t.ghost) {
+        // The back of a page turning over: its content lies mirrored about the spine, and that
+        // mirroring is folded into the placement (M after the mirror), which then keeps the face
+        // the right way up: drawn plainly, and exactly the page once it has landed.
+        const Mh = [[-1, 0, 0, 2 * h], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
+        M = M.map((row) => [0, 1, 2, 3].map((j) => row.reduce((acc, v, k) => acc + v * Mh[k][j], 0)));
+        poly2 = poly.map(([x, y]) => [2 * h - x, y]);
+        gU = { x: -u.x, y: u.y };
+        gL = { x: 2 * h - L0.x, y: L0.y };
+        if (fc.sheet.style.transform) fc.sheet.style.transform = "";
+      } else if (!front) {
         const Rl = [
           [1 - 2 * u.x * u.x, -2 * u.x * u.y, 0, 2 * c * u.x],
           [-2 * u.x * u.y, 1 - 2 * u.y * u.y, 0, 2 * c * u.y],
@@ -1913,7 +1936,16 @@ class Pager {
         fc.sheet.style.transform = "";
       }
       const mat = [0, 1, 2, 3].flatMap((j) => [0, 1, 2, 3].map((i) => M[i][j]));
-      fc.f.style.transform = `matrix3d(${mat.map((v) => +v.toFixed(5)).join(",")})`;
+      // Lying flat (at rest, or landed), a face goes exactly where the page is: any hair of
+      // depth or fraction of a pixel would have it filtered, a shade softer than the page.
+      const flat = Math.abs(M[0][0] - 1) < 1e-3 && Math.abs(M[1][1] - 1) < 1e-3 && Math.abs(M[0][1]) < 1e-3 &&
+        Math.abs(M[1][0]) < 1e-3 && Math.abs(M[2][0]) < 1e-3 && Math.abs(M[2][1]) < 1e-3 && Math.abs(M[2][3]) < 0.05;
+      fc.f.style.transform = flat
+        ? `translate(${Math.round(M[0][3])}px, ${Math.round(M[1][3])}px)`
+        : `matrix3d(${mat.map((v) => +v.toFixed(5)).join(",")})`;
+      // The outline shows while the page is in the air, not once it lies flat at either end.
+      const rimA = Math.min(1, 5 * Math.sin(Math.PI * Math.max(0, Math.min(1, g.progress)))).toFixed(2);
+      if (fc.rim.style.opacity !== rimA) fc.rim.style.opacity = rimA;
       fc.f.style.clipPath = `polygon(${poly2.map(([x, y]) => `${x.toFixed(2)}px ${y.toFixed(2)}px`).join(",")})`;
       // Light: as on the graphics card, by the angle round the roll at each edge of the band.
       const th0 = Math.max(0, Math.min(Math.PI, s0 / R)), th1 = Math.max(0, Math.min(Math.PI, s1 / R));
@@ -1921,7 +1953,7 @@ class Pager {
       else if (front) {
         fc.shade.style.background = lineGradient(W, H, u, L0, [[s0, `rgba(0,0,0,${frontShade(th0).toFixed(3)})`], [s1, `rgba(0,0,0,${frontShade(th1).toFixed(3)})`]]);
       } else {
-        fc.shade.style.background = s0 >= roll ? backTone(Math.PI) : lineGradient(W, H, u, L0, [[s0, backTone(th0)], [s1, backTone(th1)]]);
+        fc.shade.style.background = s0 >= roll ? backTone(Math.PI) : lineGradient(W, H, gU, gL, [[s0, backTone(th0)], [s1, backTone(th1)]]);
       }
     }
     // The sheet's shadow on the page it uncovers, deepest just past the roll.
@@ -1981,8 +2013,9 @@ class Pager {
       });
     }
     if (done) this.report();
-    // The live running head and number have caught up (a frame for the reader to redraw them).
-    await new Promise((r) => frame(r));
+    // The live running head and number have caught up (the reader redraws them straight away),
+    // so the copies go in the same frame the sheet comes to rest: nothing lingers.
+    await Promise.resolve();
     t.layers.forEach((e) => e.remove());
     this.book.classList.remove("turning");
     this.busy = false;
