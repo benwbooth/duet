@@ -360,6 +360,17 @@ async function snapshotPage(pager, article, offset) {
   // The picture starts at the very word the live page starts with: laid out from the chapter's
   // beginning, small line-break differences would add up over the pages and the picture would
   // show a few lines more or less than the page.
+  // ...and stops a page later (only what can show; much quicker to draw).
+  const end = pageStart(article, offset + W);
+  if (end) {
+    const node = end.path.reduce((n, i) => (n ? n.childNodes[i] : null), clone);
+    if (node) {
+      const tail = document.createRange();
+      tail.setStart(node, end.index);
+      tail.setEndAfter(clone.lastChild);
+      tail.deleteContents();
+    }
+  }
   const start = offset > 0 ? pageStart(article, offset) : null;
   if (start) {
     const node = start.path.reduce((n, i) => (n ? n.childNodes[i] : null), clone);
@@ -742,9 +753,11 @@ class Pager {
       try {
         await entry.promise;
       } catch (e) {
-        // No pictures in this browser: page turns use the 3D strips instead.
-        console.warn("page pictures unavailable:", e);
-        this.noGL = true;
+        // A browser that won't let a page be pictured at all (it taints the canvas) turns pages
+        // with the 3D strips; any other failure is for this picture only, tried again next time.
+        console.warn("page picture failed:", e);
+        this.snaps.delete(offset);
+        if (e && e.name === "SecurityError") this.noGL = true;
         return null;
       }
       out.push(entry.canvas);
@@ -852,7 +865,9 @@ class Pager {
   begin(dir, carry) {
     const t = this.beginGL(dir, carry);
     if (t) return t;
-    return this.begin3d(dir, carry);
+    // The strips are only for browsers without the curl; elsewhere a missing picture means no
+    // animation this time (the caller changes the page directly) rather than a different one.
+    return this.noGL ? this.begin3d(dir, carry) : null;
   }
 
   // The curl on the graphics card, when pictures of both sides of the turning page are ready.
@@ -961,7 +976,7 @@ class Pager {
       if (dir > 0) {
         front = this.copy(cur, src);
         back = this.copy(cur, src);
-        if (!carry) this.place(this.article, target);
+        if (!carry) t.placeTarget = true;
       } else {
         front = this.copy(next);
         back = this.copy(next);
@@ -977,7 +992,7 @@ class Pager {
       front = this.copy(cur, src);
       back = this.copy(next);
       t.layers.push(this.halfLayer(0, this.copy(cur, src)));
-      if (!carry) this.place(this.article, target);
+      if (!carry) t.placeTarget = true;
     } else {
       // Two pages, backwards: the left page turns over to the right; its back is the previous right page.
       t.leaf = [0, half];
@@ -986,7 +1001,7 @@ class Pager {
       front = this.copy(cur, src);
       back = this.copy(next);
       t.layers.push(this.halfLayer(half, this.copy(cur, src)));
-      if (!carry) this.place(this.article, target);
+      if (!carry) t.placeTarget = true;
     }
     // The page underneath darkens in the turning page's shadow.
     t.under = this.layer("curl-shadow");
@@ -1171,6 +1186,8 @@ class Pager {
   // Turns the sheet so its free edge is over x = P.x (P.y is where it's held, which tips it).
   pose3d(t, P) {
     const { H } = t;
+    // (The page underneath changes once the strips are drawn over it.)
+    this.revealUnder(t);
     const sigma = t.sigma, w = t.leaf[1] - t.leaf[0];
     const theta = Math.acos(Math.max(-1, Math.min(1, (sigma * (P.x - t.hinge)) / w)));
     // Faster movement flexes the paper more; it eases back as it slows.
@@ -1304,11 +1321,22 @@ class Pager {
       this.busy = true;
       const target = carry ? this.page : this.page + dir;
       const need = carry ? [target * this.width] : [this.page * this.width, target * this.width];
-      await Promise.race([this.pictures(need), new Promise((r) => setTimeout(r, 1500))]);
+      const got = await Promise.race([this.pictures(need), new Promise((r) => setTimeout(() => r(null), 4000))]);
       this.busy = false;
       if (this.dead) return;
+      // Pictures not to be had: change the page without an animation rather than show a
+      // different, flickery one.
+      if (!got && !this.noGL && !(carry ? carry.picture && this.snap(target * this.width) : this.snap(this.page * this.width) && this.snap(target * this.width))) {
+        console.warn("page turn without animation: page pictures not ready");
+        if (!carry) this.go(target, false);
+        return;
+      }
     }
     const t = this.begin(dir, carry);
+    if (!t) {
+      if (!carry) this.go(this.page + dir, false);
+      return;
+    }
     const H = t.H;
     t.C = { x: t.C0x, y: H * 0.94 };
     const [rest] = this.ends(t, t.C.y);
@@ -1370,6 +1398,7 @@ class Pager {
           return;
         }
         drag = this.begin(dir);
+        if (!drag) return;
         const y = Math.max(0, Math.min(drag.H, start.y - rect.top));
         drag.C = { x: drag.C0x, y };
         drag.G = { x: start.x - rect.left, y };
