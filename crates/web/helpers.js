@@ -598,6 +598,65 @@ function pageCopy(article, offset, W, H) {
 
 // A picture of the book as it looks with `article` scrolled to `offset`: the page drawn through
 // an SVG foreignObject with the reader's own styles, so it matches the real page.
+// Whether the browser can draw an element exactly as it renders it into a canvas (HTML in
+// Canvas, Chrome 15x+). With it, a page's picture for the graphics card is the browser's own
+// rendering of the page, so the curl can run on the GPU and still look exactly like the page.
+const canDrawElements = typeof CanvasRenderingContext2D !== "undefined" && "drawElementImage" in CanvasRenderingContext2D.prototype;
+
+// A picture of the page at `offset`, rendered by the browser itself: a copy of the laid-out
+// chapter (and the page's running head, number, outline and fold) inside a canvas that lays out
+// its children without showing them, drawn into it once the browser has painted it.
+async function elementSnapshot(pager, offset) {
+  if (document.fonts) await document.fonts.ready;
+  const W = pager.width, H = pager.book.clientHeight, dpr = window.devicePixelRatio || 1;
+  const cv = document.createElement("canvas");
+  cv.setAttribute("layoutsubtree", "");
+  cv.setAttribute("content", "drawable");
+  cv.className = "page-shot";
+  cv.width = Math.round(W * dpr);
+  cv.height = Math.round(H * dpr);
+  cv.style.width = `${W}px`;
+  cv.style.height = `${H}px`;
+  const sheet = document.createElement("div");
+  sheet.setAttribute("drawable", "");
+  sheet.className = "page-shot-sheet";
+  sheet.style.width = `${W}px`;
+  sheet.style.height = `${H}px`;
+  // (The page's paper is the book's own background: the text is antialiased against it.)
+  sheet.style.background = getComputedStyle(pager.book).backgroundColor;
+  const copy = pager.article.cloneNode(true);
+  copy.querySelectorAll("img[loading]").forEach((e) => e.removeAttribute("loading"));
+  copy.style.width = `${W}px`;
+  copy.style.transform = `translateX(${-offset}px)`;
+  sheet.append(copy, pager.furniture(offset));
+  cv.appendChild(sheet);
+  pager.book.appendChild(cv);
+  try {
+    await Promise.all([...copy.querySelectorAll("img")].map((img) => (img.complete ? null : img.decode().catch(() => {}))));
+    await new Promise((resolve, reject) => {
+      let done = false;
+      const draw = () => {
+        if (done) return;
+        done = true;
+        try {
+          const ctx = cv.getContext("2d");
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          ctx.drawElementImage(sheet, 0, 0);
+          resolve();
+        } catch (e) {
+          reject(e);
+        }
+      };
+      cv.addEventListener("paint", draw, { once: true });
+      // (If no paint event comes, it's been laid out and painted by now anyway.)
+      setTimeout(draw, 1200);
+    });
+  } finally {
+    cv.remove();
+  }
+  return cv;
+}
+
 async function snapshotPage(pager, article, offset) {
   if (document.fonts) await document.fonts.ready;
   const W = pager.width, H = pager.book.clientHeight;
@@ -746,9 +805,10 @@ class Pager {
     this.busy = false;
     // Pictures of nearby pages for the curl, by offset; made in idle time after each turn.
     this.snaps = new Map();
-    // Pages turn as live copies of the page itself, not pictures of it: a page can't photograph
-    // itself, and a picture redrawn another way never quite matches (type, highlight, layout).
-    this.noGL = true;
+    // The curl runs on the graphics card when the browser can hand it its own rendering of the
+    // page (see elementSnapshot); otherwise pages turn as live copies of the page itself, since
+    // a picture redrawn another way never quite matches it (type, highlight, layout).
+    this.noGL = !canDrawElements;
     this.layout();
     this.resize = new ResizeObserver(() => (this.book.isConnected ? this.relayout() : this.destroy()));
     this.resize.observe(book.parentElement || book);
@@ -1022,7 +1082,7 @@ class Pager {
       const sig = this.pageSig(offset);
       if (!entry || entry.key !== key || entry.sig !== sig) {
         entry = { key, sig, canvas: null };
-        entry.promise = snapshotPage(this, this.article, offset).then((c) => (entry.canvas = c));
+        entry.promise = elementSnapshot(this, offset).then((c) => (entry.canvas = c));
         this.snaps.set(offset, entry);
       }
       try {

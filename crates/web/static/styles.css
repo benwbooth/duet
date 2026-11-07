@@ -1342,3 +1342,7 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 }
 .bookcase .card:hover .info, .bookcase .card:focus-visible .info { opacity: 1; transform: translate(-50%, 0); }
 .bookcase .card .info .author { color: var(--muted); }
+
+/* Where a page is rendered for its picture on the graphics card: laid out, never shown. */
+.page-shot { position: absolute; left: 0; top: 0; z-index: -1; opacity: 0; pointer-events: none; }
+.page-shot-sheet { position: relative; overflow: hidden; }
