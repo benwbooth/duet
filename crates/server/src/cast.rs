@@ -725,6 +725,12 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
     let tts = state.settings.read().await.ai.tts_url.clone();
     let total = voices.len() as u32;
     for (k, (who, v)) in voices.into_iter().enumerate() {
+        // (One already made isn't asked for: the voice server may be busy warming up the
+        // performer, and the question would wait for that.)
+        let made = v["voice"].as_str().is_some_and(|n| state.data_dir.join("voices").join(format!("{n}.wav")).exists());
+        if made {
+            continue;
+        }
         status(asset, format!("Finding a voice for {who}"), k as u32, total);
         state
             .http
