@@ -53,6 +53,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assets/{id}/cast/{chapter}/{n}", get(cast_sentence))
         .route("/assets/{id}/cast/status", get(cast_status))
         .route("/assets/{id}/cast/recast", post(cast_recast))
+        .route("/cast/warm", post(cast_warm))
         .route("/assets/{id}/cast/{chapter}/{n}/words", get(cast_words))
         .route("/assets/{id}/link", post(link))
         .route("/jobs", get(list_jobs).post(new_job))
@@ -240,6 +241,13 @@ async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResul
 }
 
 /// One sentence of the full cast, performed on the fly (see cast.rs).
+/// The reader is in full cast mode: have the performer loaded (and kept loaded).
+async fn cast_warm(AxState(s): AxState<State>) -> Json<serde_json::Value> {
+    let tts = s.settings.read().await.ai.tts_url.clone();
+    let _ = s.http.post(format!("{}/warm", tts.trim_end_matches('/'))).json(&serde_json::json!({})).timeout(std::time::Duration::from_secs(5)).send().await;
+    Json(serde_json::json!({ "ok": true }))
+}
+
 /// Casts the book's full cast again (better voices from a careful casting pass), in the
 /// background: the player shows its progress.
 async fn cast_recast(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<serde_json::Value> {

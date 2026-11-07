@@ -537,6 +537,19 @@ class Handler(BaseHTTPRequestHandler):
                 text = transcribe(fields["file"], model_name.rsplit("/", 1)[-1].removeprefix("faster-whisper-"))
                 return self.reply(200, json.dumps({"text": text}).encode(), "application/json")
             body = json.loads(raw)
+            if path in ("/v1/warm", "/warm"):
+                # Someone's about to want the full cast: have Fish loaded (in the background) and
+                # keep it from being unloaded as idle while they're there.
+                touch("fish")
+                if not fish.healthy() and fish.starting_since is None:
+                    def start():
+                        try:
+                            with lock:
+                                fish.start()
+                        except Exception as e:
+                            print(f"warming fish: {e}", flush=True)
+                    threading.Thread(target=start, daemon=True).start()
+                return self.reply(200, b'{"ok":true}', "application/json")
             if path in ("/v1/align-words", "/align-words"):
                 return self.reply(200, json.dumps(align_words(body)).encode(), "application/json")
             if path in ("/v1/track-words", "/track-words"):

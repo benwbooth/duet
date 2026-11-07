@@ -663,6 +663,19 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         None
     };
     let cast_url = move |e: i64, (c, s): (usize, usize)| format!("/api/assets/{e}/cast/{c}/{s}");
+    // In full cast mode the performer is loaded straight away (it takes a couple of minutes),
+    // and kept loaded while you're here rather than unloaded as idle between lines.
+    Effect::new(move |_| {
+        if !mode.get().cast() {
+            return;
+        }
+        spawn_local(async move {
+            while mode.try_get_untracked().is_some_and(|m| m.cast()) {
+                let _ = api::post::<_, serde_json::Value>("/api/cast/warm", &serde_json::json!({})).await;
+                gloo_timers::future::TimeoutFuture::new(120_000).await;
+            }
+        });
+    });
     // While the full cast keeps you waiting, ask every second what it's doing, to show it.
     Effect::new(move |_| {
         if !cast_wait.get() {
