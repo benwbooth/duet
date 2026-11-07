@@ -2415,14 +2415,17 @@ class Pager {
       if (!swipe) {
         if (this.busy || !this.curl) return;
         const dir = e.deltaX > 0 ? 1 : -1;
-        if ((dir > 0 && this.page + 1 >= this.pages) || (dir < 0 && this.page === 0)) {
+        const atEdge = (dir > 0 && this.page + 1 >= this.pages) || (dir < 0 && this.page === 0);
+        // (Over the end of the chapter, the page beyond is the neighbouring chapter's, when it's
+        // ready; otherwise the swipe turns into that chapter once the fingers stop.)
+        if (atEdge && !((dir > 0 ? this.h.onNext : this.h.onPrev) && this.neighbourPic(dir))) {
           swipe = { cross: dir, total: 0 };
         } else {
-          if (!this.noGL && (!this.snap(this.page * this.width) || !this.snap((this.page + dir) * this.width))) {
-            this.pictures([this.page * this.width, (this.page + dir) * this.width]);
+          if (!this.noGL && (!this.snap(this.page * this.width) || (!atEdge && !this.snap((this.page + dir) * this.width)))) {
+            this.pictures(atEdge ? [this.page * this.width] : [this.page * this.width, (this.page + dir) * this.width]);
             return;
           }
-          const t = this.begin(dir);
+          const t = this.begin(dir, null, atEdge ? dir : 0);
           if (!t) return;
           t.C = { x: t.C0x, y: t.H * 0.75 };
           [t.from] = this.ends(t, t.C.y);
