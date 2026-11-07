@@ -94,8 +94,9 @@ fn is_quote(s: &str) -> bool {
 }
 
 /// Splits a sentence into (text, speaker): quoted speech goes to the speaker, the rest to the narrator.
-fn pieces(sentence: &str, line: Option<&(String, String)>) -> Vec<(String, Option<String>, String)> {
-    let Some((speaker, direction)) = line else { return vec![(sentence.to_string(), None, String::new())] };
+/// `narration`: how the narrator reads their part of it.
+fn pieces(sentence: &str, line: Option<&(String, String)>, narration: &str) -> Vec<(String, Option<String>, String)> {
+    let Some((speaker, direction)) = line else { return vec![(sentence.to_string(), None, narration.to_string())] };
     let mut out = Vec::new();
     let mut rest = sentence;
     while let Some(open) = rest.find(['“', '"']) {
@@ -103,11 +104,11 @@ fn pieces(sentence: &str, line: Option<&(String, String)>) -> Vec<(String, Optio
         let open_len = from.chars().next().map(char::len_utf8).unwrap_or(1);
         let inner = &from[open_len..];
         let close = inner.find(['”', '"']).unwrap_or(inner.len());
-        out.push((before.trim().to_string(), None, String::new()));
+        out.push((before.trim().to_string(), None, narration.to_string()));
         out.push((inner[..close].trim().to_string(), Some(speaker.clone()), direction.clone()));
         rest = inner.get(close..).map(|r| r.trim_start_matches(['”', '"'])).unwrap_or("");
     }
-    out.push((rest.trim().to_string(), None, String::new()));
+    out.push((rest.trim().to_string(), None, narration.to_string()));
     out.retain(|(t, _, _)| t.chars().any(char::is_alphanumeric));
     out
 }
@@ -205,16 +206,13 @@ async fn write_json<T: Serialize>(path: &PathBuf, v: &T) -> anyhow::Result<()> {
 
 /// The chat model directs one chapter: speakers and directions, and descriptions of new characters
 /// (and of the narrator, the first time).
-async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &str, author: &str, sentences: &[String], cast: &mut Cast, say: &mut Say) -> anyhow::Result<Script> {
+async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &str, author: &str, sentences: &[String], cast: &mut Cast, say: &mut Say, narration: &mut Say) -> anyhow::Result<Script> {
     let mut script = Script::new();
     let parts = sentences.len().div_ceil(CHUNK).max(1);
     for start in (part * CHUNK..sentences.len()).step_by(CHUNK).take(1) {
         let what = if parts > 1 { format!("Reading part {} of chapter {} to work out who says what", part + 1, chapter + 1) } else { format!("Reading chapter {} to work out who says what", chapter + 1) };
         status(asset, what, 0, 0);
         let part = &sentences[start..(start + CHUNK).min(sentences.len())];
-        if !part.iter().any(|s| is_quote(s) || needs_saying(s)) && !cast.narrator.is_empty() {
-            continue;
-        }
         let numbered: String = part.iter().enumerate().map(|(i, s)| format!("{}: {s}\n", start + i)).collect();
         let known: String = cast.characters.iter().map(|(n, d)| format!("- {n}: {d}\n")).collect();
         let system = "You are the director of a full-cast audiobook. For each numbered sentence containing quoted \
@@ -227,7 +225,7 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
             voices, narrator included); a character the story gives another origin speaks with that one instead (a \
             Russian count with a Russian accent, a French maid with a French one). Always name the accent. Reply \
             with JSON only: {\"lines\": {\"<sentence number>\": {\"speaker\": \"<name>\", \"direction\": \"<direction>\"}}, \
-            \"new_characters\": {\"<name>\": \"<voice description>\"}, \"narrator\": \"<voice description or empty>\", \"say\": {}}. \
+            \"new_characters\": {\"<name>\": \"<voice description>\"}, \"narrator\": \"<voice description or empty>\", \"say\": {}, \"narration\": {}}. \
             Each character keeps one voice for the whole book, so use exactly the name from the known list when \
             they're in it, and give a new character a plain name only (\"Alice\", \"White Rabbit\"): never add how \
             they're speaking or what they're doing to the name; that goes in the direction. Lines spoken by \
@@ -239,7 +237,13 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
             twelve\", \"Henry VIII\": \"Henry the Eighth\", \"George III\": \"George the Third\"); digits, dates, \
             money, ordinals and symbols are spelled out the way the book's readers would say them (a year \"1865\": \
             \"eighteen sixty-five\", \"1066\": \"ten sixty-six\"; \"£5\": \"five pounds\"; \"&c.\": \"et cetera\"). \
-            Never list the pronoun \"I\" or ordinary words, and leave sentences that read fine out of \"say\".";
+            Never list the pronoun \"I\" or ordinary words, and leave sentences that read fine out of \"say\". \
+            Direct the narrator too: the narrator is a performer, not someone reading aloud. For every numbered \
+            sentence give a short direction for how the narrator delivers its narration, in \
+            \"narration\": {\"<sentence number>\": \"<direction>\"}. Pitch the energy to the book's audience (a \
+            children's book is told with warmth, wonder, playfulness and lively variety, as a favourite \
+            storyteller would; a thriller with tension; a comedy with relish), follow the mood of each moment \
+            (hushed for suspense, quick for excitement, wry for a joke), and never flat or dry.";
         let ask_narrator = if cast.narrator.is_empty() { "\nAlso describe the narrator's voice." } else { "" };
         let user = format!(
             "Book: {title} by {author}\nKnown characters:\n{}{ask_narrator}\n\nSentences:\n{numbered}",
@@ -278,6 +282,15 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
                 let Some(speaker) = canonical(speaker, &cast.characters) else { continue };
                 if n < sentences.len() {
                     script.insert(n, (speaker, v["direction"].as_str().unwrap_or("").trim().to_string()));
+                }
+            }
+        }
+        if let Some(lines) = reply["narration"].as_object() {
+            for (k, v) in lines {
+                if let (Ok(n), Some(d)) = (k.parse::<usize>(), v.as_str().map(str::trim).filter(|d| !d.is_empty())) {
+                    if n < sentences.len() {
+                        narration.insert(n, d.to_string());
+                    }
                 }
             }
         }
@@ -320,7 +333,9 @@ async fn cast_voices(state: &State, title: &str, author: &str, names: &[String],
         storyteller (never a child, even when the hero is one) chosen with judgment for the book, as a \
         good audiobook producer would: often, though not necessarily, matching the protagonist (a woman \
         for a story told around a girl or woman, a man for one around a man or boy); in a first-person \
-        book, the protagonist as an adult. Reply with JSON only: {\"book_accent\": \"<accent>\", \"characters\": {\"<name>\": \
+        book, the protagonist as an adult. Give the narrator a voice with the energy the book's audience \
+        wants: for a children's book an animated, warm, expressive storyteller full of wonder and fun, never \
+        a dry or flat reader. Reply with JSON only: {\"book_accent\": \"<accent>\", \"characters\": {\"<name>\": \
         {\"sex\": \"male|female\", \"age\": \"<e.g. elderly, about 40, a young girl of 7>\", \"accent\": \"<accent>\", \
         \"nationality\": \"<who'd speak like that: e.g. an Englishman from London, an English girl, a Scottish woman>\", \
         \"accent_features\": \"<the accent's audible features, e.g. non-rhotic, crisp t's, long 'a' as in 'bath'>\", \
@@ -627,10 +642,11 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
     }
     let a = db::asset(&state.db, asset).await?.context("no such book")?;
     let w = db::work_detail(&state.db, a.work_id).await?.context("no such book")?;
-    let mut say = Say::new();
-    let script = match direct(state, asset, chapter, part, &w.title, w.author.as_deref().unwrap_or(""), sentences, &mut cast, &mut say).await {
+    let (mut say, mut narration) = (Say::new(), Say::new());
+    let script = match direct(state, asset, chapter, part, &w.title, w.author.as_deref().unwrap_or(""), sentences, &mut cast, &mut say, &mut narration).await {
         Ok(s) => {
             write_json(&base.join(format!("say-{chapter}-{part}.json")), &say).await.ok();
+            write_json(&base.join(format!("narration-{chapter}-{part}.json")), &narration).await.ok();
             s
         }
         Err(e) => {
@@ -795,7 +811,8 @@ async fn perform(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow:
     let text = speakable(say.get(&n).unwrap_or(&printed));
     // (Scripts directed before names were tidied: the same one voice per character.)
     let line = script.get(&n).and_then(|(who, dir)| canonical(who, &cast.characters).map(|w| (w, dir.clone())));
-    let parts: Vec<_> = pieces(&text, line.as_ref())
+    let narration: Say = read_json(&dir(state, asset).join(format!("narration-{chapter}-{}.json", n / CHUNK))).await.unwrap_or_default();
+    let parts: Vec<_> = pieces(&text, line.as_ref(), narration.get(&n).map(String::as_str).unwrap_or(""))
         .into_iter()
         .map(|(t, who, direction)| {
             let input = if direction.is_empty() { t } else { format!("[{direction}] {t}") };
@@ -858,7 +875,7 @@ mod tests {
     #[test]
     fn splits_dialogue_from_narration() {
         let line = ("Alice".to_string(), "curious".to_string());
-        let p = pieces("“Curiouser and curiouser!” cried Alice.", Some(&line));
+        let p = pieces("“Curiouser and curiouser!” cried Alice.", Some(&line), "");
         assert_eq!(p.len(), 2);
         assert_eq!(p[0].0, "Curiouser and curiouser!");
         assert_eq!(p[0].1.as_deref(), Some("Alice"));
