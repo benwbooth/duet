@@ -33,7 +33,8 @@ while (( $# )); do
   esac
   shift
 done
-export DUET_DEV=1 DUET_WEB_DIR="$root/crates/web/dist"
+# (The voice server outlives each restart of duet, so the performer stays warm.)
+export DUET_DEV=1 DUET_KEEP_VOICES=1 DUET_WEB_DIR="$root/crates/web/dist"
 pidfile="$root/target/dev-server.pid"
 log="$root/target/dev-server.log"
 mkdir -p "$root/target"

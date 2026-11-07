@@ -258,6 +258,77 @@ def slug(name):
     return re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-") or "voice"
 
 
+# The accents an accent classifier (CommonAccent) can hear, by the words a description uses
+# for them. VoiceDesign often drifts to American however plainly an accent is asked for, so a
+# voice with one of these is designed a few times and the take that sounds most like it kept.
+ACCENTS = [
+    ("england", r"british|english|englishman|englishwoman|england|received pronunciation|\brp\b|london|cockney|oxford|yorkshire|bbc"),
+    ("scotland", r"scottish|scots|scotland|glasgow|edinburgh"),
+    ("ireland", r"irish|ireland|dublin"),
+    ("wales", r"welsh|wales"),
+    ("australia", r"australian|australia"),
+    ("newzealand", r"new zealand|kiwi"),
+    ("indian", r"\bindian\b|\bindia\b"),
+    ("canada", r"canadian|canada"),
+    ("african", r"south african|nigerian|kenyan|\bafrican\b"),
+    ("us", r"american|\bus\b|united states|new york|texan|southern drawl"),
+]
+DESIGN_TRIES = 5
+accent_model = None
+
+
+def wanted_accent(description):
+    """The classifier's label for the accent a description asks for (the first one it names)."""
+    text = (description or "").lower()
+    found = [(m.start(), label) for label, pat in ACCENTS for m in [re.search(pat, text)] if m]
+    return min(found)[1] if found else None
+
+
+def accent_score(wav, sr, label):
+    """How much the clip sounds like `label` (0..1), or None without the classifier."""
+    global accent_model
+    try:
+        import torch, torchaudio
+        from speechbrain.inference.classifiers import EncoderClassifier
+
+        if accent_model is None:
+            accent_model = EncoderClassifier.from_hparams(
+                source="Jzuluaga/accent-id-commonaccent_ecapa",
+                savedir=os.path.join(args.voices, ".accent-model"),
+                run_opts={"device": "cpu"},
+            )
+        x = torch.as_tensor(wav, dtype=torch.float32).reshape(1, -1)
+        x = torchaudio.functional.resample(x, sr, 16000)
+        out, _, _, _ = accent_model.classify_batch(x)
+        probs = torch.softmax(out.squeeze(), dim=0)
+        idx = accent_model.hparams.label_encoder.encode_label(label)
+        top = accent_model.hparams.label_encoder.decode_ndim(int(probs.argmax()))
+        return float(probs[idx]), top
+    except Exception as e:
+        print(f"accent check unavailable: {e}", flush=True)
+        return None
+
+
+def design(desc, language):
+    """VoiceDesign's take on a description; for an accent it can check, the best of a few."""
+    label = wanted_accent(desc)
+    best = None
+    for i in range(DESIGN_TRIES if label else 1):
+        wavs, sr = qwen("design").generate_voice_design(text=REFERENCE_LINE, instruct=desc, language=language)
+        if not label:
+            return wavs[0], sr
+        scored = accent_score(wavs[0], sr, label)
+        if scored is None:
+            return wavs[0], sr
+        score, top = scored
+        print(f"  take {i + 1}: {label} {score:.2f} (sounds most like {top})", flush=True)
+        if best is None or score > best[0]:
+            best = (score, wavs[0], sr)
+        if top == label and score > 0.5:
+            break
+    return best[1], best[2]
+
+
 def reference(voice, description, language):
     """The reference clip for a voice, casting it with VoiceDesign the first time."""
     wav_path = os.path.join(args.voices, slug(voice) + ".wav")
@@ -272,7 +343,9 @@ def reference(voice, description, language):
             wavs, sr = custom.generate_custom_voice(text=REFERENCE_LINE, speaker=voice.lower(), language=language, instruct="")
         else:
             desc = description or "A warm, clear, expressive audiobook narrator."
-            wavs, sr = qwen("design").generate_voice_design(text=REFERENCE_LINE, instruct=desc, language=language)
+            print(f"designing {voice}", flush=True)
+            wavs, sr = design(desc, language)
+            wavs = [wavs]
         os.makedirs(args.voices, exist_ok=True)
         sf.write(wav_path, wavs[0], sr)
         with open(meta_path, "w") as f:

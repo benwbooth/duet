@@ -453,18 +453,17 @@ pub async fn recast(state: &State, asset: i64) -> anyhow::Result<()> {
     for (n, d) in &cast.characters {
         voices.push(json!({ "voice": voice_name(asset, Some(n)), "instructions": d, "replace": true }));
     }
-    let total = voices.len() as u32;
-    for (k, v) in voices.into_iter().enumerate() {
-        status(asset, "Making the new voices", k as u32, total);
-        state
-            .http
-            .post(format!("{}/voices", tts.trim_end_matches('/')))
-            .json(&json!({ "voices": [v] }))
-            .timeout(std::time::Duration::from_secs(1800))
-            .send()
-            .await
-            .context("the voice server isn't running (Settings → Voices)")?;
-    }
+    // (All in one request: the performer stops once for the lot, not once a voice.)
+    status(asset, format!("Making the new voices ({})", voices.len()), 0, 0);
+    state
+        .http
+        .post(format!("{}/voices", tts.trim_end_matches('/')))
+        .json(&json!({ "voices": voices }))
+        .timeout(std::time::Duration::from_secs(3600))
+        .send()
+        .await
+        .context("the voice server isn't running (Settings → Voices)")?
+        .error_for_status()?;
     let mut entries = tokio::fs::read_dir(&base).await?;
     while let Some(e) = entries.next_entry().await? {
         let name = e.file_name().to_string_lossy().to_string();

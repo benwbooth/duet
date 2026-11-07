@@ -9,11 +9,11 @@ use std::{
     sync::Mutex,
 };
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use duet_common::VoiceSetup;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
-use crate::{State, db};
+use crate::{db, State};
 
 const LOG_LINES: usize = 60;
 const VOICE_PORT: u16 = 8880;
@@ -34,7 +34,9 @@ pub struct Voices {
 }
 
 fn scripts_dir() -> PathBuf {
-    std::env::var_os("DUET_SCRIPTS_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("scripts"))
+    std::env::var_os("DUET_SCRIPTS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("scripts"))
 }
 
 fn fish_dir(state: &State) -> PathBuf {
@@ -46,12 +48,20 @@ fn venv_dir(state: &State) -> PathBuf {
 }
 
 fn hf_cached(repo: &str) -> bool {
-    let hub = std::env::var_os("HF_HUB_CACHE").map(PathBuf::from).unwrap_or_else(|| {
-        std::env::var_os("HF_HOME")
-            .map(|h| PathBuf::from(h).join("hub"))
-            .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/huggingface/hub"))
-    });
-    hub.join(format!("models--{}", repo.replace('/', "--"))).join("snapshots").read_dir().is_ok_and(|mut d| d.next().is_some())
+    let hub = std::env::var_os("HF_HUB_CACHE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("HF_HOME")
+                .map(|h| PathBuf::from(h).join("hub"))
+                .unwrap_or_else(|| {
+                    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                        .join(".cache/huggingface/hub")
+                })
+        });
+    hub.join(format!("models--{}", repo.replace('/', "--")))
+        .join("snapshots")
+        .read_dir()
+        .is_ok_and(|mut d| d.next().is_some())
 }
 
 /// The biggest GPU, from sysfs: (description, VRAM in GB).
@@ -94,10 +104,12 @@ pub async fn status(state: &State) -> VoiceSetup {
     VoiceSetup {
         gpu: gpu.as_ref().map(|g| g.0.clone()),
         gpu_vram_gb: gpu.map(|g| g.1),
-        fish_installed: fish.join(".venv/bin/python").exists() && fish.join("tools/api_server.py").exists(),
+        fish_installed: fish.join(".venv/bin/python").exists()
+            && fish.join("tools/api_server.py").exists(),
         fish_weights: fish.join("checkpoints/s2-pro/codec.pth").exists(),
         workers_installed: venv.join("bin/python").exists(),
-        casting_weights: hf_cached("Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign") && hf_cached("Qwen/Qwen3-TTS-12Hz-1.7B-Base"),
+        casting_weights: hf_cached("Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
+            && hf_cached("Qwen/Qwen3-TTS-12Hz-1.7B-Base"),
         installing: i.running,
         step: i.step.clone(),
         progress: i.progress,
@@ -150,7 +162,11 @@ async fn pump(state: State, stream: impl AsyncRead + Unpin) {
     let mut lines = BufReader::new(stream).lines();
     while let Ok(Some(l)) = lines.next_line().await {
         // Download progress bars rewrite one line with \r; keep the latest part.
-        let latest = l.rsplit('\r').find(|p| !p.trim().is_empty()).unwrap_or(&l).to_string();
+        let latest = l
+            .rsplit('\r')
+            .find(|p| !p.trim().is_empty())
+            .unwrap_or(&l)
+            .to_string();
         record(&state, &latest);
     }
 }
@@ -161,7 +177,11 @@ pub async fn install(state: &State) -> anyhow::Result<()> {
         if i.running {
             bail!("already installing");
         }
-        *i = Install { running: true, step: "Starting".into(), ..Default::default() };
+        *i = Install {
+            running: true,
+            step: "Starting".into(),
+            ..Default::default()
+        };
     }
     // fish-speech and VoiceDesign can't share the GPU with a running voice server.
     stop_server(state).await;
@@ -241,32 +261,59 @@ pub async fn start_server(state: &State) -> anyhow::Result<()> {
             return Ok(());
         }
     }
+    // While developing (scripts/dev.sh restarts duet on every change), the voice server outlives
+    // duet, so the performer isn't stopped and warmed up again each time: one already
+    // answering is used as it is.
+    let keep = std::env::var_os("DUET_KEEP_VOICES").is_some();
+    if keep && alive(state).await {
+        return Ok(());
+    }
     // A server still answering here may be one from before duet restarted, on its way down: start
     // ours anyway, and it waits for the port. (One that isn't going away keeps serving, and ours
     // gives up after a minute.)
     let script = std::path::absolute(scripts_dir().join("voices.sh"))?;
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(state.data_dir.join("voices.log"))?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(state.data_dir.join("voices.log"))?;
     let mut cmd = tokio::process::Command::new("bash");
     cmd.arg(&script)
         .arg(fish_dir(state))
         .arg(venv_dir(state))
         .arg(state.data_dir.join("voices"))
         .arg(VOICE_PORT.to_string())
-        .arg(state.settings.read().await.ai.voice_idle_minutes.max(0.0).to_string())
+        .arg(
+            state
+                .settings
+                .read()
+                .await
+                .ai
+                .voice_idle_minutes
+                .max(0.0)
+                .to_string(),
+        )
         .env("DUET_DATA_DIR", &state.data_dir)
         .stdout(log.try_clone()?)
         .stderr(log)
-        .kill_on_drop(true);
+        .kill_on_drop(!keep);
     // If duet itself is killed, take the voice server down with it rather than leaving it
     // holding the port.
     #[cfg(target_os = "linux")]
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-            Ok(())
-        });
+    if !keep {
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                Ok(())
+            });
+        }
     }
-    let child = cmd.spawn().with_context(|| format!("running {}", script.display()))?;
+    #[cfg(unix)]
+    if keep {
+        cmd.process_group(0);
+    }
+    let child = cmd
+        .spawn()
+        .with_context(|| format!("running {}", script.display()))?;
     *server = Some(child);
     Ok(())
 }
@@ -283,7 +330,10 @@ pub async fn stop_server(state: &State) {
             .await;
     }
     if let Some(mut child) = state.voices.server.lock().await.take() {
-        if tokio::time::timeout(std::time::Duration::from_secs(40), child.wait()).await.is_err() {
+        if tokio::time::timeout(std::time::Duration::from_secs(40), child.wait())
+            .await
+            .is_err()
+        {
             let _ = child.kill().await;
         }
     }
