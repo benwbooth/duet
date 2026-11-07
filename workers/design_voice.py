@@ -168,45 +168,80 @@ def maya(text, description):
     return take
 
 
+class Ears:
+    """How much of the line a take actually says (0..1): Whisper's words against the text. A
+    designer sometimes makes a take that's only noise or babble, which Fish then copies."""
+
+    def __init__(self):
+        from transformers import pipeline
+
+        self.asr = pipeline("automatic-speech-recognition", model="openai/whisper-large-v3-turbo", device="cuda:0", torch_dtype=torch.float16)
+
+    def clarity(self, wav, text):
+        import difflib
+
+        import torchaudio
+
+        x = torchaudio.functional.resample(torch.as_tensor(wav, dtype=torch.float32), RATE, 16000).numpy()
+        heard = self.asr({"raw": x, "sampling_rate": 16000}, generate_kwargs={"language": "en"})["text"]
+        words = lambda t: re.findall(r"[a-z']+", t.lower())
+        want, got = words(text), words(heard)
+        m = difflib.SequenceMatcher(None, want, got)
+        return m.ratio() if want else 1.0
+
+
 def main():
+    import os
+
     job = json.loads(sys.argv[1])
     desc = (job.get("description") or "A warm, clear, expressive audiobook narrator.").strip()
     text = job["text"]
     low = desc.lower()
     accent, omni_can = accent_of(low)
-    if omni_can:
-        attrs = [a for a in (sex_of(low), age_of(low), pitch_of(low)) if a]
-        if accent:
-            attrs.append(f"{accent} accent")
-        engine, make, tries = "omnivoice", omni(text, ", ".join(attrs)), 4
-        print(f"  OmniVoice: {', '.join(attrs)}", file=sys.stderr, flush=True)
-    else:
-        # (Said plainly, first: a long description confuses it.)
-        engine, make, tries = "maya1", maya(text, desc), 2
-        print(f"  Maya1 ({accent} accent)", file=sys.stderr, flush=True)
     label = LABELS.get(accent)
     judge = None
     if label:
         try:
-            import os
-
             judge = Classifier(os.path.join(os.path.dirname(os.path.abspath(job["out"])), ".accent-model"))
         except Exception as e:
             print(f"  accent check unavailable: {e}", file=sys.stderr, flush=True)
-    best = None
-    for i in range(tries if judge else 1):
-        wav = make()
-        if judge is None:
-            best = (None, wav)
+    try:
+        ears = Ears()
+    except Exception as e:
+        ears = None
+        print(f"  clarity check unavailable: {e}", file=sys.stderr, flush=True)
+
+    # Rounds of takes; a child voice that won't come out clear is tried again a little older.
+    rounds = []
+    if omni_can:
+        sex, age, pitch = sex_of(low), age_of(low), pitch_of(low)
+        ages = [age, "teenager"] if age == "child" else [age]
+        for a in ages:
+            attrs = [x for x in (sex, a, pitch) if x] + ([f"{accent} accent"] if accent else [])
+            rounds.append(("omnivoice", ", ".join(attrs), 4))
+    else:
+        rounds.append(("maya1", desc, 3))
+    best = None  # (clear, accent score, clarity, wav, engine)
+    for engine, prompt, tries in rounds:
+        print(f"  {engine}: {prompt[:120]}", file=sys.stderr, flush=True)
+        make = omni(text, prompt) if engine == "omnivoice" else maya(text, prompt)
+        for i in range(tries):
+            wav = make()
+            clarity = ears.clarity(wav, text) if ears else 1.0
+            score, top = judge.score(wav, label) if judge else (0.0, None)
+            clear = clarity >= 0.85
+            print(f"  take {i + 1}: says {clarity:.0%} of the line; {label} {score:.2f} (sounds most like {top})", file=sys.stderr, flush=True)
+            key = (clear, score if clear else clarity)
+            if best is None or key > best[0]:
+                best = (key, wav, engine, score, clarity)
+            if clear and (judge is None or top == label):
+                break
+        if best and best[0][0]:
             break
-        score, top = judge.score(wav, label)
-        print(f"  take {i + 1}: {label} {score:.2f} (sounds most like {top})", file=sys.stderr, flush=True)
-        if best is None or score > best[0]:
-            best = (score, wav)
-        if top == label:
-            break
-    sf.write(job["out"], best[1], RATE)
-    print(json.dumps({"engine": engine, "accent": accent, "score": best[0]}))
+        torch.cuda.empty_cache()
+    _, wav, engine, score, clarity = best
+    sf.write(job["out"], wav, RATE)
+    print(json.dumps({"engine": engine, "accent": accent, "score": score, "clarity": clarity}))
 
 
 if __name__ == "__main__":

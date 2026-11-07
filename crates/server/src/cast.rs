@@ -316,7 +316,10 @@ async fn cast_voices(state: &State, title: &str, author: &str, names: &[String],
         accent unless the story gives a character another origin (a Russian count: Russian). For each character \
         give their sex exactly as the book presents them (use the pronouns the book uses; animals and creatures \
         too), their age, their accent, and a short description of the voice itself (pitch, timbre, pace, \
-        temperament). Reply with JSON only: {\"book_accent\": \"<accent>\", \"characters\": {\"<name>\": \
+        temperament). When asked for the narrator, always cast one (never null): the narrator matches the \
+        protagonist, a woman's voice for a story centred on a girl or woman (Alice in Wonderland: a female \
+        narrator), a man's for a man or boy, and in a first-person book the narrator is the protagonist, \
+        grown up enough to tell the story. Reply with JSON only: {\"book_accent\": \"<accent>\", \"characters\": {\"<name>\": \
         {\"sex\": \"male|female\", \"age\": \"<e.g. elderly, about 40, a young girl of 7>\", \"accent\": \"<accent>\", \
         \"nationality\": \"<who'd speak like that: e.g. an Englishman from London, an English girl, a Scottish woman>\", \
         \"accent_features\": \"<the accent's audible features, e.g. non-rhotic, crisp t's, long 'a' as in 'bath'>\", \
@@ -326,7 +329,7 @@ async fn cast_voices(state: &State, title: &str, author: &str, names: &[String],
         "Book: {title} by {author}\n{}Characters to cast:\n{}{}\nSome of the text:\n{}",
         if cast.accent.is_empty() { String::new() } else { format!("The book's accent (already settled): {}\n", cast.accent) },
         if who.is_empty() { "(none)\n" } else { &who },
-        if narrator { "Also cast the narrator.\n" } else { "" },
+        if narrator { "Also cast the narrator (required: fill in \"narrator\").\n" } else { "" },
         context.chars().take(6000).collect::<String>(),
     );
     let reply = match crate::llm::chat(state, system, &[("user".into(), user)]).await.and_then(|t| json_in(&t)) {
