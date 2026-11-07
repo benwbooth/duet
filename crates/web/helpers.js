@@ -1882,7 +1882,10 @@ class Pager {
       // (Each band reaches a little into its neighbours, so no hairline seam shows between them.)
       // (A band the roll has closed to nothing is left out: drawn as a hairline turned edge-on,
       // it would have the browser resample the whole sheet, softening it.)
-      const poly = s1 - s0 > 0.5 ? clip(s0 - 0.8, s1 + 0.8) : [];
+      // (The overlap is measured on screen: a band turned nearly edge-on needs more of it.)
+      const chord = s1 <= 0 || s0 >= roll ? 1 : Math.abs(Math.cos(Math.max(0, Math.min(Math.PI, (s0 + s1) / 2 / R))));
+      const lap = Math.min(8, 1.2 / Math.max(0.15, chord));
+      const poly = s1 - s0 > 0.5 ? clip(s0 - lap, s1 + lap) : [];
       if (poly.length < 3) {
         show(b.front, false);
         show(b.back, false);
@@ -2140,7 +2143,9 @@ class Pager {
         return;
       }
       const dx = e.clientX - start.x;
-      const rect = this.book.getBoundingClientRect();
+      // (Measured once per drag: reading the layout while the sheet is being restyled every move
+      // would make the browser work it all out again each time.)
+      const rect = (drag && drag.rect) || this.book.getBoundingClientRect();
       if (!drag) {
         if (!this.curl || this.busy || !start.grab || Math.abs(dx) < 6 || Math.abs(dx) < Math.abs(e.clientY - start.y)) return;
         const dir = dx < 0 ? 1 : -1;
@@ -2163,13 +2168,14 @@ class Pager {
         const y = Math.max(0, Math.min(drag.H, start.y - rect.top));
         drag.C = { x: drag.C0x, y };
         drag.G = { x: start.x - rect.left, y };
+        drag.rect = rect;
         const [rest] = this.ends(drag, y);
         drag.from = rest;
         this.book.classList.add("grab-edge");
         try { this.book.setPointerCapture(e.pointerId); } catch (_) {}
       }
       let P = { x: drag.from.x + dx, y: drag.from.y + (e.clientY - start.y) };
-      if (drag.gl && !drag.reverse) {
+      if (!drag.reverse) {
         // The paper under your finger stays under it: the fold is halfway between where you
         // took hold and where your finger is now, and the corner goes wherever that carries it.
         const F = { x: e.clientX - rect.left, y: Math.max(-drag.H * 0.2, Math.min(drag.H * 1.2, e.clientY - rect.top)) };
@@ -2186,6 +2192,7 @@ class Pager {
         }
       }
       drag.at = P;
+      // (The browser already delivers mouse moves once a frame.)
       this.pose(drag, P);
     });
     const release = () => {
