@@ -640,8 +640,9 @@ async function elementSnapshot(pager, offset) {
         done = true;
         try {
           const ctx = cv.getContext("2d");
-          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-          ctx.drawElementImage(sheet, 0, 0);
+          // (Given its size in canvas pixels: drawn with no size, an element comes out at the
+          // screen's own scale on top of the canvas's, so a scaled display would see it zoomed.)
+          ctx.drawElementImage(sheet, 0, 0, cv.width, cv.height);
           resolve();
         } catch (e) {
           reject(e);
