@@ -1267,21 +1267,19 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 .reader.paged-mode {
   background:
     radial-gradient(ellipse 75% 70% at 50% 45%, rgba(255, 236, 200, 0.10), rgba(0, 0, 0, 0.38)),
-    repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.28) 0, rgba(0, 0, 0, 0.28) 1px, rgba(255, 240, 215, 0.12) 1px, rgba(255, 240, 215, 0) 3px, rgba(0, 0, 0, 0) 210px),
     var(--wood);
-  background-size: auto, auto, 900px 420px;
+  background-size: auto, 1600px 600px;
 }
 .reader.paged-mode[data-theme="dark"], .reader.paged-mode[data-theme="gray"] {
   background:
     radial-gradient(ellipse 75% 70% at 50% 45%, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.75)),
-    repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.35) 0, rgba(0, 0, 0, 0.35) 1px, rgba(255, 240, 215, 0.06) 1px, rgba(255, 240, 215, 0) 3px, rgba(0, 0, 0, 0) 210px),
     var(--wood-dark);
-  background-size: auto, auto, 900px 420px;
+  background-size: auto, 1600px 600px;
 }
 @media (prefers-color-scheme: dark) {
   .reader.paged-mode[data-theme="auto"] {
     background: radial-gradient(ellipse 75% 70% at 50% 45%, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.75)), var(--wood-dark);
-    background-size: auto, 900px 420px;
+    background-size: auto, 1600px 600px;
   }
 }
 
@@ -1294,7 +1292,7 @@ button, .transport { -webkit-user-select: none; user-select: none; }
   background:
     linear-gradient(to right, rgba(0, 0, 0, 0.25), rgba(255, 235, 200, 0.12) 3%, rgba(0, 0, 0, 0) 6%, rgba(0, 0, 0, 0) 94%, rgba(255, 235, 200, 0.1) 97%, rgba(0, 0, 0, 0.3)),
     var(--wood);
-  background-size: auto, 900px 420px;
+  background-size: auto, 1600px 600px;
   box-shadow:
     inset 0 1px 0 rgba(255, 244, 222, 0.5), inset 1px 0 0 rgba(255, 244, 222, 0.25), inset -1px 0 0 rgba(0, 0, 0, 0.3),
     0 2px 0 rgba(0, 0, 0, 0.25), 0 24px 40px -18px rgba(0, 0, 0, 0.6);
@@ -1324,7 +1322,7 @@ button, .transport { -webkit-user-select: none; user-select: none; }
     /* The back, set in and darker. */
     linear-gradient(rgba(25, 12, 5, 0.45), rgba(25, 12, 5, 0.45)),
     var(--wood-dark);
-  background-size: auto, auto, auto, 900px 420px;
+  background-size: auto, auto, auto, 1600px 600px;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.5);
 }
 .bookcase-frame { padding-bottom: 12px; }
