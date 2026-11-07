@@ -25,6 +25,9 @@ type Script = BTreeMap<usize, (String, String)>;
 struct Cast {
     narrator: String,
     characters: BTreeMap<String, String>,
+    /// The accent the book is read in (decided once, from where it's set and who wrote it).
+    #[serde(default)]
+    accent: String,
 }
 
 /// What the full cast is busy with for each book, for the player to show while it waits:
@@ -148,12 +151,30 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
             if known.is_empty() { "(none yet)\n" } else { &known }
         );
         let reply = json_in(&crate::llm::chat(state, system, &[("user".into(), user)]).await?)?;
+        let mut new_names = Vec::new();
         if let Some(new) = reply["new_characters"].as_object() {
             for (n, d) in new {
                 if let Some(name) = canonical(n, &cast.characters) {
+                    if !cast.characters.contains_key(&name) {
+                        new_names.push(name.clone());
+                    }
                     cast.characters.entry(name).or_insert_with(|| d.as_str().unwrap_or("").to_string());
                 }
             }
+        }
+        // Anyone speaking who wasn't described is cast too.
+        if let Some(lines) = reply["lines"].as_object() {
+            for v in lines.values() {
+                if let Some(name) = v["speaker"].as_str().or(v.as_str()).and_then(|s| canonical(s, &cast.characters)) {
+                    if !cast.characters.contains_key(&name) && !new_names.contains(&name) {
+                        new_names.push(name);
+                    }
+                }
+            }
+        }
+        let narrator_new = cast.narrator.is_empty();
+        if !new_names.is_empty() || narrator_new {
+            cast_voices(state, title, author, &new_names, narrator_new, &numbered, cast).await;
         }
         if let Some(lines) = reply["lines"].as_object() {
             for (k, v) in lines {
@@ -170,6 +191,143 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
         }
     }
     Ok(script)
+}
+
+/// Casting, as its own careful step: each character's sex (as the book has them: the White
+/// Rabbit is "he"), age, accent and voice, in fixed fields, made into a description the voice
+/// designer follows (sex and accent first, plainly). The book's accent is settled once and every
+/// voice gets it unless the story says otherwise. `context`: some of the text they appear in.
+async fn cast_voices(state: &State, title: &str, author: &str, names: &[String], narrator: bool, context: &str, cast: &mut Cast) {
+    let system = "You are casting a full-cast audiobook. First settle the book's accent: the one its readers \
+        would expect from where it's set and where its author is from (e.g. 'British (Received Pronunciation)' \
+        for an English novel, 'General American' for an American one). Every voice, narrator included, has that \
+        accent unless the story gives a character another origin (a Russian count: Russian). For each character \
+        give their sex exactly as the book presents them (use the pronouns the book uses; animals and creatures \
+        too), their age, their accent, and a short description of the voice itself (pitch, timbre, pace, \
+        temperament). Reply with JSON only: {\"book_accent\": \"<accent>\", \"characters\": {\"<name>\": \
+        {\"sex\": \"male|female\", \"age\": \"<e.g. elderly, about 40, a young girl of 7>\", \"accent\": \"<accent>\", \
+        \"voice\": \"<description>\"}}, \"narrator\": {\"sex\": ..., \"age\": ..., \"accent\": ..., \"voice\": ...} or null}.";
+    let who: String = names.iter().map(|n| format!("- {n}\n")).collect();
+    let user = format!(
+        "Book: {title} by {author}\n{}Characters to cast:\n{}{}\nSome of the text:\n{}",
+        if cast.accent.is_empty() { String::new() } else { format!("The book's accent (already settled): {}\n", cast.accent) },
+        if who.is_empty() { "(none)\n" } else { &who },
+        if narrator { "Also cast the narrator.\n" } else { "" },
+        context.chars().take(6000).collect::<String>(),
+    );
+    let reply = match crate::llm::chat(state, system, &[("user".into(), user)]).await.and_then(|t| json_in(&t)) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("casting: {e:#}");
+            return;
+        }
+    };
+    if cast.accent.is_empty() {
+        if let Some(a) = reply["book_accent"].as_str().filter(|a| !a.is_empty()) {
+            cast.accent = a.to_string();
+        }
+    }
+    let describe = |v: &serde_json::Value, accent: &str| -> Option<String> {
+        let sex = v["sex"].as_str().unwrap_or("").trim().to_lowercase();
+        let sex = if sex.starts_with('f') { "female" } else if sex.starts_with('m') { "male" } else { "" };
+        let age = v["age"].as_str().unwrap_or("").trim();
+        let acc = v["accent"].as_str().filter(|a| !a.trim().is_empty()).unwrap_or(accent).trim();
+        let voice = v["voice"].as_str().unwrap_or("").trim().trim_end_matches('.');
+        if sex.is_empty() && voice.is_empty() {
+            return None;
+        }
+        let mut d = String::new();
+        if !sex.is_empty() {
+            d.push_str(&format!("A {sex} voice"));
+        } else {
+            d.push_str("A voice");
+        }
+        if !age.is_empty() {
+            d.push_str(&format!(", {age}"));
+        }
+        if !acc.is_empty() {
+            d.push_str(&format!(", speaking with a {acc} accent"));
+        }
+        d.push_str(". ");
+        d.push_str(voice);
+        d.push('.');
+        Some(d)
+    };
+    let accent = cast.accent.clone();
+    if let Some(chars) = reply["characters"].as_object() {
+        for (n, v) in chars {
+            let Some(name) = canonical(n, &cast.characters) else { continue };
+            if let Some(d) = describe(v, &accent) {
+                cast.characters.insert(name, d);
+            }
+        }
+    }
+    if narrator {
+        if let Some(d) = describe(&reply["narrator"], &accent) {
+            cast.narrator = d;
+        }
+    }
+}
+
+/// Casts the whole book again (every character so far, and the narrator) with the careful
+/// casting step, and drops their old voices and the lines performed with them.
+pub async fn recast(state: &State, asset: i64) -> anyhow::Result<()> {
+    let base = dir(state, asset);
+    let cast_path = base.join("cast.json");
+    let lock = lock_for(asset);
+    let _held = lock.lock().await;
+    let mut cast: Cast = read_json(&cast_path).await.unwrap_or_default();
+    let a = db::asset(&state.db, asset).await?.context("no such book")?;
+    let w = db::work_detail(&state.db, a.work_id).await?.context("no such book")?;
+    let src = book::source(&a, &state.data_dir);
+    let text = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let mut out = String::new();
+        for c in 0..40 {
+            let Ok(s) = book::chapter_sentences(&src, asset, c) else { break };
+            out.push_str(&s.join(" "));
+            if out.len() > 6000 {
+                break;
+            }
+        }
+        Ok(out)
+    })
+    .await??;
+    status(asset, "Casting the voices again", 0, 0);
+    let names: Vec<String> = cast.characters.keys().cloned().collect();
+    cast.accent.clear();
+    cast.narrator.clear();
+    cast_voices(state, &w.title, w.author.as_deref().unwrap_or(""), &names, true, &text, &mut cast).await;
+    if cast.narrator.is_empty() {
+        cast.narrator = "A warm, clear, expressive audiobook narrator.".into();
+    }
+    write_json(&cast_path, &cast).await?;
+    // The voices are made again from the new descriptions, and every line performed again.
+    let tts = state.settings.read().await.ai.tts_url.clone();
+    let mut voices = vec![json!({ "voice": voice_name(asset, None), "instructions": cast.narrator, "replace": true })];
+    for (n, d) in &cast.characters {
+        voices.push(json!({ "voice": voice_name(asset, Some(n)), "instructions": d, "replace": true }));
+    }
+    let total = voices.len() as u32;
+    for (k, v) in voices.into_iter().enumerate() {
+        status(asset, "Making the new voices", k as u32, total);
+        state
+            .http
+            .post(format!("{}/voices", tts.trim_end_matches('/')))
+            .json(&json!({ "voices": [v] }))
+            .timeout(std::time::Duration::from_secs(1800))
+            .send()
+            .await
+            .context("the voice server isn't running (Settings → Voices)")?;
+    }
+    let mut entries = tokio::fs::read_dir(&base).await?;
+    while let Some(e) = entries.next_entry().await? {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.ends_with(".mp3") || name.ends_with(".words.json") {
+            let _ = tokio::fs::remove_file(e.path()).await;
+        }
+    }
+    idle(asset);
+    Ok(())
 }
 
 /// The one name a character goes by for the whole book, so they keep one voice: the model

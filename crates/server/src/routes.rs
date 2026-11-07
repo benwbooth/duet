@@ -52,6 +52,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assets/{id}/tracks/{n}/peaks", get(track_peaks))
         .route("/assets/{id}/cast/{chapter}/{n}", get(cast_sentence))
         .route("/assets/{id}/cast/status", get(cast_status))
+        .route("/assets/{id}/cast/recast", post(cast_recast))
         .route("/assets/{id}/cast/{chapter}/{n}/words", get(cast_words))
         .route("/assets/{id}/link", post(link))
         .route("/jobs", get(list_jobs).post(new_job))
@@ -239,6 +240,17 @@ async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResul
 }
 
 /// One sentence of the full cast, performed on the fly (see cast.rs).
+/// Casts the book's full cast again (better voices from a careful casting pass), in the
+/// background: the player shows its progress.
+async fn cast_recast(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<serde_json::Value> {
+    tokio::spawn(async move {
+        if let Err(e) = crate::cast::recast(&s, id).await {
+            tracing::warn!("recasting {id}: {e:#}");
+        }
+    });
+    Json(serde_json::json!({ "ok": true }))
+}
+
 /// When each word of a performed full-cast line starts, for the read-along.
 async fn cast_words(AxState(s): AxState<State>, Path((id, chapter, n)): Path<(i64, usize, usize)>) -> ApiResult<Json<Vec<f64>>> {
     Ok(Json(crate::cast::words(&s, id, chapter, n).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?))

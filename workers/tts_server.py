@@ -553,6 +553,12 @@ class Handler(BaseHTTPRequestHandler):
                 # Cast voices ahead of time, so a long recording never switches models midway.
                 with lock:
                     for v in body.get("voices", []):
+                        if v.get("replace"):
+                            # Cast again: the old clip goes, and a new one is made from the description.
+                            for ext in (".wav", ".json"):
+                                old = os.path.join(args.voices, slug(v["voice"]) + ext)
+                                if os.path.exists(old):
+                                    os.replace(old, old + ".old")
                         reference(v["voice"], v.get("instructions"), language)
                 return self.reply(200, b'{"ok":true}', "application/json")
             if path in ("/v1/audio/script", "/audio/script"):
