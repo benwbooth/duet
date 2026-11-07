@@ -676,6 +676,10 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
     let base = dir(state, asset);
     let part = n / CHUNK;
     let cast_path = base.join("cast.json");
+    // A part already directed doesn't wait for the director working on another.
+    if let Some(script) = read_json::<Script>(&base.join(format!("script-{chapter}-{part}.json"))).await {
+        return Ok((script, read_json(&cast_path).await.unwrap_or_default()));
+    }
     let lock = lock_for(asset);
     let _held = lock.lock().await;
     let mut cast: Cast = read_json(&cast_path).await.unwrap_or_default();
@@ -788,6 +792,36 @@ static LISTENER: LazyLock<std::sync::Mutex<HashMap<i64, (usize, usize, u64)>>> =
 /// this chapter and into the next, a line at a time, so the lines are ready by the time they're
 /// reached even though performing takes longer than listening. Stops when the listener moves
 /// elsewhere (a new one starts from there).
+/// Books whose director is reading ahead.
+static DIRECTING: LazyLock<std::sync::Mutex<std::collections::HashSet<i64>>> = LazyLock::new(Default::default);
+
+/// The director reads ahead of the performers, the rest of this chapter and the next two: the
+/// chat model works on the CPU while the performer has the card (they don't both fit), a minute
+/// or two a part, so it's done in parallel rather than as each part comes up.
+fn direct_ahead(state: &State, asset: i64, chapter: usize) {
+    if !DIRECTING.lock().unwrap().insert(asset) {
+        return;
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        let base = dir(&state, asset);
+        for c in chapter..chapter + 3 {
+            let Ok(Some(a)) = db::asset(&state.db, asset).await else { break };
+            let src = book::source(&a, &state.data_dir);
+            let Ok(Ok(sentences)) = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, c)).await else { break };
+            for part in 0..sentences.len().div_ceil(CHUNK) {
+                let done = base.join(format!("script-{c}-{part}.json")).exists() || base.join(format!("script-{c}.json")).exists();
+                if !done {
+                    if let Err(e) = prepared(&state, asset, c, part * CHUNK, &sentences).await {
+                        tracing::warn!("directing ahead ({c}, part {part}): {e:#}");
+                    }
+                }
+            }
+        }
+        DIRECTING.lock().unwrap().remove(&asset);
+    });
+}
+
 fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
     let generation = {
         let mut l = LISTENER.lock().unwrap();
@@ -799,6 +833,7 @@ fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
         *entry = (chapter, n, entry.2 + 1);
         entry.2
     };
+    direct_ahead(state, asset, chapter);
     let state = state.clone();
     tokio::spawn(async move {
         let moved = || LISTENER.lock().unwrap().get(&asset).map(|e| e.2) != Some(generation);
