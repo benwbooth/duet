@@ -231,7 +231,18 @@ async fn cast_voices(state: &State, title: &str, author: &str, names: &[String],
         let sex = v["sex"].as_str().unwrap_or("").trim().to_lowercase();
         let sex = if sex.starts_with('f') { "female" } else if sex.starts_with('m') { "male" } else { "" };
         let age = v["age"].as_str().unwrap_or("").trim();
+        // ("unknown" or "indeterminate" ages say nothing to the voice designer.)
+        let age = if ["unknown", "indeterminate", "n/a", "unspecified"].iter().any(|u| age.to_lowercase().starts_with(u)) { "" } else { age };
         let acc = v["accent"].as_str().filter(|a| !a.trim().is_empty()).unwrap_or(accent).trim();
+        // An accent, not commentary on how they talk ("RP with odd phrasing" → "RP").
+        let acc = acc.split(" with ").next().unwrap_or(acc).trim();
+        // The voice designer knows "British" better than "Received Pronunciation".
+        let acc = if (acc.contains("Received Pronunciation") || acc == "RP" || acc.starts_with("RP ")) && !acc.contains("British") {
+            "British English (Received Pronunciation)".to_string()
+        } else {
+            acc.to_string()
+        };
+        let acc = acc.as_str();
         let voice = v["voice"].as_str().unwrap_or("").trim().trim_end_matches('.');
         if sex.is_empty() && voice.is_empty() {
             return None;
