@@ -192,6 +192,9 @@ class Fish:
         # so only the very first start pays for it.
         env = dict(os.environ)
         env.setdefault("DUET_FISH_COMPILE", "max-autotune-no-cudagraphs")
+        # 8-bit weights: about 2x real time against 1.4x at full precision, with the same words
+        # (checked by transcribing both). DUET_FISH_INT8=0 for full precision.
+        env.setdefault("DUET_FISH_INT8", "1")
         self.proc = subprocess.Popen(cmd, cwd=os.path.expanduser(args.fish_dir), env=env)
         for _ in range(1200):
             if self.healthy():
