@@ -782,6 +782,9 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         });
     });
     // Moves the full cast to a sentence, carrying on playing if it was.
+    // The word of the line to start from (a line begun on the page before starts at the first
+    // word on this one), applied once its words are timed.
+    let cast_word = StoredValue::new(0usize);
     let cast_go = move |c: usize, s: usize, play: bool| {
         spawn_local(async move {
             let found = settle(c, s).await;
@@ -981,7 +984,15 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 }
                 if let Some(n) = n {
                     let n = n as usize;
+                    // A sentence begun on the page before is read from the page's first word.
+                    let word = page
+                        .get_untracked()
+                        .map(|el| crate::first_word_on_page(&el))
+                        .filter(|v| v.first().copied() == Some(n as u32))
+                        .and_then(|v| v.get(1).copied())
+                        .unwrap_or(0) as usize;
                     if mode.get_untracked().cast() {
+                        cast_word.set_value(word);
                         cast_go(chapter.get_untracked(), n, playing.get_untracked());
                         return;
                     }
@@ -990,7 +1001,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     // again from it.
                     let c = chapter.get_untracked();
                     let target = sync.with_untracked(|x| {
-                        x.of(c, n).map(|sp| (sp.track, sp.start)).or_else(|| {
+                        x.of(c, n).map(|sp| (sp.track, sp.words.get(word).copied().unwrap_or(sp.start))).or_else(|| {
                             let asset = audio_asset.get_untracked()?;
                             let lens: Vec<f64> = asset.tracks.iter().map(|t| t.duration_secs).collect();
                             let count = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1);
@@ -1186,7 +1197,11 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         } else if m == Mode::ReadCast {
             let (cc, cs) = cast_at.get_untracked();
             if !(cc == c && showing(cs)) && c != usize::MAX {
-                let s = el.as_ref().map(|el| crate::visible_sentence(el) as usize).unwrap_or(0);
+                let (s, w) = el.as_ref().map(|el| {
+                    let v = crate::first_word_on_page(el);
+                    (v.first().copied().unwrap_or(0) as usize, v.get(1).copied().unwrap_or(0) as usize)
+                }).unwrap_or((0, 0));
+                cast_word.set_value(w);
                 cast_go(c, s, true);
                 return;
             }
@@ -1740,6 +1755,11 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                                         return;
                                     }
                                     let (Some(el), Some(a)) = (page.get_untracked(), audio_el()) else { return };
+                                    let w = cast_word.get_value();
+                                    cast_word.set_value(0);
+                                    if let Some(t) = times.get(w).filter(|_| w > 0) {
+                                        a.set_current_time(*t);
+                                    }
                                     crate::read_along(Some((*el).clone().into()), &a, n as i32, 0.0, dur, &times, prefs.get_untracked().follow_audio);
                                 });
                             }
