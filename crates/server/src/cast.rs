@@ -14,8 +14,9 @@ use tokio::sync::Mutex;
 
 use crate::{State, book, db};
 
-/// Sentences per direction request.
-const CHUNK: usize = 120;
+/// Sentences per direction request: a chapter is directed a part at a time, as the listener
+/// reaches it, so the first line plays after one short request rather than the whole chapter's.
+const CHUNK: usize = 30;
 
 /// (speaker, acting direction) for each sentence with dialogue, by sentence number.
 type Script = BTreeMap<usize, (String, String)>;
@@ -97,11 +98,12 @@ async fn write_json<T: Serialize>(path: &PathBuf, v: &T) -> anyhow::Result<()> {
 
 /// The chat model directs one chapter: speakers and directions, and descriptions of new characters
 /// (and of the narrator, the first time).
-async fn direct(state: &State, asset: i64, chapter: usize, title: &str, author: &str, sentences: &[String], cast: &mut Cast) -> anyhow::Result<Script> {
+async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &str, author: &str, sentences: &[String], cast: &mut Cast) -> anyhow::Result<Script> {
     let mut script = Script::new();
-    let chunks = sentences.len().div_ceil(CHUNK) as u32;
-    for (k, start) in (0..sentences.len()).step_by(CHUNK).enumerate() {
-        status(asset, format!("Reading chapter {} to work out who says what", chapter + 1), k as u32, chunks);
+    let parts = sentences.len().div_ceil(CHUNK).max(1);
+    for start in (part * CHUNK..sentences.len()).step_by(CHUNK).take(1) {
+        let what = if parts > 1 { format!("Reading part {} of chapter {} to work out who says what", part + 1, chapter + 1) } else { format!("Reading chapter {} to work out who says what", chapter + 1) };
+        status(asset, what, 0, 0);
         let part = &sentences[start..(start + CHUNK).min(sentences.len())];
         if !part.iter().any(|s| is_quote(s)) && !cast.narrator.is_empty() {
             continue;
@@ -148,19 +150,26 @@ fn voice_name(asset: i64, who: Option<&str>) -> String {
     format!("cast{asset}-{}", slug.trim_matches('-'))
 }
 
-/// The chapter's script and the cast, directing (and casting) the chapter the first time.
-async fn prepared(state: &State, asset: i64, chapter: usize, sentences: &[String]) -> anyhow::Result<(Script, Cast)> {
+/// The script for the part of the chapter sentence `n` is in, and the cast, directing (and
+/// casting) that part the first time.
+async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences: &[String]) -> anyhow::Result<(Script, Cast)> {
     let base = dir(state, asset);
-    let (script_path, cast_path) = (base.join(format!("script-{chapter}.json")), base.join("cast.json"));
+    let part = n / CHUNK;
+    let cast_path = base.join("cast.json");
     let lock = lock_for(asset);
     let _held = lock.lock().await;
     let mut cast: Cast = read_json(&cast_path).await.unwrap_or_default();
+    // (A whole chapter directed at once, as earlier versions did.)
+    if let Some(script) = read_json::<Script>(&base.join(format!("script-{chapter}.json"))).await {
+        return Ok((script, cast));
+    }
+    let script_path = base.join(format!("script-{chapter}-{part}.json"));
     if let Some(script) = read_json::<Script>(&script_path).await {
         return Ok((script, cast));
     }
     let a = db::asset(&state.db, asset).await?.context("no such book")?;
     let w = db::work_detail(&state.db, a.work_id).await?.context("no such book")?;
-    let script = match direct(state, asset, chapter, &w.title, w.author.as_deref().unwrap_or(""), sentences, &mut cast).await {
+    let script = match direct(state, asset, chapter, part, &w.title, w.author.as_deref().unwrap_or(""), sentences, &mut cast).await {
         Ok(s) => s,
         Err(e) => {
             // No chat model (or it failed): the narrator reads this chapter; try directing again later.
@@ -172,7 +181,7 @@ async fn prepared(state: &State, asset: i64, chapter: usize, sentences: &[String
     if cast.narrator.is_empty() {
         cast.narrator = "A warm, clear, expressive audiobook narrator.".into();
     }
-    // Cast everyone in this chapter up front, so the voice server isn't swapping models mid-chapter.
+    // Cast everyone in this part up front, so the voice server isn't swapping models mid-part.
     // (One at a time, so the player can say whose voice is being made.)
     let mut voices = vec![("the narrator".to_string(), json!({ "voice": voice_name(asset, None), "instructions": cast.narrator }))];
     for who in script.values().map(|(s, _)| s).collect::<std::collections::BTreeSet<_>>() {
@@ -210,7 +219,7 @@ pub async fn sentence(state: &State, asset: i64, chapter: usize, n: usize) -> an
     let src = book::source(&a, &state.data_dir);
     let sentences = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, chapter)).await??;
     let text = sentences.get(n).cloned().context("no such sentence")?;
-    let (script, cast) = prepared(state, asset, chapter, &sentences).await?;
+    let (script, cast) = prepared(state, asset, chapter, n, &sentences).await?;
     let parts: Vec<_> = pieces(&text, script.get(&n))
         .into_iter()
         .map(|(t, who, direction)| {
