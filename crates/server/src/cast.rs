@@ -21,6 +21,17 @@ const CHUNK: usize = 30;
 /// (speaker, acting direction) for each sentence with dialogue, by sentence number.
 type Script = BTreeMap<usize, (String, String)>;
 
+/// The words to say for sentences whose printed text a voice would misread (numerals,
+/// abbreviations, symbols), by sentence number, as the director wrote them.
+type Say = BTreeMap<usize, String>;
+
+/// Printed text a voice might misread: digits, a word that could be a Roman numeral (in
+/// capitals, not the pronoun "I"), an ampersand or such.
+fn needs_saying(s: &str) -> bool {
+    s.chars().any(|c| c.is_ascii_digit() || "&%$£€§#@/".contains(c))
+        || s.split(|c: char| !c.is_alphanumeric()).any(|w| w.len() > 1 && roman(w).is_some())
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct Cast {
     narrator: String,
@@ -162,6 +173,21 @@ fn speakable(text: &str) -> String {
     out.join(" ")
 }
 
+/// `text` with each whole-word `from` replaced by `to`.
+fn replace_words(text: &str, from: &str, to: &str) -> String {
+    let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(from) {
+        let (before, after) = (rest[..i].chars().last(), rest[i + from.len()..].chars().next());
+        out.push_str(&rest[..i]);
+        out.push_str(if word(before) || word(after) { from } else { to });
+        rest = &rest[i + from.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn json_in(text: &str) -> anyhow::Result<serde_json::Value> {
     let (start, end) = (text.find('{').context("no JSON in the reply")?, text.rfind('}').context("no JSON in the reply")?);
     Ok(serde_json::from_str(&text[start..=end])?)
@@ -179,14 +205,14 @@ async fn write_json<T: Serialize>(path: &PathBuf, v: &T) -> anyhow::Result<()> {
 
 /// The chat model directs one chapter: speakers and directions, and descriptions of new characters
 /// (and of the narrator, the first time).
-async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &str, author: &str, sentences: &[String], cast: &mut Cast) -> anyhow::Result<Script> {
+async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &str, author: &str, sentences: &[String], cast: &mut Cast, say: &mut Say) -> anyhow::Result<Script> {
     let mut script = Script::new();
     let parts = sentences.len().div_ceil(CHUNK).max(1);
     for start in (part * CHUNK..sentences.len()).step_by(CHUNK).take(1) {
         let what = if parts > 1 { format!("Reading part {} of chapter {} to work out who says what", part + 1, chapter + 1) } else { format!("Reading chapter {} to work out who says what", chapter + 1) };
         status(asset, what, 0, 0);
         let part = &sentences[start..(start + CHUNK).min(sentences.len())];
-        if !part.iter().any(|s| is_quote(s)) && !cast.narrator.is_empty() {
+        if !part.iter().any(|s| is_quote(s) || needs_saying(s)) && !cast.narrator.is_empty() {
             continue;
         }
         let numbered: String = part.iter().enumerate().map(|(i, s)| format!("{}: {s}\n", start + i)).collect();
@@ -201,11 +227,19 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
             voices, narrator included); a character the story gives another origin speaks with that one instead (a \
             Russian count with a Russian accent, a French maid with a French one). Always name the accent. Reply \
             with JSON only: {\"lines\": {\"<sentence number>\": {\"speaker\": \"<name>\", \"direction\": \"<direction>\"}}, \
-            \"new_characters\": {\"<name>\": \"<voice description>\"}, \"narrator\": \"<voice description or empty>\"}. \
+            \"new_characters\": {\"<name>\": \"<voice description>\"}, \"narrator\": \"<voice description or empty>\", \"say\": {}}. \
             Each character keeps one voice for the whole book, so use exactly the name from the known list when \
             they're in it, and give a new character a plain name only (\"Alice\", \"White Rabbit\"): never add how \
             they're speaking or what they're doing to the name; that goes in the direction. Lines spoken by \
-            several characters together go to the one leading them.";
+            several characters together go to the one leading them. \
+            The voices read exactly the letters they're given, so for any numbered sentence (dialogue or \
+            narration) with words that would be misread aloud, give each such word or phrase exactly as printed \
+            and the words to say instead, in \"say\": {\"<sentence number>\": {\"<as printed>\": \"<as spoken>\"}}. \
+            Roman numerals become the number they mean, as a reader would say it (\"Chapter XII\": \"Chapter \
+            twelve\", \"Henry VIII\": \"Henry the Eighth\", \"George III\": \"George the Third\"); digits, dates, \
+            money, ordinals and symbols are spelled out the way the book's readers would say them (a year \"1865\": \
+            \"eighteen sixty-five\", \"1066\": \"ten sixty-six\"; \"£5\": \"five pounds\"; \"&c.\": \"et cetera\"). \
+            Never list the pronoun \"I\" or ordinary words, and leave sentences that read fine out of \"say\".";
         let ask_narrator = if cast.narrator.is_empty() { "\nAlso describe the narrator's voice." } else { "" };
         let user = format!(
             "Book: {title} by {author}\nKnown characters:\n{}{ask_narrator}\n\nSentences:\n{numbered}",
@@ -244,6 +278,23 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
                 let Some(speaker) = canonical(speaker, &cast.characters) else { continue };
                 if n < sentences.len() {
                     script.insert(n, (speaker, v["direction"].as_str().unwrap_or("").trim().to_string()));
+                }
+            }
+        }
+        if let Some(lines) = reply["say"].as_object() {
+            for (k, v) in lines {
+                let (Ok(n), Some(swaps)) = (k.parse::<usize>(), v.as_object()) else { continue };
+                let Some(mut t) = sentences.get(n).cloned() else { continue };
+                for (printed, spoken) in swaps {
+                    let Some(spoken) = spoken.as_str().map(str::trim).filter(|s| !s.is_empty()) else { continue };
+                    // (Only whole words, and never the pronoun: "I" isn't one.)
+                    if printed.trim() == "I" || printed.trim().is_empty() {
+                        continue;
+                    }
+                    t = replace_words(&t, printed.trim(), spoken);
+                }
+                if &t != &sentences[n] {
+                    say.insert(n, t);
                 }
             }
         }
@@ -481,8 +532,12 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
     }
     let a = db::asset(&state.db, asset).await?.context("no such book")?;
     let w = db::work_detail(&state.db, a.work_id).await?.context("no such book")?;
-    let script = match direct(state, asset, chapter, part, &w.title, w.author.as_deref().unwrap_or(""), sentences, &mut cast).await {
-        Ok(s) => s,
+    let mut say = Say::new();
+    let script = match direct(state, asset, chapter, part, &w.title, w.author.as_deref().unwrap_or(""), sentences, &mut cast, &mut say).await {
+        Ok(s) => {
+            write_json(&base.join(format!("say-{chapter}-{part}.json")), &say).await.ok();
+            s
+        }
         Err(e) => {
             // No chat model (or it failed): the narrator reads this chapter; try directing again later.
             tracing::warn!("directing chapter {chapter}: {e:#}");
@@ -634,8 +689,11 @@ async fn perform(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow:
     }
     let src = book::source(&a, &state.data_dir);
     let sentences = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, chapter)).await??;
-    let text = speakable(&sentences.get(n).cloned().context("no such sentence")?);
+    let printed = sentences.get(n).cloned().context("no such sentence")?;
     let (script, cast) = prepared(state, asset, chapter, n, &sentences).await?;
+    // The director's wording where the print would be misread; the rules catch headings anyway.
+    let say: Say = read_json(&dir(state, asset).join(format!("say-{chapter}-{}.json", n / CHUNK))).await.unwrap_or_default();
+    let text = speakable(say.get(&n).unwrap_or(&printed));
     // (Scripts directed before names were tidied: the same one voice per character.)
     let line = script.get(&n).and_then(|(who, dir)| canonical(who, &cast.characters).map(|w| (w, dir.clone())));
     let parts: Vec<_> = pieces(&text, line.as_ref())
@@ -675,10 +733,11 @@ async fn perform(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow:
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical, pieces, speakable};
+    use super::{canonical, pieces, replace_words, speakable};
 
     #[test]
     fn roman_numerals_read_as_numbers() {
+        assert_eq!(replace_words("George III and IIIa", "III", "the Third"), "George the Third and IIIa");
         assert_eq!(speakable("XII."), "Chapter twelve.");
         assert_eq!(speakable("I"), "Chapter one.");
         assert_eq!(speakable("Chapter IV"), "Chapter four");
