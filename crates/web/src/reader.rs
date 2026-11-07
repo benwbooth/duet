@@ -728,7 +728,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         }
         None
     };
-    let cast_url = move |e: i64, (c, s): (usize, usize)| format!("/api/assets/{e}/cast/{c}/{s}");
+    let cast_url = move |e: i64, (c, s): (usize, usize)| format!("/api/assets/{e}/cast/{c}/{s}?v=2");
     // In full cast mode the performer is loaded straight away (it takes a couple of minutes); and
     // once loaded it stays loaded as long as you're reading (in any mode), not unloaded as idle.
     let warming = StoredValue::new(false);

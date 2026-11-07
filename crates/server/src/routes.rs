@@ -271,9 +271,10 @@ async fn cast_status(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<se
     Json(crate::cast::current(&s, id).await)
 }
 
+/// (Not kept by the browser: a recast or a better reading replaces the line.)
 async fn cast_sentence(AxState(s): AxState<State>, Path((id, chapter, n)): Path<(i64, usize, usize)>) -> ApiResult<Response> {
     let bytes = crate::cast::sentence(&s, id, chapter, n).await?;
-    Ok(([(header::CONTENT_TYPE, "audio/mpeg"), (header::CACHE_CONTROL, "max-age=86400")], bytes).into_response())
+    Ok(([(header::CONTENT_TYPE, "audio/mpeg"), (header::CACHE_CONTROL, "no-cache")], bytes).into_response())
 }
 
 /// The recording's loudness across a track, for drawing its waveform: 0..1 per slice.
