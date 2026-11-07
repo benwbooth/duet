@@ -565,9 +565,17 @@ fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
                 if moved() {
                     return;
                 }
-                if let Err(e) = perform(&state, asset, c, k).await {
-                    tracing::warn!("performing ahead ({c}, {k}): {e:#}");
-                    return;
+                // (If the voices are restarting, wait for them rather than give up: giving up left
+                // the listener's stretch marked as being worked on, so nothing more was performed.)
+                let mut tries = 0;
+                while let Err(e) = perform(&state, asset, c, k).await {
+                    tries += 1;
+                    if moved() || tries > 12 {
+                        tracing::warn!("performing ahead ({c}, {k}): {e:#}");
+                        LISTENER.lock().unwrap().remove(&asset);
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                 }
                 if let Some(entry) = LISTENER.lock().unwrap().get_mut(&asset).filter(|e| e.2 == generation) {
                     // (Lets a request a little further on count as the same stretch.)
