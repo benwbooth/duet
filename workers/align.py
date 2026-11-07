@@ -99,6 +99,33 @@ def align(book, heard, near=0, idx=None):
     return mapping
 
 
+def word_times(heard_at, n, track, start, end):
+    """When each of a sentence's n words starts: as heard where it was (and in order, on the
+    sentence's track), the rest spread evenly between their neighbours."""
+    known = sorted((i, s) for i, (tr, s) in heard_at.items() if tr == track and start - 0.5 <= s <= end + 0.5)
+    times = [None] * n
+    last = start
+    for i, s in known:
+        if s >= last:
+            times[i] = s
+            last = s
+    out = []
+    i = 0
+    while i < n:
+        if times[i] is not None:
+            out.append(times[i])
+            i += 1
+            continue
+        j = next((k for k in range(i, n) if times[k] is not None), n)
+        a = out[-1] if i > 0 else start
+        b = times[j] if j < n else end
+        lead = 1 if i > 0 else 0
+        for k in range(j - i):
+            out.append(a + (b - a) * (k + lead) / (j - i + lead))
+        i = j
+    return [round(t, 3) for t in out]
+
+
 def spans(book, heard, mapping):
     """One span per sentence; sentences with no matched words are interpolated.
 
@@ -107,10 +134,17 @@ def spans(book, heard, mapping):
     middle of its matches.
     """
     words = {}
+    # Where each sentence's words begin in the book, and how many it has, for word times.
+    first, count = {}, {}
+    for i, (_, ch, si) in enumerate(book):
+        first.setdefault((ch, si), i)
+        count[(ch, si)] = count.get((ch, si), 0) + 1
+    word_at = {}
     for bi, hi in mapping.items():
         _, ch, si = book[bi]
         _, track, s, e = heard[hi]
         words.setdefault((ch, si), []).append((track, s, e))
+        word_at.setdefault((ch, si), {})[bi - first[(ch, si)]] = (track, s)
     by_sentence = {}
     for key, ws in words.items():
         ws.sort()
@@ -140,5 +174,8 @@ def spans(book, heard, mapping):
             if prev[0] != nxt[0] or not (0 <= nxt[1] - prev[2] <= 12.0 * gap):
                 continue
             track, s, e = prev[0], prev[2], nxt[1]
-        out.append({"chapter": ch, "sentence": si, "track": track, "start": round(s, 3), "end": round(max(e, s), 3)})
+        span = {"chapter": ch, "sentence": si, "track": track, "start": round(s, 3), "end": round(max(e, s), 3)}
+        if (ch, si) in by_sentence:
+            span["words"] = word_times(word_at.get((ch, si), {}), count[(ch, si)], track, s, max(e, s))
+        out.append(span)
     return out

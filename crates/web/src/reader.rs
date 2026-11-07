@@ -717,6 +717,8 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         });
     };
 
+    // The sentence whose words the read-along is following.
+    let along_at = RwSignal::new(None::<(usize, usize)>);
     let on_time = move |_| {
         let Some(a) = audio_el() else { return };
         let t = a.current_time();
@@ -735,6 +737,13 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         }
         if let Some(span) = s.at(track.get_untracked(), t) {
             if span.sentence as i32 == sentence.get_untracked() && span.chapter == chapter.get_untracked() {
+                // (Same sentence: make sure its words are being followed, e.g. after a pause.)
+                if along_at.get_untracked() != Some((span.chapter, span.sentence)) {
+                    if let Some(el) = page.get_untracked() {
+                        crate::read_along(Some((*el).clone().into()), &a, span.sentence as i32, span.start, span.end, &span.words);
+                        along_at.set(Some((span.chapter, span.sentence)));
+                    }
+                }
                 return;
             }
             sentence.set(span.sentence as i32);
@@ -743,6 +752,8 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 chapter.set(span.chapter);
             } else if let Some(el) = page.get_untracked() {
                 crate::highlight(&el, span.sentence as i32, prefs.get_untracked().follow_audio);
+                crate::read_along(Some((*el).clone().into()), &a, span.sentence as i32, span.start, span.end, &span.words);
+                along_at.set(Some((span.chapter, span.sentence)));
             }
         }
     };

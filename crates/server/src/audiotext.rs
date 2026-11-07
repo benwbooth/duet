@@ -147,6 +147,30 @@ async fn format(state: &State, title: &str, paras: Vec<String>) -> Vec<String> {
     out
 }
 
+/// When each word starts, given the ones that were heard: the rest are spread evenly between
+/// their heard neighbours (or the sentence's start and end).
+fn fill_word_times(starts: &[Option<f64>], start: f64, end: f64) -> Vec<f64> {
+    let n = starts.len();
+    let mut out = vec![0.0; n];
+    let mut i = 0;
+    while i < n {
+        if let Some(t) = starts[i] {
+            out[i] = t;
+            i += 1;
+            continue;
+        }
+        let j = (i..n).find(|&k| starts[k].is_some()).unwrap_or(n);
+        let a = if i == 0 { start } else { out[i - 1] };
+        let b = if j < n { starts[j].unwrap() } else { end };
+        let lead = usize::from(i > 0);
+        for k in i..j {
+            out[k] = a + (b - a) * (k - i + lead) as f64 / (j - i + lead) as f64;
+        }
+        i = j;
+    }
+    out
+}
+
 /// Times for each sentence: its words are matched, in order, to the words heard.
 fn timings(sentences: &[String], heard: &[(String, f64, f64)], chapter: usize, track: usize) -> Vec<SyncSpan> {
     let heard: Vec<(String, f64, f64)> =
@@ -155,16 +179,21 @@ fn timings(sentences: &[String], heard: &[(String, f64, f64)], chapter: usize, t
     let mut out = Vec::new();
     for (i, sentence) in sentences.iter().enumerate() {
         let (mut first, mut last) = (None::<f64>, None::<f64>);
+        let mut starts: Vec<Option<f64>> = Vec::new();
         for w in tokens(sentence) {
             // Formatting rarely moves words far, so look a little way ahead for each one.
             if let Some(k) = (at..(at + 40).min(heard.len())).find(|&k| heard[k].0 == w) {
                 first.get_or_insert(heard[k].1);
                 last = Some(heard[k].2);
+                starts.push(Some(heard[k].1));
                 at = k + 1;
+            } else {
+                starts.push(None);
             }
         }
         if let (Some(start), Some(end)) = (first, last) {
-            out.push(SyncSpan { chapter, sentence: i, track, start, end: end.max(start) });
+            let words = fill_word_times(&starts, start, end.max(start));
+            out.push(SyncSpan { chapter, sentence: i, track, start, end: end.max(start), words });
         }
     }
     out

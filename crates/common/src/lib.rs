@@ -145,6 +145,9 @@ pub struct SyncSpan {
     pub track: usize,
     pub start: f64,
     pub end: f64,
+    /// When each word of the sentence starts (its words as `[\w']+` finds them), when known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

@@ -2559,3 +2559,105 @@ export function wordAt(x, y) {
 export function copyText(text) {
   if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
 }
+
+// ---------------------------------------------------------------------------------------------
+// Read-along: while the recording plays, the paragraph being read is tinted softly, the sentence
+// (the .s.now highlight) more, and the word being said most. The word follows the recording
+// frame by frame, from the sync's word times when it has them (or spread over the sentence by
+// length when it doesn't). Drawn with the CSS Custom Highlight API, so the text isn't touched.
+const WORD_RE = /[\p{L}\p{N}_']+/gu;
+const along = { st: null, running: false };
+
+function sentenceWords(container, n) {
+  const ranges = [];
+  for (const el of container.querySelectorAll(`.s[data-s="${n}"]`)) {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      for (const m of node.data.matchAll(WORD_RE)) {
+        // (Only what the sync counts as a word: not a lone apostrophe.)
+        const lead = m[0].length - m[0].replace(/^'+/, "").length;
+        const core = m[0].replace(/^'+|'+$/g, "");
+        if (!core) continue;
+        const r = document.createRange();
+        r.setStart(node, m.index + lead);
+        r.setEnd(node, m.index + lead + core.length);
+        ranges.push(r);
+      }
+    }
+  }
+  return ranges;
+}
+
+function alongTick() {
+  const st = along.st;
+  if (!st || !st.container.isConnected || !window.CSS || !CSS.highlights) {
+    along.running = false;
+    return;
+  }
+  const t = st.audio.currentTime;
+  let i = -1;
+  if (t >= st.start - 0.05 && t <= st.end + 0.3) {
+    if (st.times && st.times.length === st.words.length) {
+      for (let k = 0; k < st.times.length && st.times[k] <= t + 0.03; k++) i = k;
+    } else if (st.words.length) {
+      // By length: longer words take longer to say.
+      const f = (t - st.start) / Math.max(0.01, st.end - st.start);
+      let acc = 0;
+      for (let k = 0; k < st.weights.length; k++) {
+        acc += st.weights[k];
+        if (f * st.total < acc) { i = k; break; }
+      }
+      if (i < 0) i = st.words.length - 1;
+    }
+  }
+  if (i !== st.shown) {
+    st.shown = i;
+    if (i >= 0 && st.words[i]) {
+      const h = new Highlight(st.words[i]);
+      h.priority = 2;
+      CSS.highlights.set("duet-word", h);
+    }
+    else CSS.highlights.delete("duet-word");
+  }
+  if (st.audio.paused) {
+    along.running = false;
+    return;
+  }
+  requestAnimationFrame(alongTick);
+}
+
+export function readAlong(container, audio, n, start, end, times) {
+  if (!window.CSS || !CSS.highlights) return;
+  if (!container || n < 0) {
+    along.st = null;
+    CSS.highlights.delete("duet-word");
+    CSS.highlights.delete("duet-para");
+    return;
+  }
+  const words = sentenceWords(container, n);
+  const weights = words.map((r) => r.toString().length + 1.5);
+  along.st = {
+    container, audio, n, start, end, words, weights, shown: -2,
+    total: weights.reduce((a, b) => a + b, 0),
+    times: times && times.length ? Array.from(times) : null,
+  };
+  // The paragraph (or other block) the sentence is in.
+  const first = container.querySelector(`.s[data-s="${n}"]`);
+  const block = first && first.closest("p, li, blockquote, dd, h1, h2, h3, h4, h5, h6, figcaption, div:not(.page)");
+  if (block && container.contains(block)) {
+    const r = document.createRange();
+    r.selectNodeContents(block);
+    CSS.highlights.set("duet-para", new Highlight(r));
+  } else {
+    CSS.highlights.delete("duet-para");
+  }
+  if (!audio.__along) {
+    audio.__along = true;
+    audio.addEventListener("play", () => { if (!along.running && along.st) { along.running = true; requestAnimationFrame(alongTick); } });
+    audio.addEventListener("seeked", () => { if (along.st) along.st.shown = -2; });
+  }
+  if (!along.running) {
+    along.running = true;
+    requestAnimationFrame(alongTick);
+  }
+}
