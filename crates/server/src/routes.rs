@@ -245,8 +245,8 @@ async fn cast_words(AxState(s): AxState<State>, Path((id, chapter, n)): Path<(i6
 }
 
 /// What the full cast is busy with (directing a chapter, finding a voice, performing), if anything.
-async fn cast_status(Path(id): Path<i64>) -> Json<serde_json::Value> {
-    Json(crate::cast::current(id))
+async fn cast_status(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<serde_json::Value> {
+    Json(crate::cast::current(&s, id).await)
 }
 
 async fn cast_sentence(AxState(s): AxState<State>, Path((id, chapter, n)): Path<(i64, usize, usize)>) -> ApiResult<Response> {

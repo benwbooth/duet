@@ -139,6 +139,16 @@ class Fish:
 
     def __init__(self):
         self.proc = None
+        self.starting_since = None
+
+    def expected_start(self):
+        """How long starting is likely to take: as long as last time (the first start ever tunes
+        its kernels for the GPU, which takes longest)."""
+        try:
+            with open(os.path.join(args.voices, ".fish-start.json")) as f:
+                return float(json.load(f)["seconds"])
+        except (OSError, ValueError, KeyError):
+            return 360.0
 
     def healthy(self):
         try:
@@ -176,14 +186,22 @@ class Fish:
             # Compiled, generation runs faster than real time; the first start takes a few minutes longer.
             cmd += ["--compile"]
         print("starting", " ".join(cmd), flush=True)
+        self.starting_since = time.time()
         # Kernels autotuned for this GPU (measured on a 7900 XTX: 0.78x real time with the default
         # compile, 1.05-1.2x tuned; CUDA/HIP graphs crash under ROCm). The tuning is cached on disk,
         # so only the very first start pays for it.
         env = dict(os.environ)
         env.setdefault("DUET_FISH_COMPILE", "max-autotune-no-cudagraphs")
         self.proc = subprocess.Popen(cmd, cwd=os.path.expanduser(args.fish_dir), env=env)
-        for _ in range(600):
+        for _ in range(1200):
             if self.healthy():
+                # How long this took, so the next start can show its progress against it.
+                try:
+                    with open(os.path.join(args.voices, ".fish-start.json"), "w") as f:
+                        json.dump({"seconds": time.time() - self.starting_since}, f)
+                except OSError:
+                    pass
+                self.starting_since = None
                 return
             if self.proc.poll() is not None:
                 raise RuntimeError("fish-speech server exited while starting")
@@ -490,6 +508,15 @@ def encode(wav, sr, fmt):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.rstrip("/") in ("/v1/status", "/status"):
+            since = fish.starting_since
+            body = {"fish_starting": since is not None}
+            if since is not None:
+                body.update(elapsed=time.time() - since, expected=fish.expected_start())
+            return self.reply(200, json.dumps(body).encode(), "application/json")
+        self.reply(404, b'{"error":"not found"}', "application/json")
+
     def reply(self, code, data, mime):
         self.send_response(code)
         self.send_header("Content-Type", mime)

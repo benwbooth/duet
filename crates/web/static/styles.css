@@ -1363,3 +1363,6 @@ button, .transport { -webkit-user-select: none; user-select: none; }
   background: color-mix(in srgb, var(--bg) 92%, transparent); color: var(--text); font-size: 0.9rem;
   box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.06); backdrop-filter: blur(10px);
 }
+.cast-wait { flex-wrap: wrap; justify-content: center; }
+.cast-progress { flex-basis: 100%; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--text) 12%, transparent); overflow: hidden; }
+.cast-progress > div { height: 100%; background: var(--accent); transition: width 1s linear; }

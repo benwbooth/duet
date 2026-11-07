@@ -91,6 +91,37 @@ if _mode or _dynamic is not None:
     except ImportError:
         pass
 
+def _int8(model):
+    """Every big linear layer holds its weights as 8-bit integers with a scale per output
+    channel (DUET_FISH_INT8=1). Generating speech reads every weight for every frame, so half the
+    bytes is close to twice the frames; compiled, the scaling folds into the matrix multiply."""
+    import torch
+    from torch import nn
+
+    class Int8Linear(nn.Module):
+        def __init__(self, linear):
+            super().__init__()
+            w = linear.weight.data.float()
+            scale = w.abs().amax(dim=1).clamp(min=1e-8) / 127.0
+            self.register_buffer("weight", torch.round(w / scale[:, None]).clamp(-127, 127).to(torch.int8))
+            self.register_buffer("scale", scale.to(linear.weight.dtype))
+            self.bias = linear.bias
+            self.in_features, self.out_features = linear.in_features, linear.out_features
+
+        def forward(self, x):
+            out = nn.functional.linear(x, self.weight.to(x.dtype)) * self.scale.to(x.dtype)
+            return out + self.bias if self.bias is not None else out
+
+    count = 0
+    for name, module in list(model.named_modules()):
+        for child_name, child in list(module.named_children()):
+            # (The big matrices in the transformer layers; embeddings and the output head stay.)
+            if isinstance(child, nn.Linear) and child.weight.numel() >= 1 << 20 and "output" not in child_name:
+                setattr(module, child_name, Int8Linear(child))
+                count += 1
+    print(f"fish_launch: {count} layers in 8-bit", file=sys.stderr)
+
+
 # S2-Pro's config allows 32,768 tokens of context, and fish-speech sizes its key/value cache and
 # attention mask for all of it: gigabytes of memory, and every generated frame attends over the
 # whole length. A line of a book plus its voice reference needs a small fraction of that.
@@ -105,7 +136,10 @@ if _max_seq > 0:
         def _capped(path, *args, **kwargs):
             if kwargs.get("max_length") is None:
                 kwargs["max_length"] = _max_seq
-            return _from_pretrained(path, *args, **kwargs)
+            model = _from_pretrained(path, *args, **kwargs)
+            if os.environ.get("DUET_FISH_INT8") == "1":
+                _int8(model)
+            return model
 
         _owner.from_pretrained = staticmethod(_capped)
     except Exception as e:  # an older or newer fish-speech: run it as it is

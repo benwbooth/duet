@@ -39,12 +39,29 @@ fn idle(asset: i64) {
     STATUS.lock().unwrap().remove(&asset);
 }
 
-/// What the full cast is doing for this book right now, if anything.
-pub fn current(asset: i64) -> serde_json::Value {
-    match STATUS.lock().unwrap().get(&asset) {
-        Some((what, done, total, since)) => json!({ "what": what, "done": done, "total": total, "secs": since.elapsed().as_secs() }),
-        None => json!(null),
+/// What the full cast is doing for this book right now, if anything. While the performer
+/// itself is starting (minutes, the first time), that, with how far along it is.
+pub async fn current(state: &State, asset: i64) -> serde_json::Value {
+    let now = STATUS.lock().unwrap().get(&asset).cloned();
+    let Some((what, done, total, since)) = now else { return json!(null) };
+    if what.starts_with("Performing") {
+        let tts = state.settings.read().await.ai.tts_url.clone();
+        let url = format!("{}/status", tts.trim_end_matches('/'));
+        if let Ok(r) = state.http.get(url).timeout(std::time::Duration::from_secs(2)).send().await {
+            if let Ok(v) = r.json::<serde_json::Value>().await {
+                if v["fish_starting"].as_bool() == Some(true) {
+                    let (elapsed, expected) = (v["elapsed"].as_f64().unwrap_or(0.0), v["expected"].as_f64().unwrap_or(360.0));
+                    return json!({
+                        "what": "Warming up the voices (the first line after a while takes longest)",
+                        "progress": (elapsed / expected.max(1.0)).min(0.97),
+                        "left": (expected - elapsed).max(0.0).round(),
+                        "secs": elapsed.round(),
+                    });
+                }
+            }
+        }
     }
+    json!({ "what": what, "done": done, "total": total, "secs": since.elapsed().as_secs() })
 }
 
 /// One lock per book: directing and casting happen once, however many requests arrive together.

@@ -301,6 +301,8 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     let cast_wait = RwSignal::new(false);
     // What the full cast is busy with while you wait for it (directing, finding voices, performing).
     let cast_status = RwSignal::new(None::<String>);
+    // How far along a long wait is (warming up the voices), when that's known.
+    let cast_progress = RwSignal::new(None::<f64>);
     // Where the audiobook was, kept while the full cast plays.
     let book_pos = RwSignal::new((0usize, 0.0f64));
     let ebook = RwSignal::new(None::<Asset>);
@@ -665,6 +667,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     Effect::new(move |_| {
         if !cast_wait.get() {
             cast_status.set(None);
+            cast_progress.set(None);
             return;
         }
         let Some(e) = ebook.get_untracked().map(|e| e.id) else { return };
@@ -672,12 +675,17 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             while cast_wait.try_get_untracked() == Some(true) {
                 if let Ok(v) = api::get::<serde_json::Value>(&format!("/api/assets/{e}/cast/status")).await {
                     let text = v["what"].as_str().map(|what| {
+                        if let Some(left) = v["left"].as_f64() {
+                            let left = if left >= 90.0 { format!("about {} min left", (left / 60.0).round()) } else { format!("about {}s left", left.round()) };
+                            return format!("{what}… {left}");
+                        }
                         let (done, total, secs) = (v["done"].as_u64().unwrap_or(0), v["total"].as_u64().unwrap_or(0), v["secs"].as_u64().unwrap_or(0));
                         let of = if total > 1 { format!(" ({} of {total})", done + 1) } else { String::new() };
                         let wait = if secs >= 5 { format!(" · {secs}s") } else { String::new() };
                         format!("{what}{of}…{wait}")
                     });
                     let _ = cast_status.try_set(text);
+                    let _ = cast_progress.try_set(v["progress"].as_f64());
                 }
                 gloo_timers::future::TimeoutFuture::new(1000).await;
             }
@@ -1592,6 +1600,9 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     <div class="cast-wait" role="status">
                         <span class="spinner small"></span>
                         <span>{move || cast_status.get().unwrap_or_else(|| "Getting the full cast ready…".into())}</span>
+                        <Show when=move || cast_progress.get().is_some()>
+                            <div class="cast-progress"><div style=move || format!("width:{:.1}%", cast_progress.get().unwrap_or(0.0) * 100.0)></div></div>
+                        </Show>
                     </div>
                 </Show>
                 <div class="player">
