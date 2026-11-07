@@ -225,8 +225,13 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
     }
     // Cast everyone in this part up front, so the voice server isn't swapping models mid-part.
     // (One at a time, so the player can say whose voice is being made.)
+    // Every character met so far, not just this part's: making a voice means stopping the
+    // performer (they can't share the card), so any still missing are all made in that one stop.
+    // (Ones already made are skipped at once.)
     let mut voices = vec![("the narrator".to_string(), json!({ "voice": voice_name(asset, None), "instructions": cast.narrator }))];
-    for who in script.values().map(|(s, _)| s).collect::<std::collections::BTreeSet<_>>() {
+    let mut everyone: std::collections::BTreeSet<String> = script.values().map(|(s, _)| s.clone()).collect();
+    everyone.extend(cast.characters.keys().cloned());
+    for who in &everyone {
         let desc = cast.characters.get(who).cloned().unwrap_or_default();
         voices.push((who.clone(), json!({ "voice": voice_name(asset, Some(who)), "instructions": desc })));
     }

@@ -151,7 +151,17 @@ class Fish:
         touch("fish")
         if self.healthy():
             return
+        # Fish needs most of a 24 GB card: everything else on it makes way first (the voice
+        # designer, speech recognition and the aligner, and Ollama's chat model), or it runs out
+        # of memory while starting.
         free_ollama()
+        unload_qwen()
+        with listen_lock:
+            whisper.clear()
+            from common import release_gpu_whisper
+
+            release_gpu_whisper()
+        free_gpu()
         if not args.fish_dir:
             raise RuntimeError(f"no fish-speech server at {args.fish_url}")
         host_port = args.fish_url.split("://", 1)[-1].rstrip("/")
