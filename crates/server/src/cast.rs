@@ -517,6 +517,7 @@ pub async fn recast(state: &State, asset: i64) -> anyhow::Result<()> {
         cast.narrator = narrator_default(&cast.accent);
     }
     write_json(&cast_path, &cast).await?;
+    remember(state, asset, &cast).await;
     // The voices are made again from the new descriptions, and every line performed again.
     let tts = state.settings.read().await.ai.tts_url.clone();
     let mut voices = vec![json!({ "voice": voice_name(asset, None), "instructions": cast.narrator, "replace": true })];
@@ -548,6 +549,22 @@ pub async fn recast(state: &State, asset: i64) -> anyhow::Result<()> {
 /// The book's full cast as the listener can see and change it: each member's description (what
 /// their voice was made from), their voice's name (its clip is `/cast/clip/{voice}`), and how
 /// the clip came out.
+/// The full cast kept with the book too, so you can talk to them (Ask), each in their own voice.
+async fn remember(state: &State, asset: i64, cast: &Cast) {
+    let Ok(Some(a)) = db::asset(&state.db, asset).await else { return };
+    let mut all = vec![("Narrator".to_string(), cast.narrator.clone(), voice_name(asset, None), true)];
+    all.extend(cast.characters.iter().map(|(n, d)| (n.clone(), d.clone(), voice_name(asset, Some(n)), false)));
+    for (name, description, voice, is_narrator) in all {
+        if description.is_empty() {
+            continue;
+        }
+        let m = duet_common::CastMember { id: 0, name, description, voice: Some(voice), is_narrator };
+        if let Err(e) = db::upsert_cast(&state.db, a.work_id, &m).await {
+            tracing::warn!("keeping the cast: {e:#}");
+        }
+    }
+}
+
 /// Books with a voice being made again from an edited description.
 static REVOICING: LazyLock<std::sync::Mutex<std::collections::HashSet<i64>>> = LazyLock::new(Default::default);
 
@@ -558,6 +575,7 @@ pub fn revoicing(asset: i64) {
 
 pub async fn members(state: &State, asset: i64) -> serde_json::Value {
     let cast: Cast = read_json(&dir(state, asset).join("cast.json")).await.unwrap_or_default();
+    remember(state, asset, &cast).await;
     let voices = state.data_dir.join("voices");
     let mut out = Vec::new();
     let mut add = |name: Option<&str>, description: &str| {
@@ -608,6 +626,7 @@ async fn revoice_one(state: &State, asset: i64, name: Option<String>, descriptio
         }
     }
     write_json(&cast_path, &cast).await?;
+    remember(state, asset, &cast).await;
     let who = name.clone().unwrap_or_else(|| "the narrator".into());
     status(asset, format!("Making {who}'s voice"), 0, 0);
     let tts = state.settings.read().await.ai.tts_url.clone();
@@ -746,6 +765,7 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
             .context("the voice server isn't running (Settings → Voices)")?;
     }
     write_json(&cast_path, &cast).await?;
+    remember(state, asset, &cast).await;
     write_json(&script_path, &script).await?;
     Ok((script, cast))
 }
