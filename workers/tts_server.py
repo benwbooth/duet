@@ -332,25 +332,32 @@ def sync_window(body):
     bw, idx = book_index(body["book"])
     start, duration = float(body["start"]), float(body.get("duration", 30.0))
     track = body.get("track", 0)
-    samples = load_audio_window(body["audio"], start, duration)
-    with listen_lock:
-        touch("whisper")
-        segments, _ = listen_model().transcribe(samples, vad_filter=False, language="en")
+    first, last = {}, {}
+    for i, (_, ch, si) in enumerate(bw):
+        first.setdefault((ch, si), i)
+        last[(ch, si)] = i
+    # A sentence longer than the stretch would never fit in one: listen to more until one does.
+    while True:
+        samples = load_audio_window(body["audio"], start, duration)
+        with listen_lock:
+            touch("whisper")
+            segments, _ = listen_model().transcribe(samples, vad_filter=False, language="en")
         heard = [(t, track, start, start + duration) for seg in segments for t in words(seg.text)]
         if not heard:
             return {"spans": [], "near": body.get("near"), "heard": 0}
         mapping = align.align(bw, heard, near=int(body.get("near") or 0), idx=idx)
         if not mapping:
             return {"spans": [], "near": body.get("near"), "heard": len(heard)}
+        # Where it was heard: the matched words, less any stray match far from the rest.
+        matched = sorted(mapping)
+        mid = matched[len(matched) // 2]
+        # (And only in the chapter most of it was heard in: a heading read out at the start of a
+        # track can match the contents page.)
+        matched = [m for m in matched if abs(m - mid) < 6 * len(heard) + 40 and bw[m][1] == bw[mid][1]]
+        lo, hi = matched[0], matched[-1]
         # The sentences heard, whole: from the one the first matched word is in to the one the
         # last is in, leaving out one cut off by either end of the stretch (the next stretch
         # starts where this one's sentences end, so it gets it whole).
-        matched = sorted(mapping)
-        lo, hi = matched[len(matched) // 20], matched[-1 - len(matched) // 20]
-        first, last = {}, {}
-        for i, (_, ch, si) in enumerate(bw):
-            first.setdefault((ch, si), i)
-            last[(ch, si)] = i
         order = []
         for i in range(first[bw[lo][1:]], last[bw[hi][1:]] + 1):
             key = bw[i][1:]
@@ -358,11 +365,27 @@ def sync_window(body):
                 order.append(key)
         if order and first[order[0]] < lo - 4 and start > 0.5:
             order = order[1:]
-        if order and last[order[-1]] > hi + 4:
+        # The last sentence counts as cut off unless it was heard to its last word or so: words
+        # the aligner had to fit into no audio would get made-up times.
+        cut = bool(order) and last[order[-1]] > hi + 1
+        whole = sum(last[k] - first[k] + 1 for k in order[:-1])
+        if cut and whole < 0.5 * len(heard) and duration < 150:
+            # Little of it whole: a long sentence runs past its end (and the next stretch would
+            # start no further on). Listen further, to the end of it.
+            duration = min(150.0, duration * 2)
+            continue
+        # (A cut-off last sentence is still lined up, so the one before it ends where the audio
+        # says; its own times are left out.)
+        tail = order[-1:] if cut else []
+        if cut:
             order = order[:-1]
-        if not order:
-            return {"spans": [], "near": max(mapping), "heard": len(heard)}
-        span_words = [bw[i][0] for key in order for i in range(first[key], last[key] + 1)]
+        break
+    if not order:
+        return {"spans": [], "near": max(mapping), "heard": len(heard)}
+    span_words = [bw[i][0] for key in order for i in range(first[key], last[key] + 1)]
+    # (Of a cut-off last sentence, only the words that were actually heard.)
+    span_words += [bw[i][0] for key in tail for i in range(first[key], min(last[key], hi) + 1)]
+    with listen_lock:
         times = aligner().align(samples, span_words)
     spans, k = [], 0
     for ch, si in order:
