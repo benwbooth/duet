@@ -402,6 +402,23 @@ def sync_window(body):
     return {"spans": spans, "near": max(mapping), "heard": len(heard)}
 
 
+def align_words(body):
+    """When each word of `text` starts in the recording at `audio` (a performed line): the words
+    as the reader counts them ([\\w']+, apostrophes trimmed), timed by the forced aligner, the
+    ones it can't spell (numbers) placed between their neighbours."""
+    import align
+    from common import WORD, aligner, load_audio
+
+    words = [w.strip("'") for w in WORD.findall(body["text"]) if w.strip("'")]
+    samples = load_audio(body["audio"])
+    with listen_lock:
+        touch("whisper")
+        times = aligner().align(samples, words)
+    heard = {i: (0, t[0]) for i, t in enumerate(times) if t}
+    end = len(samples) / 16000
+    return {"words": align.word_times(heard, len(words), 0, 0.0, end)}
+
+
 def track_words(body):
     """Transcribes a whole track with word timings, for making a book from an audiobook:
     segments of {start, end, text, words: [[word, start, end]]}. Whisper writes the text (on the
@@ -475,6 +492,8 @@ class Handler(BaseHTTPRequestHandler):
                 text = transcribe(fields["file"], model_name.rsplit("/", 1)[-1].removeprefix("faster-whisper-"))
                 return self.reply(200, json.dumps({"text": text}).encode(), "application/json")
             body = json.loads(raw)
+            if path in ("/v1/align-words", "/align-words"):
+                return self.reply(200, json.dumps(align_words(body)).encode(), "application/json")
             if path in ("/v1/track-words", "/track-words"):
                 return self.reply(200, json.dumps(track_words(body)).encode(), "application/json")
             if path in ("/v1/sync-window", "/sync-window"):

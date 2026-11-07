@@ -245,6 +245,37 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
     Ok((script, cast))
 }
 
+/// When each word of a performed sentence starts in its recording, for the read-along: timed
+/// by the forced aligner once and kept beside the recording.
+pub async fn words(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow::Result<Vec<f64>> {
+    let base = dir(state, asset);
+    let path = base.join(format!("{chapter}-{n}.words.json"));
+    if let Some(w) = read_json::<Vec<f64>>(&path).await {
+        return Ok(w);
+    }
+    let mp3 = base.join(format!("{chapter}-{n}.mp3"));
+    anyhow::ensure!(tokio::fs::try_exists(&mp3).await.unwrap_or(false), "not performed yet");
+    let a = db::asset(&state.db, asset).await?.context("no such book")?;
+    let src = book::source(&a, &state.data_dir);
+    let sentences = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, chapter)).await??;
+    let text = sentences.get(n).cloned().context("no such sentence")?;
+    let tts = state.settings.read().await.ai.tts_url.clone();
+    let v: serde_json::Value = state
+        .http
+        .post(format!("{}/align-words", tts.trim_end_matches('/')))
+        .json(&json!({ "audio": mp3, "text": text }))
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .context("the voice server isn't running (Settings → Voices)")?
+        .error_for_status()?
+        .json()
+        .await?;
+    let w: Vec<f64> = serde_json::from_value(v["words"].clone()).unwrap_or_default();
+    write_json(&path, &w).await.ok();
+    Ok(w)
+}
+
 /// One sentence, performed: MP3 bytes, from the cache when it's been performed before.
 pub async fn sentence(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow::Result<Vec<u8>> {
     let path = dir(state, asset).join(format!("{chapter}-{n}.mp3"));
@@ -288,6 +319,11 @@ pub async fn sentence(state: &State, asset: i64, chapter: usize, n: usize) -> an
     idle(asset);
     write_json(&path, &()).await.ok(); // makes the directory
     tokio::fs::write(&path, &bytes).await?;
+    // Its words timed straight away, ready for the read-along when it plays.
+    let st = state.clone();
+    tokio::spawn(async move {
+        let _ = words(&st, asset, chapter, n).await;
+    });
     Ok(bytes)
 }
 

@@ -1608,6 +1608,21 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                                 a.set_current_time(secs);
                                 if play { let _ = a.play(); }
                             }
+                            // The full cast's line: follow it word by word (its words timed once
+                            // it's been performed).
+                            if mode.get_untracked().cast() {
+                                let Some(e) = ebook.get_untracked().map(|e| e.id) else { return };
+                                let (c, n) = cast_at.get_untracked();
+                                let dur = a.duration();
+                                spawn_local(async move {
+                                    let times = api::get::<Vec<f64>>(&format!("/api/assets/{e}/cast/{c}/{n}/words")).await.unwrap_or_default();
+                                    if cast_at.try_get_untracked() != Some((c, n)) || chapter.try_get_untracked() != Some(c) {
+                                        return;
+                                    }
+                                    let (Some(el), Some(a)) = (page.get_untracked(), audio_el()) else { return };
+                                    crate::read_along(Some((*el).clone().into()), &a, n as i32, 0.0, dur, &times, prefs.get_untracked().follow_audio);
+                                });
+                            }
                         }
                         on:loadstart=move |_| if mode.get_untracked().cast() { cast_wait.set(true) }
                         on:canplay=move |_| cast_wait.set(false)

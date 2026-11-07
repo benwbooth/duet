@@ -52,6 +52,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assets/{id}/tracks/{n}/peaks", get(track_peaks))
         .route("/assets/{id}/cast/{chapter}/{n}", get(cast_sentence))
         .route("/assets/{id}/cast/status", get(cast_status))
+        .route("/assets/{id}/cast/{chapter}/{n}/words", get(cast_words))
         .route("/assets/{id}/link", post(link))
         .route("/jobs", get(list_jobs).post(new_job))
         .route("/settings", get(get_settings).put(put_settings))
@@ -238,6 +239,11 @@ async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResul
 }
 
 /// One sentence of the full cast, performed on the fly (see cast.rs).
+/// When each word of a performed full-cast line starts, for the read-along.
+async fn cast_words(AxState(s): AxState<State>, Path((id, chapter, n)): Path<(i64, usize, usize)>) -> ApiResult<Json<Vec<f64>>> {
+    Ok(Json(crate::cast::words(&s, id, chapter, n).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?))
+}
+
 /// What the full cast is busy with (directing a chapter, finding a voice, performing), if anything.
 async fn cast_status(Path(id): Path<i64>) -> Json<serde_json::Value> {
     Json(crate::cast::current(id))
