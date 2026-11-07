@@ -32,6 +32,10 @@ struct Cast {
     /// The accent the book is read in (decided once, from where it's set and who wrote it).
     #[serde(default)]
     accent: String,
+    /// How the book is told, by default (a short acting tag, e.g. "bright, cheerful, full of
+    /// wonder"): the narrator's delivery where the director gave none.
+    #[serde(default)]
+    style: String,
 }
 
 /// What the full cast is busy with for each book, for the player to show while it waits:
@@ -307,6 +311,29 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
                 }
             }
         }
+        // Smaller models often leave the narration out of all that: asked for on its own.
+        if !part.iter().enumerate().any(|(i, _)| narration.contains_key(&(start + i))) {
+            let style = if cast.style.is_empty() { String::new() } else { format!(" The book's usual delivery: {}.", cast.style) };
+            let ask = format!(
+                "You direct the narrator of a full-cast audiobook of {title} by {author}. The narrator is a performer, \
+                 not someone reading aloud, and plays exactly the tag you give. For every numbered sentence give a \
+                 short acting tag of one to four words for how its narration is delivered, pitched to the book's \
+                 readers (a children's book: bright, warm, playful, full of wonder) and to the moment (hushed for \
+                 suspense, quick for excitement, wry for a joke); never flat, dry or neutral.{style} Reply with JSON \
+                 only: {{\"narration\": {{\"<sentence number>\": \"<tag>\"}}}}."
+            );
+            if let Ok(r) = crate::llm::chat(state, &ask, &[("user".into(), format!("Sentences:\n{numbered}"))]).await.and_then(|t| json_in(&t)) {
+                if let Some(lines) = r["narration"].as_object() {
+                    for (k, v) in lines {
+                        if let (Ok(n), Some(d)) = (k.parse::<usize>(), v.as_str().map(str::trim).filter(|d| !d.is_empty())) {
+                            if n < sentences.len() {
+                                narration.insert(n, d.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let Some(lines) = reply["say"].as_object() {
             for (k, v) in lines {
                 let (Ok(n), Some(swaps)) = (k.parse::<usize>(), v.as_object()) else { continue };
@@ -348,7 +375,9 @@ async fn cast_voices(state: &State, title: &str, author: &str, names: &[String],
         for a story told around a girl or woman, a man for one around a man or boy); in a first-person \
         book, the protagonist as an adult. Give the narrator a voice with the energy the book's audience \
         wants: for a children's book an animated, warm, expressive storyteller full of wonder and fun, never \
-        a dry or flat reader. Reply with JSON only: {\"book_accent\": \"<accent>\", \"characters\": {\"<name>\": \
+        a dry or flat reader. Also settle how the book is told: \"book_style\", a short acting tag of three to six words for the \
+        storytelling's usual delivery, suited to its readers (a children's book: e.g. 'bright, cheerful, \
+        full of wonder'; a thriller: 'taut, low, urgent'). Reply with JSON only: {\"book_accent\": \"<accent>\", \"book_style\": \"<tag>\", \"characters\": {\"<name>\": \
         {\"sex\": \"male|female\", \"age\": \"<e.g. elderly, about 40, a young girl of 7>\", \"accent\": \"<accent>\", \
         \"nationality\": \"<who'd speak like that: e.g. an Englishman from London, an English girl, a Scottish woman>\", \
         \"accent_features\": \"<the accent's audible features, e.g. non-rhotic, crisp t's, long 'a' as in 'bath'>\", \
@@ -368,6 +397,11 @@ async fn cast_voices(state: &State, title: &str, author: &str, names: &[String],
             return;
         }
     };
+    if cast.style.is_empty() {
+        if let Some(a) = reply["book_style"].as_str().map(str::trim).filter(|a| !a.is_empty()) {
+            cast.style = a.to_string();
+        }
+    }
     if cast.accent.is_empty() {
         if let Some(a) = reply["book_accent"].as_str().filter(|a| !a.is_empty()) {
             cast.accent = a.to_string();
@@ -836,7 +870,7 @@ async fn perform(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow:
     let line = line.and_then(|(who, dir)| canonical(&who, &cast.characters).map(|w| (w, dir)));
     let text = if opened.is_some() && line.is_some() { format!("“{text}") } else { text };
     let narration: Say = read_json(&dir(state, asset).join(format!("narration-{chapter}-{}.json", n / CHUNK))).await.unwrap_or_default();
-    let parts: Vec<_> = pieces(&text, line.as_ref(), narration.get(&n).map(String::as_str).unwrap_or(""))
+    let parts: Vec<_> = pieces(&text, line.as_ref(), narration.get(&n).map(String::as_str).unwrap_or(&cast.style))
         .into_iter()
         .map(|(t, who, direction)| {
             let input = if direction.is_empty() { t } else { format!("[{direction}] {t}") };
