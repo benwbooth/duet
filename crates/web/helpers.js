@@ -417,17 +417,24 @@ class CurlGL {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
-  // The canvas covers the book and a margin round it: a page curling up toward you reaches out
-  // past the book's edges (in front of it, not cut off by it).
+  // The canvas floats over the whole page (not inside the book, whose surroundings would clip
+  // it), over the book and a margin round it: a page curling up toward you reaches out past the
+  // book's edges, in front of everything.
+  attach(book) {
+    this.book = book;
+    if (this.canvas.parentNode !== document.body) document.body.appendChild(this.canvas);
+  }
+
   size(W, H) {
     const dpr = window.devicePixelRatio || 1;
-    const px = Math.round(W * 0.06), py = Math.round(H * 0.22);
+    const px = Math.round(W * 0.12), py = Math.round(H * 0.3);
     this.pad = [px, py];
     const cw = W + 2 * px, ch = H + 2 * py;
+    const r = this.book ? this.book.getBoundingClientRect() : { left: 0, top: 0 };
     this.canvas.style.width = `${cw}px`;
     this.canvas.style.height = `${ch}px`;
-    this.canvas.style.left = `${-px}px`;
-    this.canvas.style.top = `${-py}px`;
+    this.canvas.style.left = `${r.left - px}px`;
+    this.canvas.style.top = `${r.top - py}px`;
     if (this.canvas.width !== Math.round(cw * dpr) || this.canvas.height !== Math.round(ch * dpr)) {
       this.canvas.width = Math.round(cw * dpr);
       this.canvas.height = Math.round(ch * dpr);
@@ -919,7 +926,7 @@ class Pager {
     this.book.querySelectorAll(".curl-layer:not(.carried), .page3d:not(.carried), .page-warp, .edge-hint").forEach((e) => e.remove());
     // The shared curl canvas stays in the book; it's left showing only while a turn into the
     // next chapter is waiting to play (the old page over the new one).
-    if (sharedCurl && !this.book.__carry && sharedCurl.canvas.parentNode === this.book) uncover();
+    if (sharedCurl && !this.book.__carry && sharedCurl.book === this.book) uncover();
     this.dead = true;
     clearTimeout(this.warmTimer);
     if (this.styleWatch) this.styleWatch.disconnect();
@@ -1329,7 +1336,7 @@ class Pager {
     if (pic && !this.noGL) {
       try {
         if (!sharedCurl || sharedCurl.lost) sharedCurl = new CurlGL(this.book);
-        if (sharedCurl.canvas.parentNode !== this.book) this.book.appendChild(sharedCurl.canvas);
+        sharedCurl.attach(this.book);
         sharedCurl.cover(pic, this.width, this.book.clientHeight);
         // Never stuck: if no turn picks it up, the cover goes.
         setTimeout(() => { if (this.book.__carry && this.book.__carry.picture === pic) { delete this.book.__carry; uncover(); } }, 6000);
@@ -1429,7 +1436,7 @@ class Pager {
       // One WebGL context for the whole app (browsers allow only a few), moved into this book.
       if (!sharedCurl || sharedCurl.lost) sharedCurl = new CurlGL(this.book);
       this.gl = sharedCurl;
-      if (this.gl.canvas.parentNode !== this.book) this.book.appendChild(this.gl.canvas);
+      this.gl.attach(this.book);
     } catch (e) {
       console.warn("no WebGL page curl:", e);
       this.noGL = true;

@@ -1094,7 +1094,7 @@ input, select { border-radius: 12px; }
 .p3-slice .page { height: 100%; max-width: none; margin: 0; color: var(--page-text); }
 /* A single page's back is the same page seen through the paper. */
 /* The curl drawn on the graphics card (see CurlGL in helpers.js). */
-.page-gl { position: absolute; top: 0; left: 0; z-index: 5; pointer-events: none; visibility: hidden; }
+.page-gl { position: fixed; top: 0; left: 0; z-index: 1000; pointer-events: none; visibility: hidden; }
 /* The page's curved outline (Pager.warp): beyond it, the page underneath. */
 .page-warp { position: absolute; top: 0; left: 0; z-index: 4; pointer-events: none; }
 .page-warp .warp-under { fill: color-mix(in srgb, var(--page-bg) 88%, #6b5a45); }
