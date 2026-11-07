@@ -265,160 +265,53 @@ def slug(name):
     return re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-") or "voice"
 
 
-# The accents an accent classifier (CommonAccent) can hear, by the words a description uses
-# for them. VoiceDesign often drifts to American however plainly an accent is asked for, so a
-# voice with one of these is designed a few times and the take that sounds most like it kept.
-ACCENTS = [
-    ("england", r"british|english|englishman|englishwoman|england|received pronunciation|\brp\b|london|cockney|oxford|yorkshire|bbc"),
-    ("scotland", r"scottish|scots|scotland|glasgow|edinburgh"),
-    ("ireland", r"irish|ireland|dublin"),
-    ("wales", r"welsh|wales"),
-    ("australia", r"australian|australia"),
-    ("newzealand", r"new zealand|kiwi"),
-    ("indian", r"\bindian\b|\bindia\b"),
-    ("canada", r"canadian|canada"),
-    ("african", r"south african|nigerian|kenyan|\bafrican\b"),
-    ("us", r"american|\bus\b|united states|new york|texan|southern drawl"),
-]
-DESIGN_TRIES = 5
-accent_model = None
+def design(voice, desc, language):
+    """A new reference clip for a voice, from its description, written to voices/<voice>.wav.
 
+    workers/design_voice.py does it, in its own environment (OmniVoice for the accents it knows,
+    Maya1 for any other, best of a few takes by an accent classifier). Without that
+    environment, Qwen3-TTS VoiceDesign (which only ever sounds American) makes one take.
+    Returns what made it."""
+    import soundfile as sf
 
-def wanted_accent(description):
-    """The classifier's label for the accent a description asks for (the first one it names)."""
-    text = (description or "").lower()
-    found = [(m.start(), label) for label, pat in ACCENTS for m in [re.search(pat, text)] if m]
-    return min(found)[1] if found else None
-
-
-def accent_score(wav, sr, label):
-    """How much the clip sounds like `label` (0..1), or None without the classifier."""
-    global accent_model
-    try:
-        import torch, torchaudio
-        from speechbrain.inference.classifiers import EncoderClassifier
-
-        if accent_model is None:
-            accent_model = EncoderClassifier.from_hparams(
-                source="Jzuluaga/accent-id-commonaccent_ecapa",
-                savedir=os.path.join(args.voices, ".accent-model"),
-                run_opts={"device": "cpu"},
-            )
-        x = torch.as_tensor(wav, dtype=torch.float32).reshape(1, -1)
-        x = torchaudio.functional.resample(x, sr, 16000)
-        out, _, _, _ = accent_model.classify_batch(x)
-        probs = torch.softmax(out.squeeze(), dim=0)
-        idx = accent_model.hparams.label_encoder.encode_label(label)
-        top = accent_model.hparams.label_encoder.decode_ndim(int(probs.argmax()))
-        return float(probs[idx]), top
-    except Exception as e:
-        print(f"accent check unavailable: {e}", flush=True)
-        return None
-
-
-# British voices for reference clips. VoiceDesign can't do British at all (every take of every
-# phrasing came out American to the classifier), and Fish keeps the accent of the clip it's
-# given, so a British character's clip is read by one of these (or two blended) instead.
-KOKORO_BRITISH = {
-    "female": ["bf_emma", "bf_isabella", "bf_alice", "bf_lily"],
-    "male": ["bm_george", "bm_fable", "bm_lewis", "bm_daniel"],
-}
-kokoro_pipeline = None
-
-
-def sex_of(description):
-    text = (description or "").lower()
-    f = re.search(r"\b(female|woman|girl|lady|she|her|queen|duchess|mother|sister)\b", text)
-    m = re.search(r"\b(male|man|boy|gentleman|he|his|king|duke|father|brother)\b", text)
-    if f and (not m or f.start() < m.start()):
-        return "female"
-    return "male" if m else "female"
-
-
-def kokoro_choices(sex):
-    """Every British voice for this sex: each alone, then each pair blended."""
-    vs = KOKORO_BRITISH[sex]
-    return vs + [f"{a},{b}" for i, a in enumerate(vs) for b in vs[i + 1 :]]
-
-
-def british_reference(voice, description):
-    """A British reference clip from Kokoro, a voice no one else in this cast has yet."""
-    global kokoro_pipeline
-    import hashlib
-    import numpy as np
-
-    if kokoro_pipeline is None:
-        from kokoro import KPipeline
-
-        kokoro_pipeline = KPipeline(lang_code="b", device="cpu")
-    sex = sex_of(description)
-    choices = kokoro_choices(sex)
-    # Voices of the same cast (same name prefix, "cast1-") already taken.
-    prefix = slug(voice).split("-")[0] + "-"
-    taken = set()
-    for f in os.listdir(args.voices):
-        if f.startswith(prefix) and f.endswith(".json") and f != slug(voice) + ".json":
+    wav_path = os.path.join(args.voices, slug(voice) + ".wav")
+    if os.path.exists(args.design_python):
+        if args.engine == "fish" and args.fish_dir:
+            fish.stop()  # the designers need the card
+        unload_qwen()
+        job = json.dumps({"description": desc, "text": REFERENCE_LINE, "out": wav_path})
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "design_voice.py")
+        r = subprocess.run([args.design_python, script, job], stdout=subprocess.PIPE, text=True)
+        if r.returncode == 0 and os.path.exists(wav_path):
             try:
-                with open(os.path.join(args.voices, f)) as fh:
-                    taken.add(json.load(fh).get("kokoro"))
+                return json.loads(r.stdout.strip().splitlines()[-1])
             except Exception:
-                pass
-    start = int(hashlib.sha1(slug(voice).encode()).hexdigest(), 16) % len(choices)
-    order = choices[start:] + choices[:start]
-    pick = next((c for c in order if c not in taken), order[0])
-    # (Children and the very young speak a little quicker; the elderly a little slower.)
-    text = (description or "").lower()
-    speed = 1.08 if re.search(r"\b(child|girl|boy|young|little)\b", text) else 0.92 if re.search(r"\b(elderly|old|aged)\b", text) else 1.0
-    audio = np.concatenate([r.audio.numpy() for r in kokoro_pipeline(REFERENCE_LINE, voice=pick, speed=speed)])
-    print(f"  {voice}: British reference from Kokoro ({pick}, {sex})", flush=True)
-    return audio, 24000, pick
-
-
-def design(desc, language, voice=""):
-    """VoiceDesign's take on a description; for an accent it can check, the best of a few."""
-    label = wanted_accent(desc)
-    if label == "england":
-        try:
-            return british_reference(voice, desc)
-        except Exception as e:
-            print(f"Kokoro unavailable ({e}); designing instead", flush=True)
-    best = None
-    for i in range(DESIGN_TRIES if label else 1):
-        wavs, sr = qwen_gpu("design").generate_voice_design(text=REFERENCE_LINE, instruct=desc, language=language)
-        if not label:
-            return wavs[0], sr, None
-        scored = accent_score(wavs[0], sr, label)
-        if scored is None:
-            return wavs[0], sr, None
-        score, top = scored
-        print(f"  take {i + 1}: {label} {score:.2f} (sounds most like {top})", flush=True)
-        if best is None or score > best[0]:
-            best = (score, wavs[0], sr)
-        if top == label and score > 0.5:
-            break
-    return best[1], best[2], None
+                return {}
+        print(f"designing {voice} failed; using Qwen3-TTS VoiceDesign", flush=True)
+    wavs, sr = qwen_gpu("design").generate_voice_design(text=REFERENCE_LINE, instruct=desc, language=language)
+    sf.write(wav_path, wavs[0], sr)
+    return {"engine": "qwen3-voicedesign"}
 
 
 def reference(voice, description, language):
-    """The reference clip for a voice, casting it with VoiceDesign the first time."""
+    """The reference clip for a voice, casting it the first time."""
     wav_path = os.path.join(args.voices, slug(voice) + ".wav")
     meta_path = wav_path[:-4] + ".json"
     if not os.path.exists(wav_path):
         import soundfile as sf
 
-        kokoro = None
+        os.makedirs(args.voices, exist_ok=True)
         custom = qwen_gpu("custom") if args.custom_model else None
+        made = {}
         if custom is not None and voice.lower() in [s.lower() for s in custom.get_supported_speakers()]:
             wavs, sr = custom.generate_custom_voice(text=REFERENCE_LINE, speaker=voice.lower(), language=language, instruct="")
+            sf.write(wav_path, wavs[0], sr)
         else:
             desc = description or "A warm, clear, expressive audiobook narrator."
             print(f"designing {voice}", flush=True)
-            wav, sr, kokoro = design(desc, language, voice)
-            wavs = [wav]
-        os.makedirs(args.voices, exist_ok=True)
-        sf.write(wav_path, wavs[0], sr)
+            made = design(voice, desc, language)
         with open(meta_path, "w") as f:
-            json.dump({"name": voice, "description": description, "text": REFERENCE_LINE, "kokoro": kokoro}, f)
+            json.dump({"name": voice, "description": description, "text": REFERENCE_LINE, **made}, f)
         if args.engine == "fish":
             unload_qwen()
     ref_text = REFERENCE_LINE
@@ -769,6 +662,7 @@ def main():
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--top-p", type=float, default=0.7)
     ap.add_argument("--design-model", default="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
+    ap.add_argument("--design-python", default="", help="python of the voice designer environment (default: design-venv beside --voices)")
     ap.add_argument("--base-model", default="Qwen/Qwen3-TTS-12Hz-1.7B-Base")
     ap.add_argument("--custom-model", default="", help="Qwen3-TTS CustomVoice, to allow its built-in speaker names")
     ap.add_argument("--idle-minutes", type=float, default=5, help="unload models unused for this long (0: never)")
@@ -776,6 +670,8 @@ def main():
     ap.add_argument("--no-free-ollama", dest="free_ollama", action="store_false",
                     help="don't ask Ollama to unload its models before loading voice models")
     args = ap.parse_args()
+    if not args.design_python:
+        args.design_python = os.path.join(os.path.dirname(os.path.abspath(args.voices)), "design-venv", "bin", "python")
     print(f"duet TTS ({args.engine}) on http://{args.host}:{args.port}/v1", flush=True)
     threading.Thread(target=reaper, daemon=True).start()
 

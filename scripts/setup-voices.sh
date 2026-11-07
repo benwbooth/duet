@@ -50,10 +50,20 @@ step "[3/6] Fish Audio S2-Pro weights"
 step "[4/6] duet workers environment"
 [[ -d "$venv" ]] || uv venv --python 3.12 "$venv"
 uv pip install --python "$venv/bin/python" --index-url "$torch_index" torch torchaudio
-uv pip install --python "$venv/bin/python" qwen-tts faster-whisper transformers speechbrain kokoro "misaki[en]" pip soundfile ormsgpack numpy "huggingface_hub[cli]"
+uv pip install --python "$venv/bin/python" qwen-tts faster-whisper transformers soundfile ormsgpack numpy "huggingface_hub[cli]"
 uv pip install --python "$venv/bin/python" --index-url "$torch_index" --reinstall-package torch --reinstall-package torchaudio torch torchaudio
 
-step "[5/6] Qwen3-TTS weights (voice casting)"
+step "[4b/6] voice designer environment (OmniVoice, Maya1; newer transformers than Qwen3-TTS)"
+design="$(dirname "$venv")/design-venv"
+[[ -d "$design" ]] || uv venv --python 3.12 "$design"
+uv pip install --python "$design/bin/python" --index-url "$torch_index" torch torchaudio
+uv pip install --python "$design/bin/python" omnivoice snac soundfile accelerate speechbrain "huggingface_hub[cli]"
+uv pip install --python "$design/bin/python" --index-url "$torch_index" --reinstall-package torch --reinstall-package torchaudio torch torchaudio
+"$design/bin/hf" download k2-fsa/OmniVoice
+"$design/bin/hf" download maya-research/maya1
+"$design/bin/hf" download hubertsiuzdak/snac_24khz
+
+step "[5/6] Qwen3-TTS weights (fallback reader)"
 "$venv/bin/hf" download Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
 "$venv/bin/hf" download Qwen/Qwen3-TTS-12Hz-1.7B-Base
 # Speech recognition on the GPU (the microphone, transcripts).
