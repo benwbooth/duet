@@ -224,6 +224,7 @@ uniform vec2 u_L0;     // a point on the lift line
 uniform vec2 u_dir;    // across the lift line, toward the corner being pulled
 uniform float u_R;     // cylinder radius
 uniform float u_squash;
+uniform vec2 u_pad;    // room drawn round the book, so a page lifting off it isn't cut off
 varying vec2 v_pos;
 varying float v_theta;
 void main() {
@@ -248,7 +249,8 @@ void main() {
   float D = 2600.0;
   vec2 c = u_view * 0.5;
   vec2 scr = c + (P.xy - c) * D / (D - P.z);
-  gl_Position = vec4(scr.x / u_view.x * 2.0 - 1.0, 1.0 - scr.y / u_view.y * 2.0, -P.z / (8.0 * D), 1.0);
+  vec2 full = u_view + 2.0 * u_pad;
+  gl_Position = vec4((scr.x + u_pad.x) / full.x * 2.0 - 1.0, 1.0 - (scr.y + u_pad.y) / full.y * 2.0, -P.z / (8.0 * D), 1.0);
 }`;
 
 const CURL_FS = `
@@ -312,11 +314,13 @@ const FLAT_VS = `
 attribute vec2 a_uv;
 uniform vec4 u_rect;   // x0, width, height
 uniform vec2 u_view;
+uniform vec2 u_pad;
 varying vec2 v_pos;
 void main() {
   vec2 X = vec2(u_rect.x + a_uv.x * u_rect.y, a_uv.y * u_rect.z);
   v_pos = X;
-  gl_Position = vec4(X.x / u_view.x * 2.0 - 1.0, 1.0 - X.y / u_view.y * 2.0, 0.0, 1.0);
+  vec2 full = u_view + 2.0 * u_pad;
+  gl_Position = vec4((X.x + u_pad.x) / full.x * 2.0 - 1.0, 1.0 - (X.y + u_pad.y) / full.y * 2.0, 0.0, 1.0);
 }`;
 
 const FLAT_FS = `
@@ -366,7 +370,7 @@ class CurlGL {
     if (!gl.getProgramParameter(flat, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(flat));
     this.flat = flat;
     this.f = {};
-    for (const n of ["u_rect", "u_view", "u_tex", "u_sh", "u_shp"]) this.f[n] = gl.getUniformLocation(flat, n);
+    for (const n of ["u_rect", "u_view", "u_pad", "u_tex", "u_sh", "u_shp"]) this.f[n] = gl.getUniformLocation(flat, n);
     this.flatLoc = gl.getAttribLocation(flat, "a_uv");
     gl.useProgram(prog);
     // A fine grid over the sheet: fine enough that the roll looks round from any angle.
@@ -387,7 +391,7 @@ class CurlGL {
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     this.u = {};
-    for (const n of ["u_leaf", "u_view", "u_L0", "u_dir", "u_R", "u_squash", "u_front", "u_back", "u_ghost", "u_flip", "u_hinge", "u_paper", "u_edge"])
+    for (const n of ["u_leaf", "u_view", "u_pad", "u_L0", "u_dir", "u_R", "u_squash", "u_front", "u_back", "u_ghost", "u_flip", "u_hinge", "u_paper", "u_edge"])
       this.u[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(this.u.u_front, 0);
     gl.uniform1i(this.u.u_back, 1);
@@ -411,13 +415,20 @@ class CurlGL {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
+  // The canvas covers the book and a margin round it: a page curling up toward you reaches out
+  // past the book's edges (in front of it, not cut off by it).
   size(W, H) {
     const dpr = window.devicePixelRatio || 1;
-    this.canvas.style.width = `${W}px`;
-    this.canvas.style.height = `${H}px`;
-    if (this.canvas.width !== Math.round(W * dpr) || this.canvas.height !== Math.round(H * dpr)) {
-      this.canvas.width = Math.round(W * dpr);
-      this.canvas.height = Math.round(H * dpr);
+    const px = Math.round(W * 0.06), py = Math.round(H * 0.22);
+    this.pad = [px, py];
+    const cw = W + 2 * px, ch = H + 2 * py;
+    this.canvas.style.width = `${cw}px`;
+    this.canvas.style.height = `${ch}px`;
+    this.canvas.style.left = `${-px}px`;
+    this.canvas.style.top = `${-py}px`;
+    if (this.canvas.width !== Math.round(cw * dpr) || this.canvas.height !== Math.round(ch * dpr)) {
+      this.canvas.width = Math.round(cw * dpr);
+      this.canvas.height = Math.round(ch * dpr);
     }
     this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
   }
@@ -437,6 +448,7 @@ class CurlGL {
     gl.vertexAttribPointer(this.flatLoc, 2, gl.FLOAT, false, 0, 0);
     gl.uniform4f(f.u_rect, x0, w, H, 0);
     gl.uniform2f(f.u_view, W, H);
+    gl.uniform2f(f.u_pad, ...(this.pad || [0, 0]));
     gl.uniform1i(f.u_tex, unit);
     if (shadow) {
       gl.uniform4f(f.u_sh, shadow.edge.x, shadow.edge.y, shadow.dir.x, shadow.dir.y);
@@ -469,6 +481,7 @@ class CurlGL {
     gl.vertexAttribPointer(this.curlLoc, 2, gl.FLOAT, false, 0, 0);
     gl.uniform4f(u.u_leaf, p.x0, p.w, p.H, p.hinge);
     gl.uniform2f(u.u_view, p.W, p.H);
+    gl.uniform2f(u.u_pad, ...(this.pad || [0, 0]));
     gl.uniform2f(u.u_L0, p.L0.x, p.L0.y);
     gl.uniform2f(u.u_dir, p.dir.x, p.dir.y);
     gl.uniform1f(u.u_R, p.R);
