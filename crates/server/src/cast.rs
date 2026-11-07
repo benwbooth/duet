@@ -217,12 +217,14 @@ async fn write_json<T: Serialize>(path: &PathBuf, v: &T) -> anyhow::Result<()> {
 
 /// The chat model directs one chapter: speakers and directions, and descriptions of new characters
 /// (and of the narrator, the first time).
-async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &str, author: &str, sentences: &[String], cast: &mut Cast, say: &mut Say, narration: &mut Say) -> anyhow::Result<Script> {
+async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &str, author: &str, sentences: &[String], cast: &mut Cast, say: &mut Say, narration: &mut Say, ahead: bool) -> anyhow::Result<Script> {
     let mut script = Script::new();
     let parts = sentences.len().div_ceil(CHUNK).max(1);
     for start in (part * CHUNK..sentences.len()).step_by(CHUNK).take(1) {
         let what = if parts > 1 { format!("Reading part {} of chapter {} to work out who says what", part + 1, chapter + 1) } else { format!("Reading chapter {} to work out who says what", chapter + 1) };
-        status(asset, what, 0, 0);
+        if !ahead {
+            status(asset, what, 0, 0);
+        }
         let part = &sentences[start..(start + CHUNK).min(sentences.len())];
         let numbered: String = part.iter().enumerate().map(|(i, s)| format!("{}: {s}\n", start + i)).collect();
         let known: String = cast.characters.iter().map(|(n, d)| format!("- {n}: {d}\n")).collect();
@@ -691,7 +693,9 @@ fn voice_name(asset: i64, who: Option<&str>) -> String {
 
 /// The script for the part of the chapter sentence `n` is in, and the cast, directing (and
 /// casting) that part the first time.
-async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences: &[String]) -> anyhow::Result<(Script, Cast)> {
+/// `ahead`: the director working ahead in the background (says nothing to the listener, and
+/// leaves making new voices to when they're needed: that would stop the performer).
+async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences: &[String], ahead: bool) -> anyhow::Result<(Script, Cast)> {
     let base = dir(state, asset);
     let part = n / CHUNK;
     let cast_path = base.join("cast.json");
@@ -713,7 +717,7 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
     let a = db::asset(&state.db, asset).await?.context("no such book")?;
     let w = db::work_detail(&state.db, a.work_id).await?.context("no such book")?;
     let (mut say, mut narration) = (Say::new(), Say::new());
-    let script = match direct(state, asset, chapter, part, &w.title, w.author.as_deref().unwrap_or(""), sentences, &mut cast, &mut say, &mut narration).await {
+    let script = match direct(state, asset, chapter, part, &w.title, w.author.as_deref().unwrap_or(""), sentences, &mut cast, &mut say, &mut narration, ahead).await {
         Ok(s) => {
             write_json(&base.join(format!("say-{chapter}-{part}.json")), &say).await.ok();
             write_json(&base.join(format!("narration-{chapter}-{part}.json")), &narration).await.ok();
@@ -733,6 +737,19 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
     if cast.narrator.is_empty() {
         cast.narrator = narrator_default(&cast.accent);
     }
+    if !ahead {
+        ensure_voices(state, asset, &script, &cast).await?;
+    }
+    write_json(&cast_path, &cast).await?;
+    remember(state, asset, &cast).await;
+    write_json(&script_path, &script).await?;
+    Ok((script, cast))
+}
+
+/// Every voice this part and the cast so far need, made if missing. Making a voice means
+/// stopping the performer (they can't share the card), so any still missing are all made in
+/// that one stop; ones already made aren't asked about at all.
+async fn ensure_voices(state: &State, asset: i64, script: &Script, cast: &Cast) -> anyhow::Result<()> {
     // Cast everyone in this part up front, so the voice server isn't swapping models mid-part.
     // (One at a time, so the player can say whose voice is being made.)
     // Every character met so far, not just this part's: making a voice means stopping the
@@ -764,10 +781,7 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
             .await
             .context("the voice server isn't running (Settings → Voices)")?;
     }
-    write_json(&cast_path, &cast).await?;
-    remember(state, asset, &cast).await;
-    write_json(&script_path, &script).await?;
-    Ok((script, cast))
+    Ok(())
 }
 
 /// When each word of a performed sentence starts in its recording, for the read-along: timed
@@ -840,7 +854,7 @@ fn direct_ahead(state: &State, asset: i64, chapter: usize) {
             for part in 0..sentences.len().div_ceil(CHUNK) {
                 let done = base.join(format!("script-{c}-{part}.json")).exists() || base.join(format!("script-{c}.json")).exists();
                 if !done {
-                    if let Err(e) = prepared(&state, asset, c, part * CHUNK, &sentences).await {
+                    if let Err(e) = prepared(&state, asset, c, part * CHUNK, &sentences, true).await {
                         tracing::warn!("directing ahead ({c}, part {part}): {e:#}");
                     }
                 }
@@ -933,7 +947,9 @@ async fn perform(state: &State, asset: i64, chapter: usize, n: usize, urgent: bo
         direct_ahead(state, asset, chapter);
         (Script::new(), cast_now)
     } else {
-        prepared(state, asset, chapter, n, &sentences).await?
+        let (script, cast) = prepared(state, asset, chapter, n, &sentences, false).await?;
+        ensure_voices(state, asset, &script, &cast).await?;
+        (script, cast)
     };
     // The director's wording where the print would be misread; the rules catch headings anyway.
     let say: Say = read_json(&dir(state, asset).join(format!("say-{chapter}-{}.json", n / CHUNK))).await.unwrap_or_default();
