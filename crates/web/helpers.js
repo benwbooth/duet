@@ -1042,8 +1042,7 @@ class Pager {
       this.book.appendChild(el);
     }
     const can = side === "right" ? this.page + 1 < this.pages || !!this.h.onNext : side === "left" ? this.page > 0 || !!this.h.onPrev : false;
-    const pad = parseFloat(this.article.style.getPropertyValue("--page-pad")) || 40;
-    el.style.width = `${Math.max(36, pad + 10)}px`;
+    el.style.width = `${this.marginBand()}px`;
     el.dataset.side = can ? side : "";
   }
 
@@ -2151,6 +2150,13 @@ class Pager {
     await this.finish(t, rest, true, H * 0.16);
   }
 
+  // How far in from the book's outer edges a click or grab turns the page: the blank margin,
+  // stopping just short of the text.
+  marginBand() {
+    const pad = parseFloat(this.article.style.getPropertyValue("--page-pad")) || 40;
+    return Math.max(18, pad - 6);
+  }
+
   bindPointer() {
     // Every listener goes when this pager does (the book itself stays for the next chapter's).
     this.listening = new AbortController();
@@ -2165,8 +2171,7 @@ class Pager {
       // The page's outer margins (and a little into them from the text), like the edge of a page
       // you'd pinch to turn.
       const x = e.clientX - this.book.getBoundingClientRect().left;
-      const pad = parseFloat(this.article.style.getPropertyValue("--page-pad")) || 40;
-      const band = Math.max(36, pad + 10);
+      const band = this.marginBand();
       return x > this.width - band || x < band;
     };
     on("pointerdown", (e) => {
@@ -2351,9 +2356,11 @@ class Pager {
           return;
         }
         if (e.target.closest("a[data-href]")) return;
-        const x = (e.clientX - this.book.getBoundingClientRect().left) / this.width;
-        const edge = this.spread ? 0.12 : 0.22;
-        const onEdge = x < edge || x > 1 - edge;
+        // Only the blank outer margin turns the page: a click on the text, however near the
+        // edge, is for the words.
+        const x = e.clientX - this.book.getBoundingClientRect().left;
+        const edge = this.marginBand();
+        const onEdge = x < edge || x > this.width - edge;
         // A click that ends a text selection isn't a turn; any other click on an edge is, even if
         // something elsewhere happens to be selected.
         if (!onEdge || (this.selecting && String(window.getSelection()) !== "")) return;
