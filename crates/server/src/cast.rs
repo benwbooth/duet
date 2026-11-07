@@ -111,30 +111,38 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
         let numbered: String = part.iter().enumerate().map(|(i, s)| format!("{}: {s}\n", start + i)).collect();
         let known: String = cast.characters.iter().map(|(n, d)| format!("- {n}: {d}\n")).collect();
         let system = "You are the director of a full-cast audiobook. For each numbered sentence containing quoted \
-            speech, name the character speaking (one consistent name per character) and give a short acting \
+            speech, name the character speaking and give a short acting \
             direction for how the line is delivered: emotion, intensity, pace, volume (e.g. 'barely holding back \
             tears', 'dry, amused'). Use the surrounding narration for cues. For any character not in the known \
             list, write a one-sentence voice description for casting: gender, approximate age, accent, pitch, \
             timbre, pace and temperament. If asked, also describe the ideal narrator's voice the same way. Reply \
             with JSON only: {\"lines\": {\"<sentence number>\": {\"speaker\": \"<name>\", \"direction\": \"<direction>\"}}, \
-            \"new_characters\": {\"<name>\": \"<voice description>\"}, \"narrator\": \"<voice description or empty>\"}";
+            \"new_characters\": {\"<name>\": \"<voice description>\"}, \"narrator\": \"<voice description or empty>\"}. \
+            Each character keeps one voice for the whole book, so use exactly the name from the known list when \
+            they're in it, and give a new character a plain name only (\"Alice\", \"White Rabbit\"): never add how \
+            they're speaking or what they're doing to the name; that goes in the direction. Lines spoken by \
+            several characters together go to the one leading them.";
         let ask_narrator = if cast.narrator.is_empty() { "\nAlso describe the narrator's voice." } else { "" };
         let user = format!(
             "Book: {title} by {author}\nKnown characters:\n{}{ask_narrator}\n\nSentences:\n{numbered}",
             if known.is_empty() { "(none yet)\n" } else { &known }
         );
         let reply = json_in(&crate::llm::chat(state, system, &[("user".into(), user)]).await?)?;
-        if let Some(lines) = reply["lines"].as_object() {
-            for (k, v) in lines {
-                let (Ok(n), Some(speaker)) = (k.parse::<usize>(), v["speaker"].as_str().or(v.as_str())) else { continue };
-                if n < sentences.len() && !speaker.is_empty() {
-                    script.insert(n, (speaker.to_string(), v["direction"].as_str().unwrap_or("").trim().to_string()));
+        if let Some(new) = reply["new_characters"].as_object() {
+            for (n, d) in new {
+                if let Some(name) = canonical(n, &cast.characters) {
+                    cast.characters.entry(name).or_insert_with(|| d.as_str().unwrap_or("").to_string());
                 }
             }
         }
-        if let Some(new) = reply["new_characters"].as_object() {
-            for (n, d) in new {
-                cast.characters.entry(n.clone()).or_insert_with(|| d.as_str().unwrap_or("").to_string());
+        if let Some(lines) = reply["lines"].as_object() {
+            for (k, v) in lines {
+                let (Ok(n), Some(speaker)) = (k.parse::<usize>(), v["speaker"].as_str().or(v.as_str())) else { continue };
+                // (The narrator's lines need no entry: they're the narrator's anyway.)
+                let Some(speaker) = canonical(speaker, &cast.characters) else { continue };
+                if n < sentences.len() {
+                    script.insert(n, (speaker, v["direction"].as_str().unwrap_or("").trim().to_string()));
+                }
             }
         }
         if let Some(d) = reply["narrator"].as_str().filter(|d| !d.is_empty() && cast.narrator.is_empty()) {
@@ -142,6 +150,37 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
         }
     }
     Ok(script)
+}
+
+/// The one name a character goes by for the whole book, so they keep one voice: the model
+/// sometimes writes "Alice (reciting)", "the White Rabbit", "Narrator (reading address)" or
+/// "March Hare and Hatter". Descriptions in brackets or after a dash go (they're directions),
+/// "the" goes, a group is its first member, case is ignored against the characters already
+/// cast, and the narrator in any guise is the narrator (None).
+fn canonical(name: &str, known: &BTreeMap<String, String>) -> Option<String> {
+    let mut n = name.trim();
+    for cut in ["(", "[", " - ", " – ", " — ", ",", ";", ":"] {
+        if let Some(i) = n.find(cut) {
+            n = &n[..i];
+        }
+    }
+    for sep in [" and ", " & ", "/"] {
+        if let Some(i) = n.find(sep) {
+            n = &n[..i];
+        }
+    }
+    let mut n = n.trim().trim_matches(|c: char| !c.is_alphanumeric()).to_string();
+    for lead in ["the ", "The "] {
+        if let Some(rest) = n.strip_prefix(lead) {
+            n = rest.to_string();
+        }
+    }
+    let key = n.to_lowercase();
+    if key.is_empty() || key == "narrator" || key == "narration" || key == "unknown" {
+        return None;
+    }
+    let simple = |k: &str| k.to_lowercase().trim_start_matches("the ").to_string();
+    Some(known.keys().find(|k| simple(k) == key).cloned().unwrap_or(n))
 }
 
 fn voice_name(asset: i64, who: Option<&str>) -> String {
@@ -220,7 +259,9 @@ pub async fn sentence(state: &State, asset: i64, chapter: usize, n: usize) -> an
     let sentences = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, chapter)).await??;
     let text = sentences.get(n).cloned().context("no such sentence")?;
     let (script, cast) = prepared(state, asset, chapter, n, &sentences).await?;
-    let parts: Vec<_> = pieces(&text, script.get(&n))
+    // (Scripts directed before names were tidied: the same one voice per character.)
+    let line = script.get(&n).and_then(|(who, dir)| canonical(who, &cast.characters).map(|w| (w, dir.clone())));
+    let parts: Vec<_> = pieces(&text, line.as_ref())
         .into_iter()
         .map(|(t, who, direction)| {
             let input = if direction.is_empty() { t } else { format!("[{direction}] {t}") };
@@ -252,7 +293,18 @@ pub async fn sentence(state: &State, asset: i64, chapter: usize, n: usize) -> an
 
 #[cfg(test)]
 mod tests {
-    use super::pieces;
+    use super::{canonical, pieces};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn one_name_per_character() {
+        let known: BTreeMap<String, String> = [("Alice".to_string(), String::new()), ("White Rabbit".to_string(), String::new())].into();
+        assert_eq!(canonical("Alice (reciting)", &known).as_deref(), Some("Alice"));
+        assert_eq!(canonical("the white rabbit", &known).as_deref(), Some("White Rabbit"));
+        assert_eq!(canonical("Narrator (reading address)", &known), None);
+        assert_eq!(canonical("March Hare and Hatter", &known).as_deref(), Some("March Hare"));
+        assert_eq!(canonical("Dodo", &known).as_deref(), Some("Dodo"));
+    }
 
     #[test]
     fn splits_dialogue_from_narration() {
