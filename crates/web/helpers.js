@@ -2104,8 +2104,10 @@ class Pager {
     }
   }
 
+  // The page curl runs only on the graphics card (see elementSnapshot); a browser that can't
+  // do that turns pages without an animation.
   get curl() {
-    return this.book.__curl !== false;
+    return canDrawElements && this.book.__curl !== false;
   }
 
   async turn(dir, carry) {
