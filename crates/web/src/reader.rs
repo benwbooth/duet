@@ -563,6 +563,25 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     // Laid out by the Effect that watches `html` (once: laying out twice would
                     // lose "open at the end" when coming back from the next chapter).
                     html.set(ch.html);
+                    // The chapters either side, so a page can be dragged over into them. (Not
+                    // for text made from the recording: its next chapter may not exist yet.)
+                    if !transcript {
+                        let eid = e.id;
+                        let total = l.chapters;
+                        spawn_local(async move {
+                            let get = |n: usize| async move {
+                                api::get::<Chapter>(&format!("/api/assets/{eid}/chapters/{n}")).await.ok().map(|c| c.html)
+                            };
+                            let next = if c + 1 < total { get(c + 1).await } else { None };
+                            let prev = if c > 0 { get(c - 1).await } else { None };
+                            if chapter.try_get_untracked() != Some(c) {
+                                return;
+                            }
+                            if let Some(b) = book.get_untracked() {
+                                crate::pager_set_neighbours(&b, next, prev);
+                            }
+                        });
+                    }
                 }
                 Err(err) => toast.show(err.0),
             }

@@ -606,7 +606,7 @@ const canDrawElements = typeof CanvasRenderingContext2D !== "undefined" && "draw
 // A picture of the page at `offset`, rendered by the browser itself: a copy of the laid-out
 // chapter (and the page's running head, number, outline and fold) inside a canvas that lays out
 // its children without showing them, drawn into it once the browser has painted it.
-async function elementSnapshot(pager, offset) {
+async function elementSnapshot(pager, offset, other) {
   if (document.fonts) await document.fonts.ready;
   const W = pager.width, H = pager.book.clientHeight, dpr = window.devicePixelRatio || 1;
   const cv = document.createElement("canvas");
@@ -624,17 +624,40 @@ async function elementSnapshot(pager, offset) {
   sheet.style.height = `${H}px`;
   // (The page's paper is the book's own background: the text is antialiased against it.)
   sheet.style.background = getComputedStyle(pager.book).backgroundColor;
-  const copy = pager.article.cloneNode(true);
+  // (Or, with `other`, a page of the neighbouring chapter: its text laid out just as this one's.)
+  const copy = other ? pager.article.cloneNode(false) : pager.article.cloneNode(true);
+  if (other) copy.innerHTML = other.html;
   copy.querySelectorAll("img[loading]").forEach((e) => e.removeAttribute("loading"));
   copy.style.width = `${W}px`;
-  copy.style.transform = `translateX(${-offset}px)`;
-  sheet.append(copy, pager.furniture(offset));
+  copy.style.transform = other ? "none" : `translateX(${-offset}px)`;
+  sheet.appendChild(copy);
   cv.appendChild(sheet);
   pager.book.appendChild(cv);
+  let furniture;
+  if (other) {
+    await Promise.all([...copy.querySelectorAll("img")].map((img) => (img.complete ? null : img.decode().catch(() => {}))));
+    const pages = Math.max(1, Math.round(sheet.scrollWidth / W));
+    offset = other.last ? (pages - 1) * W : 0;
+    copy.style.transform = `translateX(${-offset}px)`;
+    furniture = pager.furniture(offset);
+    // Its own running head and numbers (the chapter's title isn't known here: left blank).
+    const rh = furniture.querySelector(".rh-chapter");
+    if (rh) rh.textContent = "";
+    const pageEl = furniture.querySelector(".folio-page");
+    if (pageEl) {
+      const p = Math.round(offset / W) + 1, left = pages - p;
+      pageEl.textContent = `Page ${p} of ${pages} · ${left === 0 ? "last page in chapter" : left === 1 ? "1 page left in chapter" : `${left} pages left in chapter`}`;
+    }
+    const chEl = furniture.querySelector(".folio-chapter");
+    if (chEl) chEl.textContent = chEl.textContent.replace(/\d+/, (n) => String(Number(n) + other.chapterStep));
+  } else {
+    furniture = pager.furniture(offset);
+  }
+  sheet.appendChild(furniture);
   // The read-along's paragraph and word tints go on the copy too (they're drawn over ranges of
   // the live text, which the copy doesn't share).
   const tinted = [];
-  const st = along.st;
+  const st = other ? null : along.st;
   if (st && window.CSS && CSS.highlights) {
     const first = copy.querySelector(`.s[data-s="${st.n}"]`);
     const block = first && first.closest(ALONG_BLOCK);
@@ -864,7 +887,10 @@ class Pager {
       setTimeout(() => {
         if (this.dead || book.__carry !== carry) return;
         delete book.__carry;
-        if (carry.spread === this.spread) this.turn(carry.dir, carry);
+        // A page dragged over into this chapter has landed already: its picture just gives way
+        // to the real page.
+        if (carry.landed) frame(() => uncover());
+        else if (carry.spread === this.spread) this.turn(carry.dir, carry);
         else uncover();
       }, 0);
     }
@@ -1068,6 +1094,28 @@ class Pager {
     el.dataset.side = can ? side : "";
   }
 
+  // The picture of the neighbouring chapter's first page (dir 1) or last (dir -1), for dragging
+  // a page over the end of this one; made in idle time (see warm), null until then.
+  neighbourPic(dir) {
+    const n = this.neighbours && this.neighbours[dir];
+    return n && n.key === this.lookKey() && n.html === (this.book.__neighbours || {})[dir] ? n.canvas : null;
+  }
+
+  async makeNeighbourPic(dir) {
+    const html = (this.book.__neighbours || {})[dir];
+    if (!html || !canDrawElements) return;
+    this.neighbours = this.neighbours || {};
+    const have = this.neighbours[dir];
+    if (have && have.html === html && have.key === this.lookKey()) return;
+    const entry = { html, key: this.lookKey(), canvas: null };
+    this.neighbours[dir] = entry;
+    try {
+      entry.canvas = await elementSnapshot(this, 0, { html, last: dir < 0, chapterStep: dir });
+    } catch (e) {
+      console.warn("neighbouring page picture failed:", e);
+    }
+  }
+
   // The book's size, colours and type (what any page's picture depends on).
   lookKey() {
     const reader = this.book.closest(".reader");
@@ -1155,6 +1203,9 @@ class Pager {
         await this.pictures([p * this.width]);
         await new Promise((r) => (window.requestIdleCallback ? requestIdleCallback(r, { timeout: 300 }) : setTimeout(r, 30)));
       }
+      // At either end of the chapter, the neighbouring chapter's page too.
+      if (!this.dead && this.page + 1 >= this.pages) await this.makeNeighbourPic(1);
+      if (!this.dead && this.page === 0) await this.makeNeighbourPic(-1);
     }, 150);
   }
 
@@ -1336,8 +1387,9 @@ class Pager {
   // The page is a real 3D sheet hinged at the spine, made of vertical strips: each strip turns a
   // little further than the one before, so the page bends along its width as it swings over,
   // the free edge leading and the bound edge lying flat until the page has to lift from it.
-  begin(dir, carry) {
-    const t = this.beginGL(dir, carry);
+  begin(dir, carry, cross) {
+    const t = this.beginGL(dir, carry, cross);
+    if (cross) return t;
     if (t) return t;
     // The strips are only for browsers without the curl; elsewhere a missing picture means no
     // animation this time (the caller changes the page directly) rather than a different one.
@@ -1345,7 +1397,7 @@ class Pager {
   }
 
   // The curl on the graphics card, when pictures of both sides of the turning page are ready.
-  beginGL(dir, carry) {
+  beginGL(dir, carry, cross) {
     if (this.noGL) return null;
     const W = this.width, H = this.book.clientHeight, half = W / 2;
     const target = carry ? this.page : this.page + dir;
@@ -1353,7 +1405,8 @@ class Pager {
     // (The kept page's picture fits if the book is the same size and look; what's highlighted
     // in the next chapter has nothing to do with it.)
     const curPic = carry ? (carry.key === this.lookKey() ? carry.picture : null) : this.snap(cur);
-    const nextPic = this.snap(target * W);
+    // Dragged over the end of the chapter: the page beyond is the neighbouring chapter's.
+    const nextPic = cross ? this.neighbourPic(dir) : this.snap(target * W);
     if (!curPic || !nextPic) return null;
     try {
       // One WebGL context for the whole app (browsers allow only a few), moved into this book.
@@ -1369,7 +1422,7 @@ class Pager {
     // The canvas draws the whole book for the length of the turn (the turning page, the page it
     // uncovers and the facing page), from pictures; the live page underneath doesn't change
     // until the turn has landed, so nothing can show through early.
-    const t = { dir, target, W, H, layers: [], gl: true };
+    const t = { dir, target, W, H, layers: [], gl: true, cross: !!cross };
     let front, back, under;
     if (!this.spread) {
       t.leaf = [0, W];
@@ -2093,6 +2146,16 @@ class Pager {
     await this.animate(t, from, to, TURN_MS * slow() * Math.max(0.4, Math.min(1, left)), arc);
     t.done = true;
     const done = complete;
+    if (t.cross && done) {
+      // Into the neighbouring chapter: the landed picture stays on screen while it's laid out,
+      // and gives way to it (see the constructor).
+      const carry = { landed: true, dir: t.dir };
+      this.book.__carry = carry;
+      setTimeout(() => { if (this.book.__carry === carry) { delete this.book.__carry; uncover(); } }, 6000);
+      this.book.classList.remove("turning");
+      t.dir > 0 ? this.h.onNext() : this.h.onPrev();
+      return;
+    }
     if (done) this.page = t.target;
     this.place(this.article, this.page);
     if (t.gl) {
@@ -2249,21 +2312,23 @@ class Pager {
       if (!drag) {
         if (!this.curl || this.busy || !start.grab || Math.abs(dx) < 6 || Math.abs(dx) < Math.abs(e.clientY - start.y)) return;
         const dir = dx < 0 ? 1 : -1;
-        if ((dir > 0 && this.page + 1 >= this.pages) || (dir < 0 && this.page === 0)) {
-          // At the chapter's edge the next page isn't laid out yet: a pull far enough turns into
-          // the neighbouring chapter when you let go (never before).
+        const atEdge = (dir > 0 && this.page + 1 >= this.pages) || (dir < 0 && this.page === 0);
+        const neighbour = atEdge && (dir > 0 ? this.h.onNext : this.h.onPrev) && this.neighbourPic(dir);
+        if (atEdge && !neighbour) {
+          // At the chapter's edge with the next chapter's page not ready to show: a pull far
+          // enough turns into it when you let go (never before).
           start.cross = dir;
           start.crossDx = dx;
           window.getSelection().removeAllRanges();
           return;
         }
         window.getSelection().removeAllRanges();
-        if (!this.noGL && (!this.snap(this.page * this.width) || !this.snap((this.page + dir) * this.width))) {
+        if (!this.noGL && (!this.snap(this.page * this.width) || (!atEdge && !this.snap((this.page + dir) * this.width)))) {
           // Pictures still being made: take hold once they're ready (a moment).
-          this.pictures([this.page * this.width, (this.page + dir) * this.width]);
+          this.pictures(atEdge ? [this.page * this.width] : [this.page * this.width, (this.page + dir) * this.width]);
           return;
         }
-        drag = this.begin(dir);
+        drag = this.begin(dir, null, atEdge ? dir : 0);
         if (!drag) return;
         const y = Math.max(0, Math.min(drag.H, start.y - rect.top));
         drag.C = { x: drag.C0x, y };
@@ -2415,6 +2480,13 @@ export function pagerInit(book, article, onNext, onPrev, onPage, spread) {
 
 // "one", "two" or "auto" (two facing pages on wide windows).
 // Page turns animated (the curl) or instant.
+// The neighbouring chapters' text (HTML), so a page can be dragged over into them.
+export function pagerSetNeighbours(book, next, prev) {
+  book.__neighbours = { 1: next || null, [-1]: prev || null };
+  const p = book.__pager;
+  if (p && !p.dead) p.warm();
+}
+
 export function pagerSetCurl(book, on) {
   if (!book) return;
   book.__curl = !!on;
