@@ -129,6 +129,13 @@ def qwen(kind):
     return models[kind]
 
 
+def qwen_gpu(kind):
+    """A Qwen3-TTS checkpoint, stopping our Fish first: they can't share the card."""
+    if args.engine == "fish" and args.fish_dir:
+        fish.stop()
+    return qwen(kind)
+
+
 def unload_qwen():
     models.clear()
     free_gpu()
@@ -309,24 +316,87 @@ def accent_score(wav, sr, label):
         return None
 
 
-def design(desc, language):
+# British voices for reference clips. VoiceDesign can't do British at all (every take of every
+# phrasing came out American to the classifier), and Fish keeps the accent of the clip it's
+# given, so a British character's clip is read by one of these (or two blended) instead.
+KOKORO_BRITISH = {
+    "female": ["bf_emma", "bf_isabella", "bf_alice", "bf_lily"],
+    "male": ["bm_george", "bm_fable", "bm_lewis", "bm_daniel"],
+}
+kokoro_pipeline = None
+
+
+def sex_of(description):
+    text = (description or "").lower()
+    f = re.search(r"\b(female|woman|girl|lady|she|her|queen|duchess|mother|sister)\b", text)
+    m = re.search(r"\b(male|man|boy|gentleman|he|his|king|duke|father|brother)\b", text)
+    if f and (not m or f.start() < m.start()):
+        return "female"
+    return "male" if m else "female"
+
+
+def kokoro_choices(sex):
+    """Every British voice for this sex: each alone, then each pair blended."""
+    vs = KOKORO_BRITISH[sex]
+    return vs + [f"{a},{b}" for i, a in enumerate(vs) for b in vs[i + 1 :]]
+
+
+def british_reference(voice, description):
+    """A British reference clip from Kokoro, a voice no one else in this cast has yet."""
+    global kokoro_pipeline
+    import hashlib
+    import numpy as np
+
+    if kokoro_pipeline is None:
+        from kokoro import KPipeline
+
+        kokoro_pipeline = KPipeline(lang_code="b", device="cpu")
+    sex = sex_of(description)
+    choices = kokoro_choices(sex)
+    # Voices of the same cast (same name prefix, "cast1-") already taken.
+    prefix = slug(voice).split("-")[0] + "-"
+    taken = set()
+    for f in os.listdir(args.voices):
+        if f.startswith(prefix) and f.endswith(".json") and f != slug(voice) + ".json":
+            try:
+                with open(os.path.join(args.voices, f)) as fh:
+                    taken.add(json.load(fh).get("kokoro"))
+            except Exception:
+                pass
+    start = int(hashlib.sha1(slug(voice).encode()).hexdigest(), 16) % len(choices)
+    order = choices[start:] + choices[:start]
+    pick = next((c for c in order if c not in taken), order[0])
+    # (Children and the very young speak a little quicker; the elderly a little slower.)
+    text = (description or "").lower()
+    speed = 1.08 if re.search(r"\b(child|girl|boy|young|little)\b", text) else 0.92 if re.search(r"\b(elderly|old|aged)\b", text) else 1.0
+    audio = np.concatenate([r.audio.numpy() for r in kokoro_pipeline(REFERENCE_LINE, voice=pick, speed=speed)])
+    print(f"  {voice}: British reference from Kokoro ({pick}, {sex})", flush=True)
+    return audio, 24000, pick
+
+
+def design(desc, language, voice=""):
     """VoiceDesign's take on a description; for an accent it can check, the best of a few."""
     label = wanted_accent(desc)
+    if label == "england":
+        try:
+            return british_reference(voice, desc)
+        except Exception as e:
+            print(f"Kokoro unavailable ({e}); designing instead", flush=True)
     best = None
     for i in range(DESIGN_TRIES if label else 1):
-        wavs, sr = qwen("design").generate_voice_design(text=REFERENCE_LINE, instruct=desc, language=language)
+        wavs, sr = qwen_gpu("design").generate_voice_design(text=REFERENCE_LINE, instruct=desc, language=language)
         if not label:
-            return wavs[0], sr
+            return wavs[0], sr, None
         scored = accent_score(wavs[0], sr, label)
         if scored is None:
-            return wavs[0], sr
+            return wavs[0], sr, None
         score, top = scored
         print(f"  take {i + 1}: {label} {score:.2f} (sounds most like {top})", flush=True)
         if best is None or score > best[0]:
             best = (score, wavs[0], sr)
         if top == label and score > 0.5:
             break
-    return best[1], best[2]
+    return best[1], best[2], None
 
 
 def reference(voice, description, language):
@@ -336,20 +406,19 @@ def reference(voice, description, language):
     if not os.path.exists(wav_path):
         import soundfile as sf
 
-        if args.engine == "fish" and args.fish_dir:
-            fish.stop()  # VoiceDesign needs the GPU
-        custom = qwen("custom") if args.custom_model else None
+        kokoro = None
+        custom = qwen_gpu("custom") if args.custom_model else None
         if custom is not None and voice.lower() in [s.lower() for s in custom.get_supported_speakers()]:
             wavs, sr = custom.generate_custom_voice(text=REFERENCE_LINE, speaker=voice.lower(), language=language, instruct="")
         else:
             desc = description or "A warm, clear, expressive audiobook narrator."
             print(f"designing {voice}", flush=True)
-            wavs, sr = design(desc, language)
-            wavs = [wavs]
+            wav, sr, kokoro = design(desc, language, voice)
+            wavs = [wav]
         os.makedirs(args.voices, exist_ok=True)
         sf.write(wav_path, wavs[0], sr)
         with open(meta_path, "w") as f:
-            json.dump({"name": voice, "description": description, "text": REFERENCE_LINE}, f)
+            json.dump({"name": voice, "description": description, "text": REFERENCE_LINE, "kokoro": kokoro}, f)
         if args.engine == "fish":
             unload_qwen()
     ref_text = REFERENCE_LINE
