@@ -316,10 +316,10 @@ async fn cast_voices(state: &State, title: &str, author: &str, names: &[String],
         accent unless the story gives a character another origin (a Russian count: Russian). For each character \
         give their sex exactly as the book presents them (use the pronouns the book uses; animals and creatures \
         too), their age, their accent, and a short description of the voice itself (pitch, timbre, pace, \
-        temperament). When asked for the narrator, always cast one (never null): the narrator matches the \
-        protagonist, a woman's voice for a story centred on a girl or woman (Alice in Wonderland: a female \
-        narrator), a man's for a man or boy, and in a first-person book the narrator is the protagonist, \
-        grown up enough to tell the story. Reply with JSON only: {\"book_accent\": \"<accent>\", \"characters\": {\"<name>\": \
+        temperament). When asked for the narrator, always cast one (never null): the narrator is an adult \
+        storyteller (never a child, even when the hero is one) whose sex matches the protagonist's: a \
+        woman for a story centred on a girl or woman (Alice in Wonderland: a woman of about 40), a man for \
+        one centred on a man or boy. In a first-person book the narrator is the protagonist as an adult. Reply with JSON only: {\"book_accent\": \"<accent>\", \"characters\": {\"<name>\": \
         {\"sex\": \"male|female\", \"age\": \"<e.g. elderly, about 40, a young girl of 7>\", \"accent\": \"<accent>\", \
         \"nationality\": \"<who'd speak like that: e.g. an Englishman from London, an English girl, a Scottish woman>\", \
         \"accent_features\": \"<the accent's audible features, e.g. non-rhotic, crisp t's, long 'a' as in 'bath'>\", \
