@@ -267,7 +267,9 @@ async fn cast_voices(state: &State, title: &str, author: &str, names: &[String],
         too), their age, their accent, and a short description of the voice itself (pitch, timbre, pace, \
         temperament). Reply with JSON only: {\"book_accent\": \"<accent>\", \"characters\": {\"<name>\": \
         {\"sex\": \"male|female\", \"age\": \"<e.g. elderly, about 40, a young girl of 7>\", \"accent\": \"<accent>\", \
-        \"voice\": \"<description>\"}}, \"narrator\": {\"sex\": ..., \"age\": ..., \"accent\": ..., \"voice\": ...} or null}.";
+        \"nationality\": \"<who'd speak like that: e.g. an Englishman from London, an English girl, a Scottish woman>\", \
+        \"accent_features\": \"<the accent's audible features, e.g. non-rhotic, crisp t's, long 'a' as in 'bath'>\", \
+        \"voice\": \"<description>\"}}, \"narrator\": {same fields} or null}.";
     let who: String = names.iter().map(|n| format!("- {n}\n")).collect();
     let user = format!(
         "Book: {title} by {author}\n{}Characters to cast:\n{}{}\nSome of the text:\n{}",
@@ -299,7 +301,7 @@ async fn cast_voices(state: &State, title: &str, author: &str, names: &[String],
         let acc = acc.split(" with ").next().unwrap_or(acc).trim();
         // The voice designer knows "British" better than "Received Pronunciation".
         let acc = if (acc.contains("Received Pronunciation") || acc == "RP" || acc.starts_with("RP ")) && !acc.contains("British") {
-            "British English (Received Pronunciation)".to_string()
+            "British (Received Pronunciation, like a BBC radio presenter)".to_string()
         } else {
             acc.to_string()
         };
@@ -308,6 +310,12 @@ async fn cast_voices(state: &State, title: &str, author: &str, names: &[String],
         if sex.is_empty() && voice.is_empty() {
             return None;
         }
+        // The accent said plainly and strongly, with who speaks like that and how it sounds: the
+        // voice designer drifts to American unless it's spelled out (measured with an accent
+        // classifier: "with a British accent" came out American; "an Englishman from London with
+        // a strong, unmistakable British accent ... non-rhotic, crisp t's" came out English).
+        let who = v["nationality"].as_str().unwrap_or("").trim().trim_end_matches('.');
+        let features = v["accent_features"].as_str().unwrap_or("").trim().trim_end_matches('.');
         let mut d = String::new();
         if !sex.is_empty() {
             d.push_str(&format!("A {sex} voice"));
@@ -317,10 +325,16 @@ async fn cast_voices(state: &State, title: &str, author: &str, names: &[String],
         if !age.is_empty() {
             d.push_str(&format!(", {age}"));
         }
+        d.push('.');
         if !acc.is_empty() {
-            d.push_str(&format!(", speaking with a {acc} accent"));
+            let speaker = if who.is_empty() { "Speaks".to_string() } else { format!("{}{} speaking", who[..1].to_uppercase(), &who[1..]) };
+            d.push_str(&format!(" {speaker} with a strong, unmistakable {acc} accent"));
+            if !features.is_empty() {
+                d.push_str(&format!(" ({features})"));
+            }
+            d.push('.');
         }
-        d.push_str(". ");
+        d.push(' ');
         d.push_str(voice);
         d.push('.');
         Some(d)
