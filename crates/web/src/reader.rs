@@ -1421,7 +1421,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                         <span>"Font"</span>
                         <div class="segmented">
                             {FONTS.map(|(label, family)| view! {
-                                <button class:active=move || prefs.with(|p| p.font == family) style=format!("font-family:{family}")
+                                <button class:active=move || prefs.with(|p| p.font == family || (label == "Book" && !FONTS.iter().any(|(_, f)| *f == p.font))) style=format!("font-family:{family}")
                                     title=label on:click=move |_| set_font(family)>{label}</button>
                             })}
                         </div>
