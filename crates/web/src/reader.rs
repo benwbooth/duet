@@ -339,6 +339,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     let rate = RwSignal::new(1.0f64);
     let pending_seek = RwSignal::new(None::<(f64, bool)>);
     let toc_open = RwSignal::new(false);
+    let cast_open = RwSignal::new(false);
     // A click anywhere outside an open panel (or Escape) closes it. (The bar's own buttons
     // toggle their panels themselves.)
     {
@@ -353,7 +354,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 }
                 return;
             }
-            if !(view_open.get_untracked() || editions_open.get_untracked() || toc_open.get_untracked()) {
+            if !(view_open.get_untracked() || editions_open.get_untracked() || toc_open.get_untracked() || cast_open.get_untracked()) {
                 return;
             }
             if let Some(k) = ev.dyn_ref::<web_sys::KeyboardEvent>() {
@@ -376,6 +377,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             view_open.set(false);
             editions_open.set(false);
             toc_open.set(false);
+            cast_open.set(false);
         })
         .into_js_value();
         let _ = document().add_event_listener_with_callback_and_bool("pointerdown", outside.unchecked_ref(), true);
@@ -1549,6 +1551,12 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                                     }
                                 }).collect_view()}
                             </div>
+                            <Show when=move || mode.get().cast()>
+                                <button class="button cast-open" on:click=move |_| {
+                                    editions_open.set(false);
+                                    cast_open.set(true);
+                                }>"Voice cast: see and change the voices…"</button>
+                            </Show>
                             {(texts.len() + make_text as usize > 1).then(|| view! {
                                 <div class="edition-group">
                                     <h4>"Text edition"</h4>
@@ -1601,6 +1609,10 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     })}
                 </div>
             </Show>
+
+            {move || (cast_open.get()).then(|| ebook.get().map(|e| view! {
+                <crate::cast_panel::CastPanel asset=e.id on_close=move || cast_open.set(false)/>
+            })).flatten()}
 
             <Show when=move || toc_open.get()>
                 <nav class="toc">

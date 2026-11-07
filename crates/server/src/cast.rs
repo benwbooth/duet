@@ -316,10 +316,11 @@ async fn cast_voices(state: &State, title: &str, author: &str, names: &[String],
         accent unless the story gives a character another origin (a Russian count: Russian). For each character \
         give their sex exactly as the book presents them (use the pronouns the book uses; animals and creatures \
         too), their age, their accent, and a short description of the voice itself (pitch, timbre, pace, \
-        temperament). When asked for the narrator, always cast one (never null): the narrator is an adult \
-        storyteller (never a child, even when the hero is one) whose sex matches the protagonist's: a \
-        woman for a story centred on a girl or woman (Alice in Wonderland: a woman of about 40), a man for \
-        one centred on a man or boy. In a first-person book the narrator is the protagonist as an adult. Reply with JSON only: {\"book_accent\": \"<accent>\", \"characters\": {\"<name>\": \
+        temperament). When asked for the narrator, always cast one (never null): an adult \
+        storyteller (never a child, even when the hero is one) chosen with judgment for the book, as a \
+        good audiobook producer would: often, though not necessarily, matching the protagonist (a woman \
+        for a story told around a girl or woman, a man for one around a man or boy); in a first-person \
+        book, the protagonist as an adult. Reply with JSON only: {\"book_accent\": \"<accent>\", \"characters\": {\"<name>\": \
         {\"sex\": \"male|female\", \"age\": \"<e.g. elderly, about 40, a young girl of 7>\", \"accent\": \"<accent>\", \
         \"nationality\": \"<who'd speak like that: e.g. an Englishman from London, an English girl, a Scottish woman>\", \
         \"accent_features\": \"<the accent's audible features, e.g. non-rhotic, crisp t's, long 'a' as in 'bath'>\", \
@@ -480,6 +481,94 @@ pub async fn recast(state: &State, asset: i64) -> anyhow::Result<()> {
     }
     idle(asset);
     Ok(())
+}
+
+/// The book's full cast as the listener can see and change it: each member's description (what
+/// their voice was made from), their voice's name (its clip is `/cast/clip/{voice}`), and how
+/// the clip came out.
+/// Books with a voice being made again from an edited description.
+static REVOICING: LazyLock<std::sync::Mutex<std::collections::HashSet<i64>>> = LazyLock::new(Default::default);
+
+/// Marks a voice as being made, before the work starts (so the listener's next look says so).
+pub fn revoicing(asset: i64) {
+    REVOICING.lock().unwrap().insert(asset);
+}
+
+pub async fn members(state: &State, asset: i64) -> serde_json::Value {
+    let cast: Cast = read_json(&dir(state, asset).join("cast.json")).await.unwrap_or_default();
+    let voices = state.data_dir.join("voices");
+    let mut out = Vec::new();
+    let mut add = |name: Option<&str>, description: &str| {
+        let voice = voice_name(asset, name);
+        let meta: serde_json::Value = std::fs::read(voices.join(format!("{voice}.json")))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or(json!({}));
+        out.push(json!({
+            "name": name,
+            "description": description,
+            "voice": voice,
+            "clip": voices.join(format!("{voice}.wav")).exists(),
+            "engine": meta["engine"],
+            "accent": meta["accent"],
+        }));
+    };
+    if !cast.narrator.is_empty() {
+        add(None, &cast.narrator);
+    }
+    for (n, d) in &cast.characters {
+        add(Some(n), d);
+    }
+    json!({ "accent": cast.accent, "members": out, "busy": REVOICING.lock().unwrap().contains(&asset) })
+}
+
+/// A cast member's voice made again from a new description (`name` None: the narrator), and
+/// the lines already performed thrown away so they're read in it.
+pub async fn revoice(state: &State, asset: i64, name: Option<String>, description: String) -> anyhow::Result<()> {
+    REVOICING.lock().unwrap().insert(asset);
+    let r = revoice_one(state, asset, name, description).await;
+    REVOICING.lock().unwrap().remove(&asset);
+    r
+}
+
+async fn revoice_one(state: &State, asset: i64, name: Option<String>, description: String) -> anyhow::Result<()> {
+    let base = dir(state, asset);
+    let cast_path = base.join("cast.json");
+    let lock = lock_for(asset);
+    let _held = lock.lock().await;
+    let mut cast: Cast = read_json(&cast_path).await.unwrap_or_default();
+    let description = description.trim().to_string();
+    match &name {
+        None => cast.narrator = description.clone(),
+        Some(n) => {
+            anyhow::ensure!(cast.characters.contains_key(n), "no such character");
+            cast.characters.insert(n.clone(), description.clone());
+        }
+    }
+    write_json(&cast_path, &cast).await?;
+    let who = name.clone().unwrap_or_else(|| "the narrator".into());
+    status(asset, format!("Making {who}'s voice"), 0, 0);
+    let tts = state.settings.read().await.ai.tts_url.clone();
+    let made = state
+        .http
+        .post(format!("{}/voices", tts.trim_end_matches('/')))
+        .json(&json!({ "voices": [{ "voice": voice_name(asset, name.as_deref()), "instructions": description, "replace": true }] }))
+        .timeout(std::time::Duration::from_secs(1800))
+        .send()
+        .await
+        .context("the voice server isn't running (Settings → Voices)")
+        .and_then(|r| r.error_for_status().map_err(Into::into));
+    if made.is_ok() {
+        let mut entries = tokio::fs::read_dir(&base).await?;
+        while let Some(e) = entries.next_entry().await? {
+            let f = e.file_name().to_string_lossy().to_string();
+            if f.ends_with(".mp3") || f.ends_with(".words.json") {
+                let _ = tokio::fs::remove_file(e.path()).await;
+            }
+        }
+    }
+    idle(asset);
+    made.map(|_| ())
 }
 
 /// The one name a character goes by for the whole book, so they keep one voice: the model

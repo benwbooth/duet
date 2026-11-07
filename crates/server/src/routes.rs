@@ -53,6 +53,9 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assets/{id}/cast/{chapter}/{n}", get(cast_sentence))
         .route("/assets/{id}/cast/status", get(cast_status))
         .route("/assets/{id}/cast/recast", post(cast_recast))
+        .route("/assets/{id}/cast/members", get(cast_members))
+        .route("/assets/{id}/cast/voice", post(cast_voice))
+        .route("/assets/{id}/cast/clip/{voice}", get(cast_clip))
         .route("/cast/warm", post(cast_warm))
         .route("/assets/{id}/cast/{chapter}/{n}/words", get(cast_words))
         .route("/assets/{id}/link", post(link))
@@ -259,6 +262,39 @@ async fn cast_recast(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<se
         }
     });
     Json(serde_json::json!({ "ok": true }))
+}
+
+/// The full cast, with what each voice was made from.
+async fn cast_members(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<serde_json::Value> {
+    Json(crate::cast::members(&s, id).await)
+}
+
+#[derive(Deserialize)]
+struct Revoice {
+    name: Option<String>,
+    description: String,
+}
+
+/// A cast member's voice made again from an edited description (in the background; the
+/// cast's status says when it's done).
+async fn cast_voice(AxState(s): AxState<State>, Path(id): Path<i64>, Json(r): Json<Revoice>) -> Json<serde_json::Value> {
+    crate::cast::revoicing(id);
+    tokio::spawn(async move {
+        if let Err(e) = crate::cast::revoice(&s, id, r.name, r.description).await {
+            tracing::warn!("revoicing {id}: {e:#}");
+        }
+    });
+    Json(serde_json::json!({ "ok": true }))
+}
+
+/// A cast member's reference clip, to hear what their voice was made as.
+async fn cast_clip(AxState(s): AxState<State>, Path((id, voice)): Path<(i64, String)>) -> ApiResult<Response> {
+    let ok = voice.starts_with(&format!("cast{id}-")) && voice.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    if !ok {
+        return Err(ApiError::not_found("voice"));
+    }
+    let bytes = tokio::fs::read(s.data_dir.join("voices").join(format!("{voice}.wav"))).await.map_err(|_| ApiError::not_found("voice"))?;
+    Ok(([(header::CONTENT_TYPE, "audio/wav"), (header::CACHE_CONTROL, "no-cache")], bytes).into_response())
 }
 
 /// When each word of a performed full-cast line starts, for the read-along.

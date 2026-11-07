@@ -2,6 +2,7 @@
 //! and downloads, background jobs and settings. Layouts adapt to desktop and phone widths.
 
 mod api;
+mod cast_panel;
 mod discover;
 mod reader;
 mod settings;

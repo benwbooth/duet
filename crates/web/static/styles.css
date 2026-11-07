@@ -1514,3 +1514,18 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 .font-row .segmented button + button { border-left: 1px solid var(--line); }
 .font-row .segmented button:nth-child(3) { border-left: 0; }
 .font-row .segmented button:nth-child(n+3) { border-top: 1px solid var(--line); }
+
+/* Voice cast: each member's description and clip, editable */
+.cast-open { width: 100%; margin-top: 0.6rem; }
+.cast-panel { width: min(520px, calc(100vw - 1rem)); max-height: calc(100dvh - 110px); overflow-y: auto; color: var(--text); }
+.cast-head { display: flex; align-items: center; justify-content: space-between; }
+.cast-head h4 { margin: 0; font-size: 1rem; }
+.cast-note { color: var(--muted); font-size: 0.85rem; margin: 0.4rem 0 0.8rem; }
+.cast-member { border-top: 1px solid var(--line); padding: 0.7rem 0; display: grid; gap: 0.45rem; }
+.cast-member-head { display: flex; align-items: baseline; gap: 0.5rem; }
+.cast-member-head small { color: var(--muted); }
+.cast-member audio { width: 100%; height: 36px; }
+.cast-member textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 0.88rem; padding: 0.5rem; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--text); resize: vertical; }
+.cast-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; }
+.cast-busy { color: var(--muted); font-size: 0.82rem; margin-right: auto; }
