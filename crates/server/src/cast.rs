@@ -795,7 +795,7 @@ static LISTENER: LazyLock<std::sync::Mutex<HashMap<i64, (usize, usize, u64)>>> =
 /// Books whose director is reading ahead.
 static DIRECTING: LazyLock<std::sync::Mutex<std::collections::HashSet<i64>>> = LazyLock::new(Default::default);
 
-/// The director reads ahead of the performers, the rest of this chapter and the next two: the
+/// The director reads ahead of the performers, through the whole book from here: the
 /// chat model works on the CPU while the performer has the card (they don't both fit), a minute
 /// or two a part, so it's done in parallel rather than as each part comes up.
 fn direct_ahead(state: &State, asset: i64, chapter: usize) {
@@ -805,7 +805,15 @@ fn direct_ahead(state: &State, asset: i64, chapter: usize) {
     let state = state.clone();
     tokio::spawn(async move {
         let base = dir(&state, asset);
-        for c in chapter..chapter + 3 {
+        // From here to the end of the book, then the beginning.
+        let chapters = match db::asset(&state.db, asset).await {
+            Ok(Some(a)) => {
+                let src = book::source(&a, &state.data_dir);
+                tokio::task::spawn_blocking(move || book::layout(&src).map(|l| l.chapters)).await.ok().and_then(Result::ok).unwrap_or(chapter + 3)
+            }
+            _ => chapter + 3,
+        };
+        for c in (chapter..chapters).chain(0..chapter) {
             let Ok(Some(a)) = db::asset(&state.db, asset).await else { break };
             let src = book::source(&a, &state.data_dir);
             let Ok(Ok(sentences)) = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, c)).await else { break };
@@ -849,7 +857,7 @@ fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
                 // (If the voices are restarting, wait for them rather than give up: giving up left
                 // the listener's stretch marked as being worked on, so nothing more was performed.)
                 let mut tries = 0;
-                while let Err(e) = perform(&state, asset, c, k).await {
+                while let Err(e) = perform(&state, asset, c, k, false).await {
                     tries += 1;
                     if moved() || tries > 12 {
                         tracing::warn!("performing ahead ({c}, {k}): {e:#}");
@@ -873,10 +881,13 @@ fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
 /// for one also sets the performer working ahead from it.
 pub async fn sentence(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow::Result<Vec<u8>> {
     work_ahead(state, asset, chapter, n);
-    perform(state, asset, chapter, n).await
+    perform(state, asset, chapter, n, true).await
 }
 
-async fn perform(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow::Result<Vec<u8>> {
+/// `urgent`: the listener is waiting for it. Plain narration then doesn't wait for the
+/// director (a minute or two for a part when the chat model is on the CPU): it's read in the
+/// book's own style.
+async fn perform(state: &State, asset: i64, chapter: usize, n: usize, urgent: bool) -> anyhow::Result<Vec<u8>> {
     let path = dir(state, asset).join(format!("{chapter}-{n}.mp3"));
     if let Ok(bytes) = tokio::fs::read(&path).await {
         return Ok(bytes);
@@ -893,7 +904,17 @@ async fn perform(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow:
     let src = book::source(&a, &state.data_dir);
     let sentences = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, chapter)).await??;
     let printed = sentences.get(n).cloned().context("no such sentence")?;
-    let (script, cast) = prepared(state, asset, chapter, n, &sentences).await?;
+    let plain = !printed.contains(['“', '”', '"']) && open_quote_before(&sentences, n).is_none() && !printed.chars().any(|c| c.is_ascii_digit());
+    let base = dir(state, asset);
+    let directed = base.join(format!("script-{chapter}-{}.json", n / CHUNK)).exists() || base.join(format!("script-{chapter}.json")).exists();
+    let cast_now: Cast = read_json(&base.join("cast.json")).await.unwrap_or_default();
+    let narrator_ready = !cast_now.narrator.is_empty() && state.data_dir.join("voices").join(format!("{}.wav", voice_name(asset, None))).exists();
+    let (script, cast) = if urgent && plain && !directed && narrator_ready {
+        direct_ahead(state, asset, chapter);
+        (Script::new(), cast_now)
+    } else {
+        prepared(state, asset, chapter, n, &sentences).await?
+    };
     // The director's wording where the print would be misread; the rules catch headings anyway.
     let say: Say = read_json(&dir(state, asset).join(format!("say-{chapter}-{}.json", n / CHUNK))).await.unwrap_or_default();
     let text = speakable(say.get(&n).unwrap_or(&printed));
