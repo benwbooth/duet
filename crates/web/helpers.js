@@ -630,7 +630,11 @@ const canDrawElements = typeof CanvasRenderingContext2D !== "undefined" && "draw
 // its children without showing them, drawn into it once the browser has painted it.
 async function elementSnapshot(pager, offset, other) {
   if (document.fonts) await document.fonts.ready;
-  const W = pager.width, H = pager.book.clientHeight, dpr = window.devicePixelRatio || 1;
+  // (The page's exact size, fractions of a pixel included: on a scaled display the rounded
+  // clientWidth is a little off, and text laid out a fraction narrower can break a line, and
+  // so a page, differently.)
+  const box = pager.article.getBoundingClientRect(), bookBox = pager.book.getBoundingClientRect();
+  const W = box.width || pager.width, H = bookBox.height || pager.book.clientHeight, dpr = window.devicePixelRatio || 1;
   const cv = document.createElement("canvas");
   cv.setAttribute("layoutsubtree", "");
   cv.setAttribute("content", "drawable");
