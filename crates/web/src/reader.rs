@@ -802,6 +802,11 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 }
                 return;
             }
+            let looking = crate::browsing(book.get_untracked().map(|b| (*b).clone().into()));
+            if span.chapter != chapter.get_untracked() && looking {
+                // You've turned to another chapter yourself: stay there.
+                return;
+            }
             sentence.set(span.sentence as i32);
             if span.chapter != chapter.get_untracked() {
                 scroll_to.set(Some(span.sentence as u32));
@@ -858,13 +863,27 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                         cast_go(chapter.get_untracked(), n, playing.get_untracked());
                         return;
                     }
-                    let s = sync.get_untracked();
-                    if let Some(span) = s.of(chapter.get_untracked(), n).cloned() {
+                    // Reading from here: the sentence tapped (where the sync has it, or where it most
+                    // likely is from the sentences around it), and the page follows the recording
+                    // again from it.
+                    let c = chapter.get_untracked();
+                    let target = sync.with_untracked(|x| {
+                        x.of(c, n).map(|sp| (sp.track, sp.start)).or_else(|| {
+                            let asset = audio_asset.get_untracked()?;
+                            let lens: Vec<f64> = asset.tracks.iter().map(|t| t.duration_secs).collect();
+                            let count = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1);
+                            x.estimate(c, n, count, &lens)
+                        })
+                    });
+                    if let Some((tr, secs)) = target.filter(|_| mode.get_untracked().audiobook()) {
+                        crate::stop_browsing(book.get_untracked().map(|b| (*b).clone().into()));
+                        live_near.set(None);
                         sentence.set(n as i32);
                         if let Some(el) = page.get_untracked() {
                             crate::highlight(&el, n as i32, false);
                         }
-                        seek_to(span.track, span.start);
+                        book_pos.set((tr, secs));
+                        seek_to(tr, secs);
                         return;
                     }
                 }
@@ -1033,6 +1052,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     book_pos.set((tr, secs));
                     // (Where the sync last was is no guide to where this is.)
                     live_near.set(None);
+                    crate::stop_browsing(book.get_untracked().map(|b| (*b).clone().into()));
                     if tr != track.get_untracked() {
                         pending_seek.set(Some((secs, true)));
                         track.set(tr);

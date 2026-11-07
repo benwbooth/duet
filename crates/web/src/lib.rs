@@ -18,6 +18,9 @@ extern "C" {
     fn mic_supported() -> bool;
     #[wasm_bindgen(js_name = readAlong)]
     fn read_along(container: Option<web_sys::Element>, audio: &web_sys::HtmlAudioElement, n: i32, start: f64, end: f64, times: &[f64], follow: bool);
+    fn browsing(book: Option<web_sys::Element>) -> bool;
+    #[wasm_bindgen(js_name = stopBrowsing)]
+    fn stop_browsing(book: Option<web_sys::Element>);
     #[wasm_bindgen(js_name = firstWordOnPage)]
     fn first_word_on_page(container: &web_sys::Element) -> Vec<u32>;
     #[wasm_bindgen(js_name = warmSpeech)]

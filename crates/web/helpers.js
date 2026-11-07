@@ -114,7 +114,7 @@ export function highlight(container, n, scroll) {
   if (pager) {
     // (A sentence that runs over from the page before is already where it's being read: the
     // read-along turns the page when the words being said reach the next one.)
-    if (!sentenceOnPage(container, n)) pager.showElement(spans[0], true);
+    if (!sentenceOnPage(container, n) && !browsing(pager.book)) pager.showElement(spans[0], true);
     return;
   }
   const r = spans[0].getBoundingClientRect();
@@ -1254,6 +1254,7 @@ class Pager {
   }
 
   next() {
+    this.book.__userTurn = performance.now();
     this.atEnd = false;
     if (this.busy) { this.queued = 1; return; }
     if (this.page + 1 < this.pages) this.turn(1);
@@ -1261,6 +1262,7 @@ class Pager {
   }
 
   prev() {
+    this.book.__userTurn = performance.now();
     this.atEnd = false;
     if (this.busy) { this.queued = -1; return; }
     if (this.page > 0) this.turn(-1);
@@ -2345,6 +2347,7 @@ class Pager {
         }
         drag = this.begin(dir, null, atEdge ? dir : 0);
         if (!drag) return;
+        this.book.__userTurn = performance.now();
         const y = Math.max(0, Math.min(drag.H, start.y - rect.top));
         drag.C = { x: drag.C0x, y };
         drag.G = { x: start.x - rect.left, y };
@@ -2427,6 +2430,7 @@ class Pager {
           }
           const t = this.begin(dir, null, atEdge ? dir : 0);
           if (!t) return;
+          this.book.__userTurn = performance.now();
           t.C = { x: t.C0x, y: t.H * 0.75 };
           [t.from] = this.ends(t, t.C.y);
           swipe = { t, total: 0 };
@@ -2741,7 +2745,7 @@ function alongTick() {
       CSS.highlights.set("duet-word", h);
       // Reading on over the page's end: turn to where the word is.
       const pager = st.follow && !st.audio.paused && pagerOf(st.container);
-      if (pager && !pager.busy) {
+      if (pager && !pager.busy && !browsing(pager.book)) {
         const r = st.words[i].getBoundingClientRect();
         const b = pager.book.getBoundingClientRect();
         if (r.width > 0 && r.left >= b.right) {
@@ -2824,4 +2828,15 @@ export function firstWordOnPage(container) {
     if (r.width > 0 && r.left >= b.left - 1 && r.right <= b.right + 1) return [n, i];
   }
   return [n, 0];
+}
+
+// Turning pages yourself while the recording plays: the page stops following the recording
+// for a while, so you can look ahead (or back) without being pulled to where it's reading.
+// Starting to play from somewhere ends it at once.
+export function browsing(book) {
+  return !!book && performance.now() - (book.__userTurn || -1e9) < 20000;
+}
+
+export function stopBrowsing(book) {
+  if (book) book.__userTurn = 0;
 }
