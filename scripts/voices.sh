@@ -18,6 +18,10 @@ voices="${3:-$data/voices}"
 port="${4:-8880}"
 idle="${5:-5}"
 cd "$root"
+# Model downloads (torch hub, Hugging Face) need certificates; NixOS keeps them here.
+if [[ -z "${SSL_CERT_FILE:-}" && -r /etc/ssl/certs/ca-certificates.crt ]]; then
+  export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+fi
 exec "$venv/bin/python" workers/tts_server.py \
   --port "$port" \
   --idle-minutes "$idle" \

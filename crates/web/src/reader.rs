@@ -222,7 +222,9 @@ impl SyncIndex {
     /// How far past `t` the sync reaches without a gap, on this track.
     fn covered_until(&self, track: usize, t: f64) -> f64 {
         let mut reach = t;
-        for s in self.by_time.iter().filter(|s| s.track == track && s.end >= t - 3.0) {
+        // (A sentence synced before word times were measured counts as not synced yet: it's
+        // done again, exactly, as the recording reaches it.)
+        for s in self.by_time.iter().filter(|s| s.track == track && s.end >= t - 3.0 && !s.words.is_empty()) {
             if s.start > reach + 6.0 {
                 break;
             }

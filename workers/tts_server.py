@@ -311,57 +311,104 @@ def book_index(path):
     return bw, idx
 
 
+def listen_model():
+    """Whisper for finding where in the book the audio is: on the graphics card when there is
+    one. (Exact word times come from the forced aligner, not from Whisper.)"""
+    from common import whisper as load_whisper
+
+    key = "live:" + args.listen_model
+    if key not in whisper:
+        whisper[key], _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda")
+    return whisper[key]
+
+
 def sync_window(body):
-    """Transcribes a stretch of audio and returns the sentences it covers, with times."""
+    """Hears a stretch of audio, finds it in the book, and times every word of the sentences it
+    covers: Whisper says roughly what's being read; the book's own text for those sentences is
+    then lined up against the audio by the forced aligner."""
     import align
-    from common import load_audio_window, whisper as load_whisper, words
+    from common import aligner, load_audio_window, words
 
     bw, idx = book_index(body["book"])
     start, duration = float(body["start"]), float(body.get("duration", 30.0))
+    track = body.get("track", 0)
     samples = load_audio_window(body["audio"], start, duration)
     with listen_lock:
         touch("whisper")
-        key = "live:" + args.listen_model
-        if key not in whisper:
-            whisper[key], _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda", words=True)
-        segments, _ = whisper[key].transcribe(samples, word_timestamps=True, vad_filter=False, language="en")
-        heard = []
-        for seg in segments:
-            for w in seg.words or []:
-                for token in words(w.word):
-                    heard.append((token, body.get("track", 0), start + w.start, start + w.end))
-    if not heard:
-        return {"spans": [], "near": body.get("near"), "heard": 0}
-    mapping = align.align(bw, heard, near=int(body.get("near") or 0), idx=idx)
-    spans = align.spans(bw, heard, mapping)
-    near = max(mapping) if mapping else body.get("near")
-    # Only sentences actually heard in this stretch (interpolation can't reach outside it).
-    spans = [sp for sp in spans if start - 1 <= sp["start"] <= start + duration + 1]
-    return {"spans": spans, "near": near, "heard": len(heard)}
+        segments, _ = listen_model().transcribe(samples, vad_filter=False, language="en")
+        heard = [(t, track, start, start + duration) for seg in segments for t in words(seg.text)]
+        if not heard:
+            return {"spans": [], "near": body.get("near"), "heard": 0}
+        mapping = align.align(bw, heard, near=int(body.get("near") or 0), idx=idx)
+        if not mapping:
+            return {"spans": [], "near": body.get("near"), "heard": len(heard)}
+        # The sentences heard, whole: from the one the first matched word is in to the one the
+        # last is in, leaving out one cut off by either end of the stretch (the next stretch
+        # starts where this one's sentences end, so it gets it whole).
+        matched = sorted(mapping)
+        lo, hi = matched[len(matched) // 20], matched[-1 - len(matched) // 20]
+        first, last = {}, {}
+        for i, (_, ch, si) in enumerate(bw):
+            first.setdefault((ch, si), i)
+            last[(ch, si)] = i
+        order = []
+        for i in range(first[bw[lo][1:]], last[bw[hi][1:]] + 1):
+            key = bw[i][1:]
+            if not order or order[-1] != key:
+                order.append(key)
+        if order and first[order[0]] < lo - 4 and start > 0.5:
+            order = order[1:]
+        if order and last[order[-1]] > hi + 4:
+            order = order[:-1]
+        if not order:
+            return {"spans": [], "near": max(mapping), "heard": len(heard)}
+        span_words = [bw[i][0] for key in order for i in range(first[key], last[key] + 1)]
+        times = aligner().align(samples, span_words)
+    spans, k = [], 0
+    for ch, si in order:
+        n = last[(ch, si)] - first[(ch, si)] + 1
+        ts = times[k:k + n]
+        k += n
+        known = [t for t in ts if t]
+        if not known:
+            continue
+        s0, e0 = known[0][0] + start, known[-1][1] + start
+        word_at = {j: (track, t[0] + start) for j, t in enumerate(ts) if t}
+        spans.append({"chapter": ch, "sentence": si, "track": track, "start": round(s0, 3), "end": round(e0, 3),
+                      "words": align.word_times(word_at, n, track, s0, e0)})
+    return {"spans": spans, "near": max(mapping), "heard": len(heard)}
 
 
 def track_words(body):
     """Transcribes a whole track with word timings, for making a book from an audiobook:
-    segments of {start, end, text, words: [[word, start, end]]}. Cached next to align.py's."""
+    segments of {start, end, text, words: [[word, start, end]]}. Whisper writes the text (on the
+    graphics card when there is one); each segment's words are then timed exactly by the forced
+    aligner. Cached next to align.py's."""
     import align
-    from common import load_audio, load, save, whisper as load_whisper
+    from common import aligner, load_audio, load, save
 
     path = body["audio"]
-    cached = align.cache_path(path, "segments:" + args.listen_model)
+    cached = align.cache_path(path, "segments-aligned:" + args.listen_model)
     if os.path.exists(cached):
         return {"segments": load(cached)}
     samples = load_audio(path)
+    rate = 16000
     with listen_lock:
         touch("whisper")
-        key = "live:" + args.listen_model
-        if key not in whisper:
-            whisper[key], _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda", words=True)
-        segments, _ = whisper[key].transcribe(samples, word_timestamps=True, vad_filter=True, language="en")
-        out = [
-            {"start": round(seg.start, 3), "end": round(seg.end, 3), "text": seg.text.strip(),
-             "words": [[w.word.strip(), round(w.start, 3), round(w.end, 3)] for w in seg.words or []]}
-            for seg in segments
-        ]
+        segments, _ = listen_model().transcribe(samples, vad_filter=True, language="en")
+        out = []
+        for seg in segments:
+            text = seg.text.strip()
+            if not text:
+                continue
+            # A little either side, as Whisper's segment edges are rough.
+            a = max(0.0, seg.start - 0.6)
+            b = min(len(samples) / rate, seg.end + 0.6)
+            ws = text.split()
+            times = aligner().align(samples[int(a * rate):int(b * rate)], ws)
+            timed = [[w, round(t[0] + a, 3), round(t[1] + a, 3)] for w, t in zip(ws, times) if t]
+            out.append({"start": round(timed[0][1] if timed else seg.start, 3), "end": round(timed[-1][2] if timed else seg.end, 3),
+                        "text": text, "words": timed})
     save(cached, out)
     return {"segments": out}
 

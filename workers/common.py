@@ -155,12 +155,135 @@ class TorchWhisper:
 
 
 _gpu_whisper = None
+_aligner = None
+
+
+class ForcedAligner:
+    """Lines known text up against the audio, word by word: the MMS forced-alignment model
+    (torchaudio) hears which letters are sounding in each 20 ms frame, and the words are fitted
+    to that in order. Precise to a frame or two, where Whisper's own word times wander by a few
+    tenths of a second. The model runs on the graphics card (ROCm or CUDA); the fitting itself is
+    cheap and runs on the CPU (torchaudio has no ROCm kernel for it)."""
+
+    def __init__(self, device="cuda:0"):
+        import torch
+        import torchaudio
+
+        if not torch.cuda.is_available():
+            device = "cpu"
+        bundle = torchaudio.pipelines.MMS_FA
+        self.device = device
+        self.model = bundle.get_model(with_star=True).to(device).eval()
+        self.tokenizer = bundle.get_tokenizer()
+        self.aligner = bundle.get_aligner()
+        self.dictionary = set(bundle.get_dict(star="*"))
+
+    def letters(self, word):
+        """A word as the model spells it: lowercase letters and apostrophes, accents dropped."""
+        import unicodedata
+
+        w = unicodedata.normalize("NFKD", word.lower())
+        return "".join(c for c in w if c in self.dictionary and c != "*")
+
+    def align(self, samples, words, rate=16000):
+        """(start, end) in seconds for each word, or None for one it can't spell (a number).
+        Audio either side of the text (the end of a sentence before it, the start of one after)
+        is allowed for and left out."""
+        import numpy as np
+        import torch
+
+        spelled = [self.letters(w) for w in words]
+        keep = [i for i, w in enumerate(spelled) if w]
+        out = [None] * len(words)
+        if not keep or len(samples) < rate // 4:
+            return out
+        with torch.inference_mode():
+            wav = torch.from_numpy(np.asarray(samples, dtype=np.float32)).unsqueeze(0).to(self.device)
+            emission, _ = self.model(wav)
+            emission = emission[0].float().cpu()
+        # "*" on each side soaks up speech that isn't in the text.
+        tokens = self.tokenizer(["*"] + [spelled[i] for i in keep] + ["*"])
+        spans = self.aligner(emission, tokens)
+        ratio = wav.size(1) / emission.size(0) / rate
+        for i, sp in zip(keep, spans[1:-1]):
+            out[i] = (sp[0].start * ratio, sp[-1].end * ratio)
+        return out
+
+
+def aligner():
+    """The forced aligner, loaded once (unloaded with speech recognition when idle)."""
+    global _aligner
+    if _aligner is None:
+        _aligner = ForcedAligner()
+    return _aligner
 
 
 def release_gpu_whisper():
-    """Lets the card's copy of Whisper go (it's unloaded when idle)."""
-    global _gpu_whisper
+    """Lets the card's copy of Whisper (and the aligner) go: they're unloaded when idle."""
+    global _gpu_whisper, _aligner
     _gpu_whisper = None
+    _aligner = None
+_aligner = None
+
+
+class ForcedAligner:
+    """Lines known text up against the audio, word by word: the MMS forced-alignment model
+    (torchaudio) hears which letters are sounding in each 20 ms frame, and the words are fitted
+    to that in order. Precise to a frame or two, where Whisper's own word times wander by a few
+    tenths of a second. The model runs on the graphics card (ROCm or CUDA); the fitting itself is
+    cheap and runs on the CPU (torchaudio has no ROCm kernel for it)."""
+
+    def __init__(self, device="cuda:0"):
+        import torch
+        import torchaudio
+
+        if not torch.cuda.is_available():
+            device = "cpu"
+        bundle = torchaudio.pipelines.MMS_FA
+        self.device = device
+        self.model = bundle.get_model(with_star=True).to(device).eval()
+        self.tokenizer = bundle.get_tokenizer()
+        self.aligner = bundle.get_aligner()
+        self.dictionary = set(bundle.get_dict(star="*"))
+
+    def letters(self, word):
+        """A word as the model spells it: lowercase letters and apostrophes, accents dropped."""
+        import unicodedata
+
+        w = unicodedata.normalize("NFKD", word.lower())
+        return "".join(c for c in w if c in self.dictionary and c != "*")
+
+    def align(self, samples, words, rate=16000):
+        """(start, end) in seconds for each word, or None for one it can't spell (a number).
+        Audio either side of the text (the end of a sentence before it, the start of one after)
+        is allowed for and left out."""
+        import numpy as np
+        import torch
+
+        spelled = [self.letters(w) for w in words]
+        keep = [i for i, w in enumerate(spelled) if w]
+        out = [None] * len(words)
+        if not keep or len(samples) < rate // 4:
+            return out
+        with torch.inference_mode():
+            wav = torch.from_numpy(np.asarray(samples, dtype=np.float32)).unsqueeze(0).to(self.device)
+            emission, _ = self.model(wav)
+            emission = emission[0].float().cpu()
+        # "*" on each side soaks up speech that isn't in the text.
+        tokens = self.tokenizer(["*"] + [spelled[i] for i in keep] + ["*"])
+        spans = self.aligner(emission, tokens)
+        ratio = wav.size(1) / emission.size(0) / rate
+        for i, sp in zip(keep, spans[1:-1]):
+            out[i] = (sp[0].start * ratio, sp[-1].end * ratio)
+        return out
+
+
+def aligner():
+    """The forced aligner, loaded once (unloaded with speech recognition when idle)."""
+    global _aligner
+    if _aligner is None:
+        _aligner = ForcedAligner()
+    return _aligner
 
 
 def gpu_available():
