@@ -26,6 +26,26 @@ struct Cast {
     characters: BTreeMap<String, String>,
 }
 
+/// What the full cast is busy with for each book, for the player to show while it waits:
+/// (what, how many done, out of how many, since when).
+static STATUS: LazyLock<std::sync::Mutex<HashMap<i64, (String, u32, u32, std::time::Instant)>>> = LazyLock::new(Default::default);
+
+fn status(asset: i64, what: impl Into<String>, done: u32, total: u32) {
+    STATUS.lock().unwrap().insert(asset, (what.into(), done, total, std::time::Instant::now()));
+}
+
+fn idle(asset: i64) {
+    STATUS.lock().unwrap().remove(&asset);
+}
+
+/// What the full cast is doing for this book right now, if anything.
+pub fn current(asset: i64) -> serde_json::Value {
+    match STATUS.lock().unwrap().get(&asset) {
+        Some((what, done, total, since)) => json!({ "what": what, "done": done, "total": total, "secs": since.elapsed().as_secs() }),
+        None => json!(null),
+    }
+}
+
 /// One lock per book: directing and casting happen once, however many requests arrive together.
 static LOCKS: LazyLock<std::sync::Mutex<HashMap<i64, Arc<Mutex<()>>>>> = LazyLock::new(Default::default);
 
@@ -77,9 +97,11 @@ async fn write_json<T: Serialize>(path: &PathBuf, v: &T) -> anyhow::Result<()> {
 
 /// The chat model directs one chapter: speakers and directions, and descriptions of new characters
 /// (and of the narrator, the first time).
-async fn direct(state: &State, title: &str, author: &str, sentences: &[String], cast: &mut Cast) -> anyhow::Result<Script> {
+async fn direct(state: &State, asset: i64, chapter: usize, title: &str, author: &str, sentences: &[String], cast: &mut Cast) -> anyhow::Result<Script> {
     let mut script = Script::new();
-    for start in (0..sentences.len()).step_by(CHUNK) {
+    let chunks = sentences.len().div_ceil(CHUNK) as u32;
+    for (k, start) in (0..sentences.len()).step_by(CHUNK).enumerate() {
+        status(asset, format!("Reading chapter {} to work out who says what", chapter + 1), k as u32, chunks);
         let part = &sentences[start..(start + CHUNK).min(sentences.len())];
         if !part.iter().any(|s| is_quote(s)) && !cast.narrator.is_empty() {
             continue;
@@ -138,11 +160,12 @@ async fn prepared(state: &State, asset: i64, chapter: usize, sentences: &[String
     }
     let a = db::asset(&state.db, asset).await?.context("no such book")?;
     let w = db::work_detail(&state.db, a.work_id).await?.context("no such book")?;
-    let script = match direct(state, &w.title, w.author.as_deref().unwrap_or(""), sentences, &mut cast).await {
+    let script = match direct(state, asset, chapter, &w.title, w.author.as_deref().unwrap_or(""), sentences, &mut cast).await {
         Ok(s) => s,
         Err(e) => {
             // No chat model (or it failed): the narrator reads this chapter; try directing again later.
             tracing::warn!("directing chapter {chapter}: {e:#}");
+            idle(asset);
             return Ok((Script::new(), cast));
         }
     };
@@ -150,20 +173,25 @@ async fn prepared(state: &State, asset: i64, chapter: usize, sentences: &[String
         cast.narrator = "A warm, clear, expressive audiobook narrator.".into();
     }
     // Cast everyone in this chapter up front, so the voice server isn't swapping models mid-chapter.
-    let mut voices = vec![json!({ "voice": voice_name(asset, None), "instructions": cast.narrator })];
+    // (One at a time, so the player can say whose voice is being made.)
+    let mut voices = vec![("the narrator".to_string(), json!({ "voice": voice_name(asset, None), "instructions": cast.narrator }))];
     for who in script.values().map(|(s, _)| s).collect::<std::collections::BTreeSet<_>>() {
         let desc = cast.characters.get(who).cloned().unwrap_or_default();
-        voices.push(json!({ "voice": voice_name(asset, Some(who)), "instructions": desc }));
+        voices.push((who.clone(), json!({ "voice": voice_name(asset, Some(who)), "instructions": desc })));
     }
     let tts = state.settings.read().await.ai.tts_url.clone();
-    state
-        .http
-        .post(format!("{}/voices", tts.trim_end_matches('/')))
-        .json(&json!({ "voices": voices }))
-        .timeout(std::time::Duration::from_secs(1800))
-        .send()
-        .await
-        .context("the voice server isn't running (Settings → Voices)")?;
+    let total = voices.len() as u32;
+    for (k, (who, v)) in voices.into_iter().enumerate() {
+        status(asset, format!("Finding a voice for {who}"), k as u32, total);
+        state
+            .http
+            .post(format!("{}/voices", tts.trim_end_matches('/')))
+            .json(&json!({ "voices": [v] }))
+            .timeout(std::time::Duration::from_secs(1800))
+            .send()
+            .await
+            .context("the voice server isn't running (Settings → Voices)")?;
+    }
     write_json(&cast_path, &cast).await?;
     write_json(&script_path, &script).await?;
     Ok((script, cast))
@@ -192,6 +220,7 @@ pub async fn sentence(state: &State, asset: i64, chapter: usize, n: usize) -> an
         })
         .collect();
     let tts = state.settings.read().await.ai.tts_url.clone();
+    status(asset, "Performing the next line", 0, 0);
     let resp = state
         .http
         .post(format!("{}/audio/script", tts.trim_end_matches('/')))
@@ -201,10 +230,12 @@ pub async fn sentence(state: &State, asset: i64, chapter: usize, n: usize) -> an
         .await
         .context("the voice server isn't running (Settings → Voices)")?;
     if !resp.status().is_success() {
+        idle(asset);
         let v: serde_json::Value = resp.json().await.unwrap_or_default();
         anyhow::bail!("voice server: {}", v["error"].as_str().unwrap_or("failed"));
     }
     let bytes = resp.bytes().await?.to_vec();
+    idle(asset);
     write_json(&path, &()).await.ok(); // makes the directory
     tokio::fs::write(&path, &bytes).await?;
     Ok(bytes)

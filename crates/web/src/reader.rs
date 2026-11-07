@@ -299,6 +299,8 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     let counts = RwSignal::new(std::collections::HashMap::<usize, usize>::new());
     // Waiting for the first sentence's voices (directing a chapter or casting can take a while).
     let cast_wait = RwSignal::new(false);
+    // What the full cast is busy with while you wait for it (directing, finding voices, performing).
+    let cast_status = RwSignal::new(None::<String>);
     // Where the audiobook was, kept while the full cast plays.
     let book_pos = RwSignal::new((0usize, 0.0f64));
     let ebook = RwSignal::new(None::<Asset>);
@@ -659,6 +661,28 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         None
     };
     let cast_url = move |e: i64, (c, s): (usize, usize)| format!("/api/assets/{e}/cast/{c}/{s}");
+    // While the full cast keeps you waiting, ask every second what it's doing, to show it.
+    Effect::new(move |_| {
+        if !cast_wait.get() {
+            cast_status.set(None);
+            return;
+        }
+        let Some(e) = ebook.get_untracked().map(|e| e.id) else { return };
+        spawn_local(async move {
+            while cast_wait.try_get_untracked() == Some(true) {
+                if let Ok(v) = api::get::<serde_json::Value>(&format!("/api/assets/{e}/cast/status")).await {
+                    let text = v["what"].as_str().map(|what| {
+                        let (done, total, secs) = (v["done"].as_u64().unwrap_or(0), v["total"].as_u64().unwrap_or(0), v["secs"].as_u64().unwrap_or(0));
+                        let of = if total > 1 { format!(" ({} of {total})", done + 1) } else { String::new() };
+                        let wait = if secs >= 5 { format!(" · {secs}s") } else { String::new() };
+                        format!("{what}{of}…{wait}")
+                    });
+                    let _ = cast_status.try_set(text);
+                }
+                gloo_timers::future::TimeoutFuture::new(1000).await;
+            }
+        });
+    });
     // Moves the full cast to a sentence, carrying on playing if it was.
     let cast_go = move |c: usize, s: usize, play: bool| {
         spawn_local(async move {
@@ -1563,6 +1587,13 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             </Show>
 
             <Show when=has_player>
+                // The full cast getting ready (the first lines of a chapter take a while): what it's doing.
+                <Show when=move || cast_wait.get() && mode.get().cast()>
+                    <div class="cast-wait" role="status">
+                        <span class="spinner small"></span>
+                        <span>{move || cast_status.get().unwrap_or_else(|| "Getting the full cast ready…".into())}</span>
+                    </div>
+                </Show>
                 <div class="player">
                     <audio node_ref=audio src=track_url preload="metadata"
                         on:timeupdate=on_time
@@ -1611,8 +1642,10 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                             <small>{move || {
                                 let name = now_chapter();
                                 if mode.get().cast() {
-                                    let status = if cast_wait.get() { " · getting the voices ready…" } else { " · full cast" };
-                                    return format!("{name}{status}");
+                                    if cast_wait.get() {
+                                        return format!("{name} · {}", cast_status.get().unwrap_or_else(|| "getting the voices ready…".into()));
+                                    }
+                                    return format!("{name} · full cast");
                                 }
                                 let left = (duration.get() - time.get()).max(0.0);
                                 let listening = if live_busy.get() { " · matching to the text" } else { "" };

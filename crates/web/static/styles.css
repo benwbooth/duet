@@ -1355,3 +1355,11 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 .reader[data-theme="dark"] ::highlight(duet-word) { background-color: color-mix(in srgb, var(--now) 50%, #c88a1a 50%); }
 /* The page's picture shows the highlight as it already is (not glowing in from nothing). */
 .page-shot .s { animation: none !important; transition: none !important; }
+
+/* The full cast getting ready: a note above the player saying what it's doing. */
+.cast-wait {
+  position: fixed; left: 50%; bottom: calc(var(--player-h, 96px) + 1.4rem); transform: translateX(-50%); z-index: 40;
+  display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 1rem; border-radius: 999px; max-width: min(90vw, 560px);
+  background: color-mix(in srgb, var(--bg) 92%, transparent); color: var(--text); font-size: 0.9rem;
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.06); backdrop-filter: blur(10px);
+}
