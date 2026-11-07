@@ -122,7 +122,7 @@ pub fn CastPanel(asset: i64, on_close: impl Fn() + Clone + Send + Sync + 'static
                                 {engine.map(|e| view! { <small>{e}</small> })}
                             </div>
                             {m.clip.then(|| view! { <audio controls preload="none" src=src></audio> })}
-                            <textarea rows="4" prop:value=move || draft.get()
+                            <textarea rows="6" prop:value=move || draft.get()
                                 on:input=move |ev| draft.set(event_target_value(&ev))></textarea>
                             <div class="cast-actions">
                                 {move || busy().then(|| view! { <span class="cast-busy">"Making the voice… (a minute or two)"</span> })}

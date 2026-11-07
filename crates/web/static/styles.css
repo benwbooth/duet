@@ -1524,7 +1524,7 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 .cast-member { border-top: 1px solid var(--line); padding: 0.7rem 0; display: grid; gap: 0.45rem; }
 .cast-member-head { display: flex; align-items: baseline; gap: 0.5rem; }
 .cast-member-head small { color: var(--muted); }
-.cast-member audio { width: 100%; height: 36px; }
+.cast-member audio { width: 100%; }
 .cast-member textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 0.88rem; padding: 0.5rem; border-radius: 8px;
   border: 1px solid var(--line); background: var(--bg); color: var(--text); resize: vertical; }
 .cast-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; }
