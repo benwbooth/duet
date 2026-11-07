@@ -355,6 +355,15 @@ async fn cast_voices(state: &State, title: &str, author: &str, names: &[String],
     }
 }
 
+/// A narrator when casting didn't describe one: still in the book's accent.
+fn narrator_default(accent: &str) -> String {
+    if accent.is_empty() {
+        "A warm, clear, expressive audiobook narrator.".into()
+    } else {
+        format!("A warm, clear, expressive audiobook narrator. Speaks with a strong, unmistakable {accent} accent.")
+    }
+}
+
 /// Casts the whole book again (every character so far, and the narrator) with the careful
 /// casting step, and drops their old voices and the lines performed with them.
 pub async fn recast(state: &State, asset: i64) -> anyhow::Result<()> {
@@ -384,7 +393,7 @@ pub async fn recast(state: &State, asset: i64) -> anyhow::Result<()> {
     cast.narrator.clear();
     cast_voices(state, &w.title, w.author.as_deref().unwrap_or(""), &names, true, &text, &mut cast).await;
     if cast.narrator.is_empty() {
-        cast.narrator = "A warm, clear, expressive audiobook narrator.".into();
+        cast.narrator = narrator_default(&cast.accent);
     }
     write_json(&cast_path, &cast).await?;
     // The voices are made again from the new descriptions, and every line performed again.
@@ -482,7 +491,7 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
         }
     };
     if cast.narrator.is_empty() {
-        cast.narrator = "A warm, clear, expressive audiobook narrator.".into();
+        cast.narrator = narrator_default(&cast.accent);
     }
     // Cast everyone in this part up front, so the voice server isn't swapping models mid-part.
     // (One at a time, so the player can say whose voice is being made.)

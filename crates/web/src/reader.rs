@@ -289,6 +289,15 @@ struct Message {
     mine: bool,
 }
 
+/// The typefaces the reader offers: the default book face (whatever good serif the system has),
+/// and three served with the app.
+const FONTS: [(&str, &str); 4] = [
+    ("Book", duet_common::BOOK_FONT),
+    ("Literata", "Literata, Georgia, serif"),
+    ("Garamond", "\"EB Garamond\", Garamond, Georgia, serif"),
+    ("Atkinson", "\"Atkinson Hyperlegible\", system-ui, sans-serif"),
+];
+
 #[component]
 pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoView {
     let work = RwSignal::new(None::<WorkDetail>);
@@ -482,6 +491,15 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         });
     };
     // Page turns curl over, or change at once; remembered in Settings.
+    let set_font = move |family: &'static str| {
+        prefs.update(|p| p.font = family.into());
+        spawn_local(async move {
+            if let Ok(mut s) = api::get::<Settings>("/api/settings").await {
+                s.reader.font = family.into();
+                let _ = api::put::<_, Settings>("/api/settings", &s).await;
+            }
+        });
+    };
     let set_curl = move |on: bool| {
         prefs.update(|p| p.page_curl = on);
         if let Some(b) = book.get_untracked() {
@@ -1397,6 +1415,15 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                         <div class="segmented">
                             <button title="Smaller text" on:click=move |_| font_size.update(|f| *f = (*f - 1).max(12))>"A−"</button>
                             <button title="Larger text" on:click=move |_| font_size.update(|f| *f = (*f + 1).min(32))>"A+"</button>
+                        </div>
+                    </div>
+                    <div class="view-row font-row">
+                        <span>"Font"</span>
+                        <div class="segmented">
+                            {FONTS.map(|(label, family)| view! {
+                                <button class:active=move || prefs.with(|p| p.font == family) style=format!("font-family:{family}")
+                                    title=label on:click=move |_| set_font(family)>{label}</button>
+                            })}
                         </div>
                     </div>
                     <div class="view-row">
