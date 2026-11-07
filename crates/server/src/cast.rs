@@ -101,6 +101,67 @@ fn pieces(sentence: &str, line: Option<&(String, String)>) -> Vec<(String, Optio
     out
 }
 
+/// A Roman numeral's value (I to C), if `s` is one.
+fn roman(s: &str) -> Option<u32> {
+    if s.is_empty() || !s.chars().all(|c| "IVXLC".contains(c)) {
+        return None;
+    }
+    let val = |c| match c { 'I' => 1, 'V' => 5, 'X' => 10, 'L' => 50, _ => 100 };
+    let cs: Vec<u32> = s.chars().map(val).collect();
+    let mut n = 0i64;
+    for (i, &v) in cs.iter().enumerate() {
+        if cs.get(i + 1).is_some_and(|&next| next > v) { n -= v as i64 } else { n += v as i64 }
+    }
+    // Only well-formed ones (so "VIV" or "IL" aren't read as numbers).
+    (n > 0 && n <= 100 && to_roman(n as u32) == s).then_some(n as u32)
+}
+
+fn to_roman(mut n: u32) -> String {
+    let mut out = String::new();
+    for (v, r) in [(100, "C"), (90, "XC"), (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")] {
+        while n >= v {
+            out.push_str(r);
+            n -= v;
+        }
+    }
+    out
+}
+
+fn number_words(n: u32) -> String {
+    const ONES: [&str; 20] = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+        "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"];
+    const TENS: [&str; 10] = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+    match n {
+        0..=19 => ONES[n as usize].to_string(),
+        20..=99 => {
+            let t = TENS[(n / 10) as usize];
+            if n % 10 == 0 { t.to_string() } else { format!("{t}-{}", ONES[(n % 10) as usize]) }
+        }
+        _ => "one hundred".to_string(),
+    }
+}
+
+/// The words to say for a line where the page shows a number the voices would misread: a
+/// chapter heading that's just a Roman numeral ("XII." is "Chapter twelve", not "x-i-i"), and
+/// "Chapter IV" or "Book II" ("Chapter four").
+fn speakable(text: &str) -> String {
+    let bare = text.trim().trim_end_matches(['.', ':']);
+    if let Some(n) = roman(bare) {
+        return format!("Chapter {}.", number_words(n));
+    }
+    let words: Vec<&str> = text.split(' ').collect();
+    let mut out = Vec::with_capacity(words.len());
+    for (i, w) in words.iter().enumerate() {
+        let core = w.trim_end_matches(['.', ',', ':', ';']);
+        let after_heading = i > 0 && ["chapter", "book", "part", "volume", "act", "scene", "canto"].contains(&words[i - 1].to_lowercase().as_str());
+        match roman(core).filter(|_| after_heading) {
+            Some(n) => out.push(format!("{}{}", number_words(n), &w[core.len()..])),
+            None => out.push((*w).to_string()),
+        }
+    }
+    out.join(" ")
+}
+
 fn json_in(text: &str) -> anyhow::Result<serde_json::Value> {
     let (start, end) = (text.find('{').context("no JSON in the reply")?, text.rfind('}').context("no JSON in the reply")?);
     Ok(serde_json::from_str(&text[start..=end])?)
@@ -542,7 +603,7 @@ async fn perform(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow:
     }
     let src = book::source(&a, &state.data_dir);
     let sentences = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, chapter)).await??;
-    let text = sentences.get(n).cloned().context("no such sentence")?;
+    let text = speakable(&sentences.get(n).cloned().context("no such sentence")?);
     let (script, cast) = prepared(state, asset, chapter, n, &sentences).await?;
     // (Scripts directed before names were tidied: the same one voice per character.)
     let line = script.get(&n).and_then(|(who, dir)| canonical(who, &cast.characters).map(|w| (w, dir.clone())));
@@ -583,7 +644,16 @@ async fn perform(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow:
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical, pieces};
+    use super::{canonical, pieces, speakable};
+
+    #[test]
+    fn roman_numerals_read_as_numbers() {
+        assert_eq!(speakable("XII."), "Chapter twelve.");
+        assert_eq!(speakable("I"), "Chapter one.");
+        assert_eq!(speakable("Chapter IV"), "Chapter four");
+        assert_eq!(speakable("I said so."), "I said so.");
+        assert_eq!(speakable("Book II: The Pool"), "Book two: The Pool");
+    }
     use std::collections::BTreeMap;
 
     #[test]
