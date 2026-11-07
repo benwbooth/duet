@@ -245,6 +245,41 @@ impl SyncIndex {
     fn is_empty(&self) -> bool {
         self.by_time.is_empty()
     }
+
+    /// Where in the recording a sentence that isn't synced yet most likely is: between the
+    /// nearest synced sentences either side of it in its chapter (by how far it is between them),
+    /// or, in a chapter with none, the same way through the track that chapter is read on (the
+    /// track found from how other chapters line up with tracks). `n` is the chapter's sentence
+    /// count; `tracks` the tracks' lengths.
+    fn estimate(&self, chapter: usize, sentence: usize, n: usize, tracks: &[f64]) -> Option<(usize, f64)> {
+        let mut before: Option<&SyncSpan> = None;
+        let mut after: Option<&SyncSpan> = None;
+        for sp in self.by_time.iter().filter(|sp| sp.chapter == chapter) {
+            if sp.sentence <= sentence && before.is_none_or(|b| sp.sentence > b.sentence) {
+                before = Some(sp);
+            }
+            if sp.sentence >= sentence && after.is_none_or(|a| sp.sentence < a.sentence) {
+                after = Some(sp);
+            }
+        }
+        match (before, after) {
+            (Some(b), Some(a)) if b.track == a.track && a.sentence > b.sentence => {
+                let f = (sentence - b.sentence) as f64 / (a.sentence - b.sentence) as f64;
+                return Some((b.track, b.start + (a.start - b.start) * f));
+            }
+            (Some(b), _) => return Some((b.track, b.end)),
+            (None, Some(a)) => return Some((a.track, a.start)),
+            _ => {}
+        }
+        // The chapter → track offset most of the sync agrees on.
+        let mut votes: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+        for sp in &self.by_time {
+            *votes.entry(sp.track as i64 - sp.chapter as i64).or_default() += 1;
+        }
+        let offset = votes.into_iter().max_by_key(|(_, v)| *v)?.0;
+        let track = usize::try_from(chapter as i64 + offset).ok().filter(|t| *t < tracks.len())?;
+        Some((track, tracks[track] * sentence as f64 / n.max(1) as f64))
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -761,7 +796,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 // (Same sentence: make sure its words are being followed, e.g. after a pause.)
                 if along_at.get_untracked() != Some((span.chapter, span.sentence)) {
                     if let Some(el) = page.get_untracked() {
-                        crate::read_along(Some((*el).clone().into()), &a, span.sentence as i32, span.start, span.end, &span.words);
+                        crate::read_along(Some((*el).clone().into()), &a, span.sentence as i32, span.start, span.end, &span.words, prefs.get_untracked().follow_audio);
                         along_at.set(Some((span.chapter, span.sentence)));
                     }
                 }
@@ -773,7 +808,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 chapter.set(span.chapter);
             } else if let Some(el) = page.get_untracked() {
                 crate::highlight(&el, span.sentence as i32, prefs.get_untracked().follow_audio);
-                crate::read_along(Some((*el).clone().into()), &a, span.sentence as i32, span.start, span.end, &span.words);
+                crate::read_along(Some((*el).clone().into()), &a, span.sentence as i32, span.start, span.end, &span.words, prefs.get_untracked().follow_audio);
                 along_at.set(Some((span.chapter, span.sentence)));
             }
         }
@@ -964,8 +999,21 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         if m == Mode::ReadAudiobook && c != usize::MAX {
             let heard = sync.with_untracked(|x| x.at(track.get_untracked(), a.current_time()).cloned());
             if !heard.as_ref().is_some_and(|h| h.chapter == c && showing(h.sentence)) {
-                let s = el.as_ref().map(|el| crate::visible_sentence(el) as usize).unwrap_or(0);
-                let target = sync.with_untracked(|x| x.of(c, s).map(|sp| (sp.track, sp.start))).or_else(|| {
+                // From the first word on the page (which may be partway through a sentence).
+                let (s, w) = el.as_ref().map(|el| {
+                    let v = crate::first_word_on_page(el);
+                    (v.first().copied().unwrap_or(0) as usize, v.get(1).copied().unwrap_or(0) as usize)
+                }).unwrap_or((0, 0));
+                let target = sync.with_untracked(|x| {
+                    x.of(c, s).map(|sp| (sp.track, sp.words.get(w).copied().unwrap_or(sp.start))).or_else(|| {
+                        // Not synced yet: from the sentences around it that are (matching as it
+                        // plays settles it on the right one).
+                        let asset = audio_asset.get_untracked()?;
+                        let lens: Vec<f64> = asset.tracks.iter().map(|t| t.duration_secs).collect();
+                        let n = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1);
+                        x.estimate(c, s, n, &lens)
+                    })
+                }).or_else(|| {
                     // Not matched yet: the same point through the book, roughly; matching as it
                     // plays settles it on the right sentence.
                     let asset = audio_asset.get_untracked()?;
@@ -983,6 +1031,8 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 });
                 if let Some((tr, secs)) = target {
                     book_pos.set((tr, secs));
+                    // (Where the sync last was is no guide to where this is.)
+                    live_near.set(None);
                     if tr != track.get_untracked() {
                         pending_seek.set(Some((secs, true)));
                         track.set(tr);

@@ -112,7 +112,9 @@ export function highlight(container, n, scroll) {
   if (!scroll || !spans.length) return;
   const pager = pagerOf(container);
   if (pager) {
-    pager.showElement(spans[0], true);
+    // (A sentence that runs over from the page before is already where it's being read: the
+    // read-along turns the page when the words being said reach the next one.)
+    if (!sentenceOnPage(container, n)) pager.showElement(spans[0], true);
     return;
   }
   const r = spans[0].getBoundingClientRect();
@@ -2734,6 +2736,16 @@ function alongTick() {
       const h = new Highlight(st.words[i]);
       h.priority = 2;
       CSS.highlights.set("duet-word", h);
+      // Reading on over the page's end: turn to where the word is.
+      const pager = st.follow && !st.audio.paused && pagerOf(st.container);
+      if (pager && !pager.busy) {
+        const r = st.words[i].getBoundingClientRect();
+        const b = pager.book.getBoundingClientRect();
+        if (r.width > 0 && r.left >= b.right) {
+          const span = st.words[i].startContainer.parentElement;
+          if (span) pager.showElement(span, true);
+        }
+      }
     }
     else CSS.highlights.delete("duet-word");
   }
@@ -2744,7 +2756,7 @@ function alongTick() {
   requestAnimationFrame(alongTick);
 }
 
-export function readAlong(container, audio, n, start, end, times) {
+export function readAlong(container, audio, n, start, end, times, follow) {
   if (!window.CSS || !CSS.highlights) return;
   if (!container || n < 0) {
     along.st = null;
@@ -2755,7 +2767,7 @@ export function readAlong(container, audio, n, start, end, times) {
   const words = sentenceWords(container, n);
   const weights = words.map((r) => r.toString().length + 1.5);
   along.st = {
-    container, audio, n, start, end, words, weights, shown: -2,
+    container, audio, n, start, end, words, weights, shown: -2, follow: !!follow,
     total: weights.reduce((a, b) => a + b, 0),
     times: times && times.length ? Array.from(times) : null,
   };
@@ -2794,4 +2806,19 @@ export function putKeepalive(url, json) {
   // (Automated test runs set this so they don't move your place in the book.)
   if (window.__duetNoSave) return;
   fetch(url, { method: "PUT", headers: { "content-type": "application/json" }, body: json, keepalive: true }).catch(() => {});
+}
+
+// The first word on the page showing (the paged reader): [sentence, word index in it], so play
+// can start there even when the sentence began on the page before.
+export function firstWordOnPage(container) {
+  const pager = pagerOf(container);
+  if (!pager) return [visibleSentence(container), 0];
+  const n = pager.firstSentence();
+  const b = pager.book.getBoundingClientRect();
+  const words = sentenceWords(container, n);
+  for (let i = 0; i < words.length; i++) {
+    const r = words[i].getBoundingClientRect();
+    if (r.width > 0 && r.left >= b.left - 1 && r.right <= b.right + 1) return [n, i];
+  }
+  return [n, 0];
 }
