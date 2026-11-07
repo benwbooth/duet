@@ -151,6 +151,7 @@ class Fish:
     def __init__(self):
         self.proc = None
         self.starting_since = None
+        self.start_lock = threading.Lock()
 
     def expected_start(self):
         """How long starting is likely to take: as long as last time (the first start ever tunes
@@ -169,9 +170,18 @@ class Fish:
             return False
 
     def start(self):
-        touch("fish")
-        if self.healthy():
-            return
+        # One start at a time: two at once (the warm-up and a line asking together) both
+        # loaded the model, ran the card out of memory and fought over the port.
+        with self.start_lock:
+            touch("fish")
+            if self.healthy():
+                return
+            try:
+                self._start()
+            finally:
+                self.starting_since = None
+
+    def _start(self):
         # Fish needs most of a 24 GB card: everything else on it makes way first (the voice
         # designer, speech recognition and the aligner, and Ollama's chat model), or it runs out
         # of memory while starting.
@@ -185,6 +195,13 @@ class Fish:
         free_gpu()
         if not args.fish_dir:
             raise RuntimeError(f"no fish-speech server at {args.fish_url}")
+        # One of ours that isn't answering (stuck, or still dying): gone first, port and memory.
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(30)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
         host_port = args.fish_url.split("://", 1)[-1].rstrip("/")
         cmd = [
             args.fish_python, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fish_launch.py"),
