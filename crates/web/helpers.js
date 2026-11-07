@@ -633,8 +633,10 @@ async function elementSnapshot(pager, offset, other) {
   // (The page's exact size, fractions of a pixel included: on a scaled display the rounded
   // clientWidth is a little off, and text laid out a fraction narrower can break a line, and
   // so a page, differently.)
-  const box = pager.article.getBoundingClientRect(), bookBox = pager.book.getBoundingClientRect();
-  const W = box.width || pager.width, H = bookBox.height || pager.book.clientHeight, dpr = window.devicePixelRatio || 1;
+  // (Computed sizes: layout pixels, unlike a bounding box, which a transform or zoom scales.)
+  const W = parseFloat(getComputedStyle(pager.article).width) || pager.width;
+  const H = parseFloat(getComputedStyle(pager.book).height) || pager.book.clientHeight;
+  const dpr = window.devicePixelRatio || 1;
   const cv = document.createElement("canvas");
   cv.setAttribute("layoutsubtree", "");
   cv.setAttribute("content", "drawable");
