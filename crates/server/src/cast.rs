@@ -446,6 +446,10 @@ pub async fn recast(state: &State, asset: i64) -> anyhow::Result<()> {
     cast.accent.clear();
     cast.narrator.clear();
     cast_voices(state, &w.title, w.author.as_deref().unwrap_or(""), &names, true, &text, &mut cast).await;
+    // (With many characters to cast the model sometimes leaves the narrator out: asked alone.)
+    if cast.narrator.is_empty() {
+        cast_voices(state, &w.title, w.author.as_deref().unwrap_or(""), &[], true, &text, &mut cast).await;
+    }
     if cast.narrator.is_empty() {
         cast.narrator = narrator_default(&cast.accent);
     }
@@ -547,6 +551,10 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
             return Ok((Script::new(), cast));
         }
     };
+    if cast.narrator.is_empty() {
+        let context: String = sentences.iter().take(60).map(String::as_str).collect::<Vec<_>>().join(" ");
+        cast_voices(state, &w.title, w.author.as_deref().unwrap_or(""), &[], true, &context, &mut cast).await;
+    }
     if cast.narrator.is_empty() {
         cast.narrator = narrator_default(&cast.accent);
     }
