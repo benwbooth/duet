@@ -2551,34 +2551,3 @@ export function wordAt(x, y) {
 export function copyText(text) {
   if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
 }
-
-// ---------------------------------------------------------------------------------------------
-// Wood, drawn in code: planks with their growth rings (long lines, arching where the board was
-// cut near the heart of the tree), fine pores along the grain, colour drifting along each board
-// and the gaps between boards. Light oak for the table and the bookcase's frame, dark walnut for
-// its back. Painted off the main thread once per visit; the CSS has a plainer stand-in until then.
-const WOOD_SRC = "function hash(n) { n = (n ^ 61) ^ (n >>> 16); n = (n + (n << 3)) | 0; n ^= n >>> 4; n = Math.imul(n, 0x27d4eb2d); n ^= n >>> 15; return (n >>> 0) / 4294967296; }\nfunction rng(seed) { let s = Math.floor(hash(seed) * 4294967296) >>> 0; return () => { s = (s + 0x6d2b79f5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }\nfunction noise2(seed) {\n  const r = rng(seed), P = new Float32Array(256 * 256);\n  for (let i = 0; i < P.length; i++) P[i] = r();\n  const at = (x, y) => P[(y & 255) * 256 + (x & 255)];\n  return (x, y) => {\n    const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;\n    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);\n    const a = at(xi, yi), b = at(xi + 1, yi), c = at(xi, yi + 1), d = at(xi + 1, yi + 1);\n    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;\n  };\n}\nfunction fbm(n, x, y, oct) { let s = 0, a = 0.5, f = 1; for (let i = 0; i < oct; i++) { s += a * n(x * f, y * f); f *= 2.03; a *= 0.5; } return s; }\nfunction wood(W, H, boardH, pal, seed) {\n  const img = new Uint8ClampedArray(W * H * 4);\n  const n1 = noise2(seed), n2 = noise2(seed + 1), n3 = noise2(seed + 2), n4 = noise2(seed + 3);\n  const boards = Math.ceil(H / boardH);\n  for (let b = 0; b < boards; b++) {\n    const r = rng(seed * 1009 + b * 7919);\n    // The tree's heart, well off the board: mostly long lines, with arches where it comes near.\n    const cx = W * (0.15 + r() * 0.7), cy = (r() < 0.5 ? -1 : 1) * boardH * (1.2 + r() * 3) + boardH / 2;\n    const ringF = 0.034 + r() * 0.03, tone = 0.86 + r() * 0.24, stretch = 0.012 + r() * 0.03, hue = (r() - 0.5) * 0.08;\n    const off = r() * 1000;\n    for (let y = b * boardH; y < Math.min(H, (b + 1) * boardH); y++) {\n      const ly = y - b * boardH;\n      for (let x = 0; x < W; x++) {\n        const wx = x + 60 * (fbm(n1, x * 0.003 + off, y * 0.02, 3) - 0.5);\n        const wy = ly + 26 * (fbm(n2, x * 0.0025 + off, y * 0.015, 4) - 0.5);\n        const dx = (wx - cx) * stretch, dy = wy - cy;\n        const rr = Math.sqrt(dx * dx + dy * dy) * ringF + 0.5 * fbm(n3, x * 0.006 + off, y * 0.05, 3);\n        const ring = rr - Math.floor(rr);\n        const late = Math.pow(Math.max(0, (ring - 0.6) / 0.4), 2.2) * (0.6 + 0.6 * fbm(n4, x * 0.01, y * 0.1, 2));\n        // Pores: fine dark streaks along the grain.\n        const pore = Math.max(0, fbm(n4, x * 0.05 + off, y * 2.6, 2) - 0.52) * 2.4;\n        const streak = fbm(n1, x * 0.0015 + off, y * 0.04, 3) - 0.5;\n        let t = 0.18 + 0.68 * late + 0.45 * pore + 0.3 * streak;\n        t = Math.max(0, Math.min(1, t));\n        const [r0, g0, b0] = pal[0], [r1, g1, b1] = pal[1];\n        let R = (r0 + (r1 - r0) * t) * tone * (1 + hue), G = (g0 + (g1 - g0) * t) * tone, B = (b0 + (b1 - b0) * t) * tone * (1 - hue);\n        // The gap between boards (dark, with a lit edge just below it), and the end of each board\n        // at the tile's edge.\n        let k = 1 + 0.05 * Math.sin(Math.PI * ly / boardH);\n        if (ly < 1) k = 0.4; else if (ly < 2) k = 0.8; else if (ly < 4) k = 1.05;\n        if (x < 1 || x >= W - 1) k *= 0.6;\n        const i = (y * W + x) * 4;\n        img[i] = R * k; img[i + 1] = G * k; img[i + 2] = B * k; img[i + 3] = 255;\n      }\n    }\n  }\n  return img;\n}\n";
-
-(function paintWood() {
-  if (typeof Worker === "undefined" || typeof OffscreenCanvas === "undefined") return;
-  const W = 1600, H = 600;
-  const code = `${WOOD_SRC}
-    onmessage = (e) => {
-      const { W, H, pal, seed } = e.data;
-      const px = wood(W, H, 150, pal, seed);
-      postMessage(px, [px.buffer]);
-    };`;
-  const url = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
-  for (const [name, pal, seed] of [["--wood", [[196, 146, 98], [112, 68, 38]], 5], ["--wood-dark", [[118, 78, 50], [52, 30, 18]], 9]]) {
-    const w = new Worker(url);
-    w.onmessage = async (e) => {
-      w.terminate();
-      const c = new OffscreenCanvas(W, H);
-      c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(e.data.buffer), W, H), 0, 0);
-      const blob = await c.convertToBlob({ type: "image/jpeg", quality: 0.92 });
-      document.documentElement.style.setProperty(name, `url(${URL.createObjectURL(blob)})`);
-      document.documentElement.classList.add("wood-ready");
-    };
-    w.postMessage({ W, H, pal, seed });
-  }
-})();
