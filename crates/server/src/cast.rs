@@ -25,13 +25,6 @@ type Script = BTreeMap<usize, (String, String)>;
 /// abbreviations, symbols), by sentence number, as the director wrote them.
 type Say = BTreeMap<usize, String>;
 
-/// Printed text a voice might misread: digits, a word that could be a Roman numeral (in
-/// capitals, not the pronoun "I"), an ampersand or such.
-fn needs_saying(s: &str) -> bool {
-    s.chars().any(|c| c.is_ascii_digit() || "&%$£€§#@/".contains(c))
-        || s.split(|c: char| !c.is_alphanumeric()).any(|w| w.len() > 1 && roman(w).is_some())
-}
-
 #[derive(Default, Serialize, Deserialize)]
 struct Cast {
     narrator: String,
@@ -87,10 +80,6 @@ fn lock_for(asset: i64) -> Arc<Mutex<()>> {
 
 fn dir(state: &State, asset: i64) -> PathBuf {
     state.data_dir.join("cache").join("full-cast").join(asset.to_string())
-}
-
-fn is_quote(s: &str) -> bool {
-    s.contains('“') || s.contains('"')
 }
 
 /// Splits a sentence into (text, speaker): quoted speech goes to the speaker, the rest to the narrator.
@@ -216,9 +205,14 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
         let numbered: String = part.iter().enumerate().map(|(i, s)| format!("{}: {s}\n", start + i)).collect();
         let known: String = cast.characters.iter().map(|(n, d)| format!("- {n}: {d}\n")).collect();
         let system = "You are the director of a full-cast audiobook. For each numbered sentence containing quoted \
-            speech, name the character speaking and give a short acting \
-            direction for how the line is delivered: emotion, intensity, pace, volume (e.g. 'barely holding back \
-            tears', 'dry, amused'). Use the surrounding narration for cues. For any character not in the known \
+            speech, name the character speaking and give an acting direction for how the line is delivered. \
+            The voices are actors who play exactly what the direction says and fall flat without one, so \
+            direct boldly: real, vivid emotion every time, never 'neutral' or 'calm' unless the moment truly is. \
+            A direction is a short tag of one to four words that the actor can play at once: the emotion first, \
+            then intensity or pace (e.g. 'excited, breathless', 'shouting angrily', 'whispering, scared', \
+            'laughing', 'sobbing', 'indignant', 'sly, amused'). Use the narration for cues (\"cried\", \
+            \"muttered\", \"shrieked\") and the scene's stakes: characters in a children's book are big, \
+            colourful and full of life. For any character not in the known \
             list, write a one-sentence voice description for casting: gender, approximate age, accent, pitch, \
             timbre, pace and temperament. If asked, also describe the ideal narrator's voice the same way. \
             Accents follow the book: where it's set and where its author is from (an English novel gets English \
@@ -239,7 +233,8 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
             \"eighteen sixty-five\", \"1066\": \"ten sixty-six\"; \"£5\": \"five pounds\"; \"&c.\": \"et cetera\"). \
             Never list the pronoun \"I\" or ordinary words, and leave sentences that read fine out of \"say\". \
             Direct the narrator too: the narrator is a performer, not someone reading aloud. For every numbered \
-            sentence give a short direction for how the narrator delivers its narration, in \
+            sentence give a short tag of one to four words for how the narrator delivers its narration \
+            (e.g. 'wonder, building', 'hushed, suspenseful', 'brisk, playful', 'amused'), in \
             \"narration\": {\"<sentence number>\": \"<direction>\"}. Pitch the energy to the book's audience (a \
             children's book is told with warmth, wonder, playfulness and lively variety, as a favourite \
             storyteller would; a thriller with tension; a comedy with relish), follow the mood of each moment \

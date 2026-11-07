@@ -45,9 +45,13 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # A reference line with a range of sounds and some feeling, so clones have something to work with.
+# What each voice's reference clip says. Fish copies the clip's delivery as well as its voice, so
+# a calm, even line made every character calm and even (S2-Pro's own notes: emotion is
+# "flattened by the reference"): this one is lively, with surprise, a question and a laugh.
 REFERENCE_LINE = (
-    "It was late in the evening when the letter finally arrived. I read it twice, and then, "
-    "very slowly, I began to laugh, because after all those years, it simply said: come home."
+    "Oh, you will never guess what happened! I opened the little door, and there it was, the most "
+    "wonderful garden I had ever seen. Can you believe it? I laughed and laughed, and then, very "
+    "quietly, I crept inside."
 )
 DIRECTION = re.compile(r"\[[^\]]*\]\s*")
 
@@ -659,8 +663,8 @@ def main():
     ap.add_argument("--fish-decoder", default="", help="codec path, e.g. checkpoints/s2-pro/codec.pth")
     ap.add_argument("--listen-model", default="small.en", help="faster-whisper model for syncing while you listen")
     ap.add_argument("--listen-cpu", action="store_true", help="speech recognition on the CPU even when there's a GPU")
-    ap.add_argument("--temperature", type=float, default=0.7)
-    ap.add_argument("--top-p", type=float, default=0.7)
+    ap.add_argument("--temperature", type=float, default=0.8)
+    ap.add_argument("--top-p", type=float, default=0.8)
     ap.add_argument("--design-model", default="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
     ap.add_argument("--design-python", default="", help="python of the voice designer environment (default: design-venv beside --voices)")
     ap.add_argument("--base-model", default="Qwen/Qwen3-TTS-12Hz-1.7B-Base")
