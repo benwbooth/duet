@@ -919,16 +919,30 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             chapter.set(c);
         });
     };
+    // (Sent so it outlives the page: a reload or closed tab still saves where you were. Not while
+    // the book is still opening at your place: the first pages it lays out on the way there
+    // aren't where you were.)
+    let opened_at = js_sys::Date::now();
     let save = move || {
-        if work.get_untracked().is_none() {
+        if work.get_untracked().is_none() || js_sys::Date::now() - opened_at < 4000.0 {
             return;
         }
-        let p = position();
-        spawn_local(async move {
-            let _ = api::put::<_, ()>(&format!("/api/works/{id}/position"), &p).await;
-        });
+        if let Ok(json) = serde_json::to_string(&position()) {
+            crate::put_keepalive(&format!("/api/works/{id}/position"), &json);
+        }
     };
-    if let Ok(handle) = set_interval_with_handle(save, std::time::Duration::from_secs(10)) {
+    // When the page goes away or out of sight, and after every page turn, as well as every few
+    // seconds.
+    let leave = Closure::<dyn Fn()>::new(save).into_js_value();
+    let unhook = crate::on_leave(leave.unchecked_ref());
+    on_cleanup(move || {
+        let _ = unhook.call0(&JsValue::NULL);
+    });
+    Effect::new(move |_| {
+        page_info.track();
+        save();
+    });
+    if let Ok(handle) = set_interval_with_handle(save, std::time::Duration::from_secs(5)) {
         on_cleanup(move || {
             handle.clear();
             save();

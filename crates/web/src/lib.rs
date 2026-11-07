@@ -62,6 +62,10 @@ extern "C" {
     fn is_fullscreen() -> bool;
     #[wasm_bindgen(js_name = toggleFullscreen)]
     async fn toggle_fullscreen() -> JsValue;
+    #[wasm_bindgen(js_name = onLeave)]
+    fn on_leave(save: &js_sys::Function) -> js_sys::Function;
+    #[wasm_bindgen(js_name = putKeepalive)]
+    fn put_keepalive(url: &str, json: &str);
     #[wasm_bindgen(js_name = pagerSetNeighbours)]
     fn pager_set_neighbours(book: &web_sys::Element, next: Option<String>, prev: Option<String>);
     #[wasm_bindgen(js_name = pagerSetCurl)]

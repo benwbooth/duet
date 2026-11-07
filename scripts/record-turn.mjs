@@ -26,6 +26,8 @@ ws.onmessage = (m) => {
 const send = (method, params = {}) => new Promise((r) => { const i = ++id; waits.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
 const evalJs = async (expr) => (await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true })).result?.value;
 await send("Page.enable"); await send("Runtime.enable");
+// Don't move the reader's saved place in the book.
+await send("Page.addScriptToEvaluateOnNewDocument", { source: "window.__duetNoSave = true" });
 await send("Page.navigate", { url: "http://localhost:8484/#/read/1/read" });
 await sleep(8000);
 console.log(await evalJs(`(async()=>{const r=document.querySelector('.reader'); r.classList.add('chrome-hidden'); const p=document.querySelector('.bookview').__pager; p.go(2,false); await new Promise(r=>setTimeout(r,1500)); return [p.page,p.pages,p.spread]})()`));

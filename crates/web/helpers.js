@@ -2779,3 +2779,19 @@ export function readAlong(container, audio, n, start, end, times) {
     requestAnimationFrame(alongTick);
   }
 }
+
+// Keeps your place when the page is closed or reloaded: `save` is called as the page goes away
+// (or out of sight), and sends with `keepalive` so the request outlives the page.
+export function onLeave(save) {
+  const go = () => save();
+  window.addEventListener("pagehide", go);
+  const vis = () => { if (document.visibilityState === "hidden") save(); };
+  document.addEventListener("visibilitychange", vis);
+  return () => { window.removeEventListener("pagehide", go); document.removeEventListener("visibilitychange", vis); };
+}
+
+export function putKeepalive(url, json) {
+  // (Automated test runs set this so they don't move your place in the book.)
+  if (window.__duetNoSave) return;
+  fetch(url, { method: "PUT", headers: { "content-type": "application/json" }, body: json, keepalive: true }).catch(() => {});
+}
