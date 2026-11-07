@@ -396,6 +396,11 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     let paged = move || prefs.with(|p| p.layout != "scroll");
     // (page, pages) within the chapter, in the paged layout.
     let page_info = RwSignal::new((1u32, 1u32));
+    // Pages across the whole book: (pages before this chapter, pages in the book), 0 till counted.
+    let book_pages = RwSignal::new((0u32, 0u32));
+    // Each chapter's text, kept for counting pages (fetched once).
+    let chapter_html = StoredValue::new(std::collections::HashMap::<(i64, usize), String>::new());
+    let counting = StoredValue::new(0u32);
     // Whether two facing pages are showing right now.
     let spread_on = RwSignal::new(false);
     // Coming back from the next chapter opens this one on its last page.
@@ -475,9 +480,60 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     })
     .into_js_value()
     .unchecked_into::<js_sys::Function>();
+    // Counts every chapter's pages at the page's current size, in the background, so pages are
+    // numbered through the whole book. (Again when the size or type changes: each look is
+    // counted once.)
+    let count_book = move || {
+        let (Some(e), Some(l), Some(b)) = (ebook.get_untracked(), layout.get_untracked(), book.get_untracked()) else { return };
+        if prefs.with_untracked(|p| p.layout == "scroll") || l.chapters == 0 {
+            return;
+        }
+        let run = counting.get_value() + 1;
+        counting.set_value(run);
+        let el: web_sys::Element = (*b).clone().into();
+        spawn_local(async move {
+            let mut counts = Vec::with_capacity(l.chapters);
+            for c in 0..l.chapters {
+                if counting.try_get_value() != Some(run) {
+                    return;
+                }
+                let key = (e.id, c);
+                let html = match chapter_html.with_value(|m| m.get(&key).cloned()) {
+                    Some(h) => h,
+                    None => match api::get::<Chapter>(&format!("/api/assets/{}/chapters/{c}", e.id)).await {
+                        Ok(ch) => {
+                            chapter_html.update_value(|m| { m.insert(key, ch.html.clone()); });
+                            ch.html
+                        }
+                        Err(_) => return,
+                    },
+                };
+                counts.push(crate::count_chapter_pages(&el, c, &html));
+                // (A breath between chapters, so counting never holds up the page.)
+                gloo_timers::future::TimeoutFuture::new(0).await;
+            }
+            let c = chapter.get_untracked().min(counts.len().saturating_sub(1));
+            // (This chapter as the page itself has it.)
+            let (_, n) = page_info.get_untracked();
+            if n > 0 {
+                counts[c] = n;
+            }
+            let base: u32 = counts[..c].iter().sum();
+            let total: u32 = counts.iter().sum();
+            let _ = book_pages.try_set((base, total));
+            crate::pager_set_book_pages(&el, base, total);
+        });
+    };
+    let counted_for = StoredValue::new((usize::MAX, 0u32, false));
     let pager_page = Closure::<dyn Fn(u32, u32, bool)>::new(move |p, n, two| {
         let (before, _) = page_info.get_untracked();
         page_info.set((p, n));
+        // A new chapter or a new layout: the book's page numbers again.
+        let now = (chapter.get_untracked(), n, two);
+        if counted_for.get_value() != now {
+            counted_for.set_value(now);
+            count_book();
+        }
         spread_on.set(two);
         // Turning a page means you're reading: get the chrome out of the way.
         if p != before {
@@ -1675,7 +1731,10 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                                     1 => "1 page left in chapter".to_string(),
                                     k => format!("{k} pages left in chapter"),
                                 };
-                                format!("Page {p} of {n} · {rest}")
+                                match book_pages.get() {
+                                    (base, total) if total > 0 => format!("Page {} of {total} · {rest}", base + p),
+                                    _ => format!("Page {p} of {n} · {rest}"),
+                                }
                             }}</span>
                         </div>
                     </Show>

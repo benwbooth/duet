@@ -74,6 +74,10 @@ extern "C" {
     fn put_keepalive(url: &str, json: &str);
     #[wasm_bindgen(js_name = pagerSetNeighbours)]
     fn pager_set_neighbours(book: &web_sys::Element, next: Option<String>, prev: Option<String>);
+    #[wasm_bindgen(js_name = countChapterPages)]
+    fn count_chapter_pages(book: &web_sys::Element, chapter: usize, html: &str) -> u32;
+    #[wasm_bindgen(js_name = pagerSetBookPages)]
+    fn pager_set_book_pages(book: &web_sys::Element, base: u32, total: u32);
     #[wasm_bindgen(js_name = pagerSetCurl)]
     fn pager_set_curl(book: &web_sys::Element, on: bool);
     #[wasm_bindgen(js_name = pagerSetPlace)]

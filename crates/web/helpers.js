@@ -673,8 +673,10 @@ async function elementSnapshot(pager, offset, other) {
     if (rh) rh.textContent = "";
     const pageEl = furniture.querySelector(".folio-page");
     if (pageEl) {
-      const p = Math.round(offset / W) + 1, left = pages - p;
-      pageEl.textContent = `Page ${p} of ${pages} · ${left === 0 ? "last page in chapter" : left === 1 ? "1 page left in chapter" : `${left} pages left in chapter`}`;
+      const p = Math.round(offset / W) + 1, b = pager.book.__bookPages;
+      // (The neighbouring chapter's place in the whole book: just after this one, or just before.)
+      const base = b ? b.base + (other.chapterStep > 0 ? pager.pages : -pages) : 0;
+      pageEl.textContent = folioText(b ? { __bookPages: { base, total: b.total } } : null, p, pages);
     }
     const chEl = furniture.querySelector(".folio-chapter");
     if (chEl) chEl.textContent = chEl.textContent.replace(/\d+/, (n) => String(Number(n) + other.chapterStep));
@@ -762,8 +764,7 @@ async function snapshotPage(pager, article, offset) {
     const c = el.cloneNode(true);
     const pageEl = c.querySelector(".folio-page");
     if (pageEl) {
-      const n = pager.pages, p = Math.round(offset / W) + 1, left = n - p;
-      pageEl.textContent = `Page ${p} of ${n} · ${left === 0 ? "last page in chapter" : left === 1 ? "1 page left in chapter" : `${left} pages left in chapter`}`;
+      pageEl.textContent = folioText(pager.book, Math.round(offset / W) + 1, pager.pages);
     }
     furniture += new XMLSerializer().serializeToString(c);
   }
@@ -1395,8 +1396,7 @@ class Pager {
       c.classList.add("furniture-copy");
       const pageEl = c.querySelector(".folio-page");
       if (pageEl) {
-        const n = this.pages, p = Math.round(offset / this.width) + 1, left = n - p;
-        pageEl.textContent = `Page ${p} of ${n} · ${left === 0 ? "last page in chapter" : left === 1 ? "1 page left in chapter" : `${left} pages left in chapter`}`;
+        pageEl.textContent = folioText(this.book, Math.round(offset / this.width) + 1, this.pages);
       }
       out.appendChild(c);
     }
@@ -2520,6 +2520,49 @@ export function pagerSetNeighbours(book, next, prev) {
   book.__neighbours = { 1: next || null, [-1]: prev || null };
   const p = book.__pager;
   if (p && !p.dead) p.warm();
+}
+
+// Page numbers across the whole book: each chapter laid out once, out of sight, exactly as the
+// page is now (same size, columns and type), and its pages counted. Kept per look, so a
+// different size or type is counted afresh.
+const chapterPages = new Map();
+export function countChapterPages(book, chapter, html) {
+  const p = book && book.__pager;
+  if (!p || p.dead) return 0;
+  const key = p.lookKey();
+  let counts = chapterPages.get(key);
+  if (!counts) chapterPages.set(key, (counts = new Map()));
+  if (counts.has(chapter)) return counts.get(chapter);
+  const copy = p.article.cloneNode(false);
+  copy.innerHTML = html;
+  copy.removeAttribute("id");
+  copy.style.position = "absolute";
+  copy.style.left = "0";
+  copy.style.top = "0";
+  copy.style.visibility = "hidden";
+  copy.style.pointerEvents = "none";
+  copy.style.transform = "none";
+  copy.setAttribute("aria-hidden", "true");
+  p.book.appendChild(copy);
+  const n = Math.max(1, Math.round(copy.scrollWidth / p.width));
+  copy.remove();
+  counts.set(chapter, n);
+  return n;
+}
+
+// Where this chapter's pages start in the whole book, and how many the book has (0: not known
+// yet), for the page numbers on the page and on its pictures.
+export function pagerSetBookPages(book, base, total) {
+  if (!book) return;
+  book.__bookPages = total > 0 ? { base, total } : null;
+}
+
+// "Page 41 of 213 · 3 pages left in chapter" (or within the chapter, until the book is counted).
+function folioText(book, p, n) {
+  const left = n - p;
+  const rest = left === 0 ? "last page in chapter" : left === 1 ? "1 page left in chapter" : `${left} pages left in chapter`;
+  const b = book && book.__bookPages;
+  return b ? `Page ${b.base + p} of ${b.total} · ${rest}` : `Page ${p} of ${n} · ${rest}`;
 }
 
 export function pagerSetCurl(book, on) {
