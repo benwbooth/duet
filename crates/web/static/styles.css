@@ -1353,3 +1353,5 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 ::highlight(duet-para) { background-color: color-mix(in srgb, var(--now) 30%, transparent); }
 ::highlight(duet-word) { background-color: color-mix(in srgb, var(--now) 55%, #f0a020 45%); color: inherit; }
 .reader[data-theme="dark"] ::highlight(duet-word) { background-color: color-mix(in srgb, var(--now) 50%, #c88a1a 50%); }
+/* The page's picture shows the highlight as it already is (not glowing in from nothing). */
+.page-shot .s { animation: none !important; transition: none !important; }
