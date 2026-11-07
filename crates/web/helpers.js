@@ -631,6 +631,27 @@ async function elementSnapshot(pager, offset) {
   sheet.append(copy, pager.furniture(offset));
   cv.appendChild(sheet);
   pager.book.appendChild(cv);
+  // The read-along's paragraph and word tints go on the copy too (they're drawn over ranges of
+  // the live text, which the copy doesn't share).
+  const tinted = [];
+  const st = along.st;
+  if (st && window.CSS && CSS.highlights) {
+    const first = copy.querySelector(`.s[data-s="${st.n}"]`);
+    const block = first && first.closest(ALONG_BLOCK);
+    const para = CSS.highlights.get("duet-para");
+    if (block && para) {
+      const r = document.createRange();
+      r.selectNodeContents(block);
+      para.add(r);
+      tinted.push([para, r]);
+    }
+    const word = CSS.highlights.get("duet-word");
+    const w = st.shown >= 0 ? sentenceWords(copy, st.n)[st.shown] : null;
+    if (word && w) {
+      word.add(w);
+      tinted.push([word, w]);
+    }
+  }
   try {
     await Promise.all([...copy.querySelectorAll("img")].map((img) => (img.complete ? null : img.decode().catch(() => {}))));
     await new Promise((resolve, reject) => {
@@ -654,6 +675,7 @@ async function elementSnapshot(pager, offset) {
     });
   } finally {
     cv.remove();
+    for (const [h, r] of tinted) h.delete(r);
   }
   return cv;
 }
@@ -1056,7 +1078,9 @@ class Pager {
   snapKey() {
     const reader = this.book.closest(".reader");
     const now = this.article.querySelector(".s.now");
-    return `${this.width}x${this.book.clientHeight}|${reader ? reader.dataset.theme : ""}|${reader ? reader.getAttribute("style") : ""}|${now ? now.dataset.s : ""}`;
+    // (And the word being read aloud, so a turn shows the page as it is at that moment.)
+    const word = along.st && along.st.container === this.article ? `${along.st.n}:${along.st.shown}` : "";
+    return `${this.width}x${this.book.clientHeight}|${reader ? reader.dataset.theme : ""}|${reader ? reader.getAttribute("style") : ""}|${now ? now.dataset.s : ""}|${word}`;
   }
 
   // Which sentences the page at `offset` starts and ends with, as laid out right now: a picture
@@ -2574,6 +2598,7 @@ export function copyText(text) {
 // frame by frame, from the sync's word times when it has them (or spread over the sentence by
 // length when it doesn't). Drawn with the CSS Custom Highlight API, so the text isn't touched.
 const WORD_RE = /[\p{L}\p{N}_']+/gu;
+const ALONG_BLOCK = "p, li, blockquote, dd, h1, h2, h3, h4, h5, h6, figcaption, div:not(.page)";
 const along = { st: null, running: false };
 
 function sentenceWords(container, n) {
@@ -2651,7 +2676,7 @@ export function readAlong(container, audio, n, start, end, times) {
   };
   // The paragraph (or other block) the sentence is in.
   const first = container.querySelector(`.s[data-s="${n}"]`);
-  const block = first && first.closest("p, li, blockquote, dd, h1, h2, h3, h4, h5, h6, figcaption, div:not(.page)");
+  const block = first && first.closest(ALONG_BLOCK);
   if (block && container.contains(block)) {
     const r = document.createRange();
     r.selectNodeContents(block);
