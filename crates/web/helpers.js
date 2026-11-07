@@ -1046,6 +1046,12 @@ class Pager {
     el.dataset.side = can ? side : "";
   }
 
+  // The book's size, colours and type (what any page's picture depends on).
+  lookKey() {
+    const reader = this.book.closest(".reader");
+    return `${this.width}x${this.book.clientHeight}|${reader ? reader.dataset.theme : ""}|${reader ? reader.getAttribute("style") : ""}`;
+  }
+
   // What a page picture depends on besides its place: size, colours and type.
   snapKey() {
     const reader = this.book.closest(".reader");
@@ -1182,7 +1188,7 @@ class Pager {
     kept.__furniture = this.furniture(this.page * this.width);
     this.book.__carry = {
       dir, snap: kept, at: this.page * this.width, spread: this.spread,
-      picture: this.snap(this.page * this.width), key: this.snapKey(),
+      picture: this.snap(this.page * this.width), key: this.lookKey(),
     };
     if (this.noGL && this.curl) {
       // Keep this page on screen (a copy of it) while the next chapter loads underneath, so the
@@ -1320,7 +1326,9 @@ class Pager {
     const W = this.width, H = this.book.clientHeight, half = W / 2;
     const target = carry ? this.page : this.page + dir;
     const cur = carry ? carry.at : this.page * W;
-    const curPic = carry ? (carry.key === this.snapKey() ? carry.picture : null) : this.snap(cur);
+    // (The kept page's picture fits if the book is the same size and look; what's highlighted
+    // in the next chapter has nothing to do with it.)
+    const curPic = carry ? (carry.key === this.lookKey() ? carry.picture : null) : this.snap(cur);
     const nextPic = this.snap(target * W);
     if (!curPic || !nextPic) return null;
     try {
