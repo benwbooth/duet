@@ -82,6 +82,24 @@ fn dir(state: &State, asset: i64) -> PathBuf {
     state.data_dir.join("cache").join("full-cast").join(asset.to_string())
 }
 
+/// Where a quotation still open at the start of sentence `n` began (the sentence it opened
+/// in): a speech of several sentences ("Oh dear! Oh dear! I shall be late!") has its quote
+/// marks only at its two ends.
+fn open_quote_before(sentences: &[String], n: usize) -> Option<usize> {
+    let mut open = None;
+    for (i, s) in sentences.iter().enumerate().take(n) {
+        for c in s.chars() {
+            match c {
+                '“' => open = Some(i),
+                '”' => open = None,
+                '"' => open = if open.is_some() { None } else { Some(i) },
+                _ => {}
+            }
+        }
+    }
+    open
+}
+
 /// Splits a sentence into (text, speaker): quoted speech goes to the speaker, the rest to the narrator.
 /// `narration`: how the narrator reads their part of it.
 fn pieces(sentence: &str, line: Option<&(String, String)>, narration: &str) -> Vec<(String, Option<String>, String)> {
@@ -805,7 +823,18 @@ async fn perform(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow:
     let say: Say = read_json(&dir(state, asset).join(format!("say-{chapter}-{}.json", n / CHUNK))).await.unwrap_or_default();
     let text = speakable(say.get(&n).unwrap_or(&printed));
     // (Scripts directed before names were tidied: the same one voice per character.)
-    let line = script.get(&n).and_then(|(who, dir)| canonical(who, &cast.characters).map(|w| (w, dir.clone())));
+    // A sentence inside a speech begun earlier is that speaker's from its start (to the close).
+    let opened = open_quote_before(&sentences, n);
+    let mut line = script.get(&n).cloned();
+    if let Some(k) = opened.filter(|_| line.is_none()) {
+        line = if k / CHUNK == n / CHUNK {
+            script.get(&k).cloned()
+        } else {
+            read_json::<Script>(&dir(state, asset).join(format!("script-{chapter}-{}.json", k / CHUNK))).await.and_then(|s| s.get(&k).cloned())
+        };
+    }
+    let line = line.and_then(|(who, dir)| canonical(&who, &cast.characters).map(|w| (w, dir)));
+    let text = if opened.is_some() && line.is_some() { format!("“{text}") } else { text };
     let narration: Say = read_json(&dir(state, asset).join(format!("narration-{chapter}-{}.json", n / CHUNK))).await.unwrap_or_default();
     let parts: Vec<_> = pieces(&text, line.as_ref(), narration.get(&n).map(String::as_str).unwrap_or(""))
         .into_iter()
@@ -844,7 +873,7 @@ async fn perform(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow:
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical, pieces, replace_words, speakable};
+    use super::{canonical, open_quote_before, pieces, replace_words, speakable};
 
     #[test]
     fn roman_numerals_read_as_numbers() {
@@ -875,6 +904,23 @@ mod tests {
         assert_eq!(p[0].0, "Curiouser and curiouser!");
         assert_eq!(p[0].1.as_deref(), Some("Alice"));
         assert_eq!(p[1].0, "cried Alice.");
+        assert!(p[1].1.is_none());
+    }
+
+    #[test]
+    fn speech_carries_over_sentences() {
+        let s: Vec<String> = ["the Rabbit say to itself, “Oh dear!", "Oh dear!", "I shall be late!” (when she thought", "Next."]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(open_quote_before(&s, 1), Some(0));
+        assert_eq!(open_quote_before(&s, 2), Some(0));
+        assert_eq!(open_quote_before(&s, 3), None);
+        let line = ("White Rabbit".to_string(), "flustered".to_string());
+        let p = pieces(&format!("“{}", s[2]), Some(&line), "");
+        assert_eq!(p[0].0, "I shall be late!");
+        assert_eq!(p[0].1.as_deref(), Some("White Rabbit"));
+        assert_eq!(p[1].0, "(when she thought");
         assert!(p[1].1.is_none());
     }
 }
