@@ -420,12 +420,13 @@ fn book_card(w: WorkSummary) -> impl IntoView {
                     <div class="cover-progress"><div style=format!("width:{:.1}%", p * 100.0)></div></div>
                 })}
             </div>
-            <div class="plank" aria-hidden="true"></div>
-            <div class="title">{w.title.clone()}</div>
-            <div class="author">{w.author.clone().unwrap_or_default()}</div>
-            <div class="format-badges">
-                {w.has_ebook.then(|| view! { <span class="fbadge ebook">{icon(icons::BOOK)}"Ebook"</span> })}
-                {w.has_audiobook.then(|| view! { <span class="fbadge audio">{icon(icons::HEADPHONES)}"Audiobook"</span> })}
+            <div class="info">
+                <div class="title">{w.title.clone()}</div>
+                <div class="author">{w.author.clone().unwrap_or_default()}</div>
+                <div class="format-badges">
+                    {w.has_ebook.then(|| view! { <span class="fbadge ebook">{icon(icons::BOOK)}"Ebook"</span> })}
+                    {w.has_audiobook.then(|| view! { <span class="fbadge audio">{icon(icons::HEADPHONES)}"Audiobook"</span> })}
+                </div>
             </div>
         </a>
     }
@@ -567,10 +568,13 @@ fn Library() -> impl IntoView {
                         </div>
                     </div>
                     {move || shown().is_empty().then(|| view! { <p class="empty">"No books match."</p> })}
-                    <div class="grid bookcase">
-                        <For each=shown key=|w| (w.id, w.progress.map(|p| (p * 1000.0) as i64)) let:w>
-                            {book_card(w)}
-                        </For>
+                    // A wooden bookcase: the frame (sides and top), and inside it the shelves.
+                    <div class="bookcase-frame">
+                        <div class="grid bookcase">
+                            <For each=shown key=|w| (w.id, w.progress.map(|p| (p * 1000.0) as i64)) let:w>
+                                {book_card(w)}
+                            </For>
+                        </div>
                     </div>
                 }.into_any()
             }}

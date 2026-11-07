@@ -213,6 +213,7 @@ main { margin-left: var(--nav-w); padding: 2rem 2.4rem 6rem; max-width: 1280px; 
 .card:hover .cover-wrap { transform: translateY(-4px); }
 .card:hover .cover { box-shadow: var(--shadow-lg); }
 .card .title { font-weight: 600; line-height: 1.25; font-size: 0.95rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card .info { display: flex; flex-direction: column; gap: 0.3rem; }
 .card .author { color: var(--muted); font-size: 0.83rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .marks { position: absolute; right: 6px; bottom: 10px; display: flex; gap: 4px; }
 .mark {
@@ -1284,40 +1285,60 @@ button, .transport { -webkit-user-select: none; user-select: none; }
   }
 }
 
-/* The library as a bookcase: a dark wooden back with shelves running the full width, one per
-   row of books (fixed-size rows, so the shelves can be drawn behind them). */
+/* The library as a bookcase. The frame: two upright sides and a top board in lighter wood, seen
+   from the front with their edges catching the light. Inside it, a recessed dark back, the
+   insides of the sides and top in shade, and one shelf board per row of books (rows are a
+   fixed height so the shelves can be drawn behind them). */
+.bookcase-frame {
+  padding: 18px 18px 0; border-radius: 6px 6px 4px 4px;
+  background:
+    linear-gradient(to right, rgba(0, 0, 0, 0.25), rgba(255, 235, 200, 0.12) 3%, rgba(0, 0, 0, 0) 6%, rgba(0, 0, 0, 0) 94%, rgba(255, 235, 200, 0.1) 97%, rgba(0, 0, 0, 0.3)),
+    var(--wood);
+  background-size: auto, 900px 420px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 244, 222, 0.5), inset 1px 0 0 rgba(255, 244, 222, 0.25), inset -1px 0 0 rgba(0, 0, 0, 0.3),
+    0 2px 0 rgba(0, 0, 0, 0.25), 0 24px 40px -18px rgba(0, 0, 0, 0.6);
+}
 .grid.bookcase {
-  --cover-h: 225px; --row: 372px; --pad-top: 26px;
+  /* A row: headroom above the books, the books, and the shelf they stand on. The case ends at
+     the last shelf. */
+  --head: 26px; --cover-h: 225px; --shelf: 30px; --row: calc(var(--head) + var(--cover-h) + var(--shelf));
   grid-template-columns: repeat(auto-fill, 150px); justify-content: space-between;
   grid-auto-rows: var(--row); row-gap: 0; column-gap: 1.4rem;
-  padding: var(--pad-top) 1.6rem 0; border-radius: 10px;
+  padding: 0 1.6rem; border-radius: 2px;
   background:
-    /* Each shelf: its top seen from a little above, a lit front edge, then its shadow on the back. */
+    /* Each shelf: the shadow it casts on the back above the next row, its top seen from a little
+       above (shaded at the back where the books stand, lit toward the front), then its thick
+       front edge in the light wood. */
     repeating-linear-gradient(to bottom,
-      transparent 0, transparent calc(var(--cover-h) - 4px),
-      /* top of the shelf, receding: lit, a little lighter toward its front */
-      rgba(30, 15, 5, 0.45) calc(var(--cover-h) - 4px), rgba(255, 222, 176, 0.14) calc(var(--cover-h) - 2px),
-      rgba(255, 228, 186, 0.3) calc(var(--cover-h) + 8px),
-      /* its front edge: a bright arris, then the board's face falling into shade */
-      rgba(255, 246, 226, 0.75) calc(var(--cover-h) + 8px), rgba(255, 236, 200, 0.35) calc(var(--cover-h) + 10px),
-      rgba(120, 70, 30, 0.12) calc(var(--cover-h) + 16px), rgba(40, 20, 8, 0.45) calc(var(--cover-h) + 24px),
-      /* and its shadow on the back of the case */
-      rgba(0, 0, 0, 0.6) calc(var(--cover-h) + 24px), rgba(0, 0, 0, 0.18) calc(var(--cover-h) + 36px), rgba(0, 0, 0, 0) calc(var(--cover-h) + 56px),
-      transparent var(--row)),
-    linear-gradient(to right, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0) 6%, rgba(0, 0, 0, 0) 94%, rgba(0, 0, 0, 0.35)),
-    linear-gradient(rgba(20, 10, 4, 0.35), rgba(20, 10, 4, 0.35)),
+      rgba(0, 0, 0, 0.55) 0, rgba(0, 0, 0, 0.18) 10px, rgba(0, 0, 0, 0) 22px,
+      transparent calc(var(--head) + var(--cover-h) - 6px),
+      rgba(20, 10, 3, 0.7) calc(var(--head) + var(--cover-h) - 6px), rgba(70, 40, 18, 0.55) calc(var(--head) + var(--cover-h) - 2px),
+      rgba(205, 160, 112, 0.55) calc(var(--head) + var(--cover-h) + 9px),
+      rgba(255, 244, 222, 0.85) calc(var(--head) + var(--cover-h) + 9px), rgba(255, 236, 205, 0.6) calc(var(--head) + var(--cover-h) + 11px),
+      rgba(214, 168, 118, 0.62) calc(var(--head) + var(--cover-h) + 13px), rgba(170, 120, 75, 0.62) calc(var(--row) - 2px),
+      rgba(60, 32, 12, 0.85) var(--row)),
+    /* The insides of the two sides, in shade. */
+    linear-gradient(to right, rgba(25, 12, 4, 0.75), rgba(60, 32, 14, 0.45) 14px, rgba(0, 0, 0, 0.15) 15px, rgba(0, 0, 0, 0) 40px,
+      rgba(0, 0, 0, 0) calc(100% - 40px), rgba(0, 0, 0, 0.15) calc(100% - 15px), rgba(60, 32, 14, 0.45) calc(100% - 14px), rgba(25, 12, 4, 0.75)),
+    /* The back, set in and darker. */
+    linear-gradient(rgba(25, 12, 5, 0.45), rgba(25, 12, 5, 0.45)),
     var(--wood-dark);
-  background-position: 0 var(--pad-top), 0 0, 0 0, 0 0;
   background-size: auto, auto, auto, 900px 420px;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4), inset 0 16px 24px -12px rgba(0, 0, 0, 0.6), 0 10px 30px -12px rgba(0, 0, 0, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.5);
 }
-.bookcase .card { color: #f3e8d6; width: 150px; }
-.bookcase .card > * { flex-shrink: 0; }
-.bookcase .card .author { color: rgba(243, 232, 214, 0.72); }
-.bookcase .card .title, .bookcase .card .author { text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); }
+.bookcase-frame { padding-bottom: 12px; }
+.bookcase .card { width: 150px; position: relative; padding-top: var(--head); gap: 0; }
 .bookcase .cover-wrap { margin-bottom: 0; height: var(--cover-h); }
-.bookcase .cover { height: var(--cover-h); box-shadow: 2px 0 0 rgba(0, 0, 0, 0.18), 6px 2px 10px rgba(0, 0, 0, 0.5); }
-.plank { display: none; }
-/* (The space the shelf takes under each book.) */
-.bookcase .plank { display: block; height: 26px; margin: 0 0 0.2rem; }
-.bookcase .format-badges .fbadge { background: rgba(0, 0, 0, 0.35); color: #f3e8d6; border-color: rgba(255, 255, 255, 0.12); }
+.bookcase .cover { height: var(--cover-h); box-shadow: 2px 0 0 rgba(0, 0, 0, 0.2), 8px 0 12px -2px rgba(0, 0, 0, 0.55), 0 3px 4px -1px rgba(0, 0, 0, 0.6); }
+/* On the shelves a book shows just its cover; its title and details pop up over it on hover. */
+.bookcase .card .info {
+  position: absolute; z-index: 20; left: 50%; top: calc(var(--head) + var(--cover-h) - 10px); width: 210px;
+  transform: translate(-50%, 6px); opacity: 0; pointer-events: none;
+  padding: 0.6rem 0.75rem 0.65rem; border-radius: 10px; color: var(--text);
+  background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 10px 28px -8px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.08);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.bookcase .card:hover .info, .bookcase .card:focus-visible .info { opacity: 1; transform: translate(-50%, 0); }
+.bookcase .card .info .author { color: var(--muted); }
