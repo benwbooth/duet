@@ -1656,9 +1656,31 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                             // Ask again to find out why (the audio element doesn't say).
                             let Some(e) = ebook.get_untracked() else { return };
                             let url = cast_url(e.id, cast_at.get_untracked());
+                            let at = cast_at.get_untracked();
                             spawn_local(async move {
-                                if let Err(err) = api::get::<serde_json::Value>(&url).await {
-                                    toast.show(format!("The full cast couldn't perform this: {}", err.0));
+                                match api::get::<serde_json::Value>(&url).await {
+                                    // It works now (it was the voices restarting, or a moment's
+                                    // hiccup): try the line again rather than give up on it.
+                                    Ok(_) => {
+                                        if cast_at.try_get_untracked() == Some(at) {
+                                            if let Some(a) = audio_el() {
+                                                pending_seek.set(Some((0.0, true)));
+                                                a.load();
+                                            }
+                                        }
+                                    }
+                                    Err(err) if err.0.to_lowercase().contains("fetch") || err.0.contains("voice server") => {
+                                        // The server (or its voices) is restarting: wait and try again.
+                                        cast_wait.set(true);
+                                        gloo_timers::future::TimeoutFuture::new(5000).await;
+                                        if cast_at.try_get_untracked() == Some(at) {
+                                            if let Some(a) = audio_el() {
+                                                pending_seek.set(Some((0.0, true)));
+                                                a.load();
+                                            }
+                                        }
+                                    }
+                                    Err(err) => toast.show(format!("The full cast couldn't perform this: {}", err.0)),
                                 }
                             });
                         }
