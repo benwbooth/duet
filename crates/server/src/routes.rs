@@ -242,9 +242,11 @@ async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResul
 
 /// One sentence of the full cast, performed on the fly (see cast.rs).
 /// The reader is in full cast mode: have the performer loaded (and kept loaded).
-async fn cast_warm(AxState(s): AxState<State>) -> Json<serde_json::Value> {
+/// (`start: false`: only keep it loaded if it is, while you're reading in another mode.)
+async fn cast_warm(AxState(s): AxState<State>, Json(body): Json<serde_json::Value>) -> Json<serde_json::Value> {
     let tts = s.settings.read().await.ai.tts_url.clone();
-    let _ = s.http.post(format!("{}/warm", tts.trim_end_matches('/'))).json(&serde_json::json!({})).timeout(std::time::Duration::from_secs(5)).send().await;
+    let start = body["start"].as_bool().unwrap_or(true);
+    let _ = s.http.post(format!("{}/warm", tts.trim_end_matches('/'))).json(&serde_json::json!({ "start": start })).timeout(std::time::Duration::from_secs(5)).send().await;
     Json(serde_json::json!({ "ok": true }))
 }
 

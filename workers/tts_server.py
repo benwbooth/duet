@@ -541,7 +541,7 @@ class Handler(BaseHTTPRequestHandler):
                 # Someone's about to want the full cast: have Fish loaded (in the background) and
                 # keep it from being unloaded as idle while they're there.
                 touch("fish")
-                if not fish.healthy() and fish.starting_since is None:
+                if body.get("start", True) and not fish.healthy() and fish.starting_since is None:
                     def start():
                         try:
                             with lock:

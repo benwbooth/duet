@@ -663,16 +663,25 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         None
     };
     let cast_url = move |e: i64, (c, s): (usize, usize)| format!("/api/assets/{e}/cast/{c}/{s}");
-    // In full cast mode the performer is loaded straight away (it takes a couple of minutes),
-    // and kept loaded while you're here rather than unloaded as idle between lines.
+    // In full cast mode the performer is loaded straight away (it takes a couple of minutes); and
+    // once loaded it stays loaded as long as you're reading (in any mode), not unloaded as idle.
+    let warming = StoredValue::new(false);
     Effect::new(move |_| {
-        if !mode.get().cast() {
+        let cast = mode.get().cast();
+        if cast {
+            spawn_local(async move {
+                let _ = api::post::<_, serde_json::Value>("/api/cast/warm", &serde_json::json!({ "start": true })).await;
+            });
+        }
+        if warming.get_value() {
             return;
         }
+        warming.set_value(true);
         spawn_local(async move {
-            while mode.try_get_untracked().is_some_and(|m| m.cast()) {
-                let _ = api::post::<_, serde_json::Value>("/api/cast/warm", &serde_json::json!({})).await;
+            // (Every two minutes while the reader is open; the loop ends with it.)
+            while let Some(m) = mode.try_get_untracked() {
                 gloo_timers::future::TimeoutFuture::new(120_000).await;
+                let _ = api::post::<_, serde_json::Value>("/api/cast/warm", &serde_json::json!({ "start": m.cast() })).await;
             }
         });
     });
