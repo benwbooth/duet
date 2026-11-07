@@ -339,6 +339,54 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     let rate = RwSignal::new(1.0f64);
     let pending_seek = RwSignal::new(None::<(f64, bool)>);
     let toc_open = RwSignal::new(false);
+    // A click anywhere outside an open panel (or Escape) closes it. (The bar's own buttons
+    // toggle their panels themselves.)
+    {
+        // (The click that closes a panel does only that: it doesn't also turn the page.)
+        let swallow = StoredValue::new(false);
+        let outside = Closure::<dyn Fn(web_sys::Event)>::new(move |ev: web_sys::Event| {
+            if ev.type_() == "click" {
+                if swallow.get_value() {
+                    swallow.set_value(false);
+                    ev.stop_propagation();
+                    ev.prevent_default();
+                }
+                return;
+            }
+            if !(view_open.get_untracked() || editions_open.get_untracked() || toc_open.get_untracked()) {
+                return;
+            }
+            if let Some(k) = ev.dyn_ref::<web_sys::KeyboardEvent>() {
+                if k.key() != "Escape" {
+                    return;
+                }
+            } else {
+                let inside = ev
+                    .target()
+                    .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                    .and_then(|el| el.closest(".editions-panel, .toc, .reader-bar").ok().flatten())
+                    .is_some();
+                if inside {
+                    return;
+                }
+            }
+            if ev.type_() == "pointerdown" {
+                swallow.set_value(true);
+            }
+            view_open.set(false);
+            editions_open.set(false);
+            toc_open.set(false);
+        })
+        .into_js_value();
+        let _ = document().add_event_listener_with_callback_and_bool("pointerdown", outside.unchecked_ref(), true);
+        let _ = document().add_event_listener_with_callback("keydown", outside.unchecked_ref());
+        let _ = document().add_event_listener_with_callback_and_bool("click", outside.unchecked_ref(), true);
+        on_cleanup(move || {
+            let _ = document().remove_event_listener_with_callback_and_bool("click", outside.unchecked_ref(), true);
+            let _ = document().remove_event_listener_with_callback_and_bool("pointerdown", outside.unchecked_ref(), true);
+            let _ = document().remove_event_listener_with_callback("keydown", outside.unchecked_ref());
+        });
+    }
     let font_size = RwSignal::new(19u32);
 
     let page = NodeRef::<leptos::html::Article>::new();
