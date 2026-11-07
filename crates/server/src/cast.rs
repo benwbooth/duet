@@ -117,7 +117,8 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
             list, write a one-sentence voice description for casting: gender, approximate age, accent, pitch, \
             timbre, pace and temperament. If asked, also describe the ideal narrator's voice the same way. \
             Accents follow the book: where it's set and where its author is from (an English novel gets English \
-            voices, narrator included), unless the story makes a character different; always name the accent. Reply \
+            voices, narrator included); a character the story gives another origin speaks with that one instead (a \
+            Russian count with a Russian accent, a French maid with a French one). Always name the accent. Reply \
             with JSON only: {\"lines\": {\"<sentence number>\": {\"speaker\": \"<name>\", \"direction\": \"<direction>\"}}, \
             \"new_characters\": {\"<name>\": \"<voice description>\"}, \"narrator\": \"<voice description or empty>\"}. \
             Each character keeps one voice for the whole book, so use exactly the name from the known list when \
