@@ -284,9 +284,69 @@ pub async fn words(state: &State, asset: i64, chapter: usize, n: usize) -> anyho
     Ok(w)
 }
 
-/// One sentence, performed: MP3 bytes, from the cache when it's been performed before.
+/// Lines being performed right now: a second request for one waits for the first.
+static PERFORMING: LazyLock<std::sync::Mutex<HashMap<(i64, usize, usize), Arc<Mutex<()>>>>> = LazyLock::new(Default::default);
+
+/// Where the listener is in each book (chapter, sentence), and a count bumped when they move,
+/// for the performer working ahead in the background.
+static LISTENER: LazyLock<std::sync::Mutex<HashMap<i64, (usize, usize, u64)>>> = LazyLock::new(Default::default);
+
+/// Keeps performing ahead of the listener, in the background, while the card is free: on through
+/// this chapter and into the next, a line at a time, so the lines are ready by the time they're
+/// reached even though performing takes longer than listening. Stops when the listener moves
+/// elsewhere (a new one starts from there).
+fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
+    let generation = {
+        let mut l = LISTENER.lock().unwrap();
+        let entry = l.entry(asset).or_insert((chapter, n, 0));
+        // Still in the stretch being worked on: nothing new to start.
+        if entry.0 == chapter && n >= entry.1 && n < entry.1 + 40 && entry.2 > 0 {
+            return;
+        }
+        *entry = (chapter, n, entry.2 + 1);
+        entry.2
+    };
+    let state = state.clone();
+    tokio::spawn(async move {
+        let moved = || LISTENER.lock().unwrap().get(&asset).map(|e| e.2) != Some(generation);
+        for c in chapter..chapter + 2 {
+            let Ok(Some(a)) = db::asset(&state.db, asset).await else { return };
+            let src = book::source(&a, &state.data_dir);
+            let Ok(Ok(sentences)) = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, c)).await else { return };
+            let from = if c == chapter { n } else { 0 };
+            for k in from..sentences.len() {
+                if moved() {
+                    return;
+                }
+                if let Err(e) = perform(&state, asset, c, k).await {
+                    tracing::warn!("performing ahead ({c}, {k}): {e:#}");
+                    return;
+                }
+                if let Some(entry) = LISTENER.lock().unwrap().get_mut(&asset).filter(|e| e.2 == generation) {
+                    // (Lets a request a little further on count as the same stretch.)
+                    if entry.0 == c {
+                        entry.1 = entry.1.max(k.saturating_sub(20));
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// One sentence, performed: MP3 bytes, from the cache when it's been performed before. Asking
+/// for one also sets the performer working ahead from it.
 pub async fn sentence(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow::Result<Vec<u8>> {
+    work_ahead(state, asset, chapter, n);
+    perform(state, asset, chapter, n).await
+}
+
+async fn perform(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow::Result<Vec<u8>> {
     let path = dir(state, asset).join(format!("{chapter}-{n}.mp3"));
+    if let Ok(bytes) = tokio::fs::read(&path).await {
+        return Ok(bytes);
+    }
+    let line = PERFORMING.lock().unwrap().entry((asset, chapter, n)).or_default().clone();
+    let _one = line.lock().await;
     if let Ok(bytes) = tokio::fs::read(&path).await {
         return Ok(bytes);
     }

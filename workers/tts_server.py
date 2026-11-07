@@ -176,7 +176,12 @@ class Fish:
             # Compiled, generation runs faster than real time; the first start takes a few minutes longer.
             cmd += ["--compile"]
         print("starting", " ".join(cmd), flush=True)
-        self.proc = subprocess.Popen(cmd, cwd=os.path.expanduser(args.fish_dir), env=os.environ)
+        # Kernels autotuned for this GPU (measured on a 7900 XTX: 0.78x real time with the default
+        # compile, 1.05-1.2x tuned; CUDA/HIP graphs crash under ROCm). The tuning is cached on disk,
+        # so only the very first start pays for it.
+        env = dict(os.environ)
+        env.setdefault("DUET_FISH_COMPILE", "max-autotune-no-cudagraphs")
+        self.proc = subprocess.Popen(cmd, cwd=os.path.expanduser(args.fish_dir), env=env)
         for _ in range(600):
             if self.healthy():
                 return
