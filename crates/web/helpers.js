@@ -2647,6 +2647,9 @@ export function addPictures(container, list) {
     if (container.querySelector(`figure.illus[data-for="${p.sentence}"]`)) continue;
     const span = container.querySelector(`.s[data-s="${p.sentence}"]`);
     if (!span) continue;
+    // Not on the page being read: it would move the words under the reader's eyes. (It goes in
+    // once they've turned past.)
+    if (sentenceOnPage(container, p.sentence)) continue;
     let block = span.closest("p, blockquote, li, h1, h2, h3, h4, h5, h6, div");
     if (!block || !container.contains(block) || block === container) block = span;
     const fig = document.createElement("figure");

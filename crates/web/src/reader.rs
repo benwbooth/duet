@@ -675,7 +675,9 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 return;
             }
             spawn_local(async move {
-                let Ok(list) = api::get::<Vec<Picture>>(&format!("/api/assets/{}/illustrations/{c}", e.id)).await else { return };
+                // (Where you are, so the pictures nearest it are drawn first.)
+                let near = crate::visible_sentence(&el).max(0);
+                let Ok(list) = api::get::<Vec<Picture>>(&format!("/api/assets/{}/illustrations/{c}?near={near}", e.id)).await else { return };
                 if chapter.try_get_untracked() != Some(c) {
                     return;
                 }
@@ -805,7 +807,8 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             let mut got = api::get::<Chapter>(&format!("/api/assets/{}/chapters/{c}", e.id)).await;
             // The pictures drawn for it so far, each before the paragraph its scene happens in.
             if pictures && !transcript {
-                if let (Ok(ch), Ok(list)) = (got.as_mut(), api::get::<Vec<Picture>>(&format!("/api/assets/{}/illustrations/{c}", e.id)).await) {
+                let near = if scroll_to.get_untracked().is_some() { scroll_to.get_untracked().unwrap_or(0) } else { 0 };
+                if let (Ok(ch), Ok(list)) = (got.as_mut(), api::get::<Vec<Picture>>(&format!("/api/assets/{}/illustrations/{c}?near={near}", e.id)).await) {
                     ch.html = with_pictures(&ch.html, &list);
                 }
             }

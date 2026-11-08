@@ -272,8 +272,13 @@ async fn cast_recast(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<se
 }
 
 /// A chapter's pictures (and which are drawn yet); asking sets the drawing going ahead.
-async fn illus_chapter(AxState(s): AxState<State>, Path((id, chapter)): Path<(i64, usize)>) -> Json<serde_json::Value> {
-    Json(crate::illustrate::chapter(&s, id, chapter).await)
+#[derive(Deserialize)]
+struct Near {
+    near: Option<usize>,
+}
+
+async fn illus_chapter(AxState(s): AxState<State>, Path((id, chapter)): Path<(i64, usize)>, Query(q): Query<Near>) -> Json<serde_json::Value> {
+    Json(crate::illustrate::chapter(&s, id, chapter, q.near).await)
 }
 
 async fn illus_image(AxState(s): AxState<State>, Path((id, chapter, file)): Path<(i64, usize, String)>) -> ApiResult<Response> {

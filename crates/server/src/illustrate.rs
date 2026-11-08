@@ -233,10 +233,15 @@ static LOCKS: LazyLock<std::sync::Mutex<std::collections::HashMap<i64, std::sync
 /// Books whose pictures are being drawn.
 static DRAWING: LazyLock<std::sync::Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
 
-/// What a chapter's pictures are, and which are drawn (`ready`). Asking also sets the director
-/// and the artist working on this chapter and the next two, in the background.
-pub async fn chapter(state: &State, asset: i64, chapter: usize) -> serde_json::Value {
-    ahead(state, asset, chapter);
+/// Where each book's reader is (chapter, sentence): pictures are drawn nearest it first.
+static READER: LazyLock<std::sync::Mutex<std::collections::HashMap<i64, (usize, usize)>>> = LazyLock::new(Default::default);
+
+/// What a chapter's pictures are, and which are drawn (`ready`). Asking (with where the reader
+/// is, `near`) also sets the director and the artist working round that place, in the
+/// background: the nearest pictures first, a few at a time, so a move elsewhere is followed.
+pub async fn chapter(state: &State, asset: i64, chapter: usize, near: Option<usize>) -> serde_json::Value {
+    READER.lock().unwrap().insert(asset, (chapter, near.unwrap_or(0)));
+    ahead(state, asset);
     let scenes: Vec<Scene> = read_json(&dir(state, asset).join(format!("plan-{chapter}.json"))).await.unwrap_or_default();
     let list: Vec<_> = scenes
         .iter()
@@ -253,7 +258,11 @@ pub async fn chapter(state: &State, asset: i64, chapter: usize) -> serde_json::V
     json!(list)
 }
 
-fn ahead(state: &State, asset: i64, from: usize) {
+/// Pictures drawn at a time: few enough that the drawing turns to wherever the reader has got
+/// to soon after they move (loading the model again each time costs a few seconds).
+const BATCH: usize = 4;
+
+fn ahead(state: &State, asset: i64) {
     if !DRAWING.lock().unwrap().insert(asset) {
         return;
     }
@@ -262,38 +271,70 @@ fn ahead(state: &State, asset: i64, from: usize) {
         let chapters = match db::asset(&state.db, asset).await {
             Ok(Some(a)) => {
                 let src = book::source(&a, &state.data_dir);
-                tokio::task::spawn_blocking(move || book::layout(&src).map(|l| l.chapters)).await.ok().and_then(Result::ok).unwrap_or(from + 3)
+                tokio::task::spawn_blocking(move || book::layout(&src).map(|l| l.chapters)).await.ok().and_then(Result::ok).unwrap_or(0)
             }
-            _ => from + 3,
+            _ => 0,
         };
-        for c in from..(from + 3).min(chapters) {
-            let scenes = match plan(&state, asset, c).await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("illustrations, chapter {c}: {e:#}");
-                    break;
+        let title = crate::activity::title(&state, asset).await;
+        let key = format!("pictures-draw:{asset}");
+        loop {
+            let Some((c, near)) = READER.lock().unwrap().get(&asset).copied() else { break };
+            // The scenes not drawn yet in this chapter and the next two, nearest the reader
+            // first: ahead of them before behind, this chapter before the next.
+            let mut todo: Vec<(usize, usize, usize, Scene)> = Vec::new();
+            let mut failed = false;
+            for (k, cc) in (c..(c + 3).min(chapters.max(c + 1))).enumerate() {
+                let scenes = match plan(&state, asset, cc).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("illustrations, chapter {cc}: {e:#}");
+                        failed = true;
+                        break;
+                    }
+                };
+                for (i, sc) in scenes.into_iter().enumerate() {
+                    if image_path(&state, asset, cc, i).exists() {
+                        continue;
+                    }
+                    let d = if k == 0 {
+                        if sc.sentence >= near { sc.sentence - near } else { (near - sc.sentence) * 4 }
+                    } else {
+                        1_000_000 * k + sc.sentence
+                    };
+                    todo.push((d, cc, i, sc));
                 }
-            };
-            if let Err(e) = draw(&state, asset, c, &scenes).await {
-                tracing::warn!("drawing chapter {c}: {e:#}");
+            }
+            todo.sort_by_key(|t| t.0);
+            todo.truncate(BATCH);
+            if todo.is_empty() {
+                break;
+            }
+            // (How the reader's chapter is coming along, for the jobs pane.)
+            let plan_c: Vec<Scene> = read_json(&dir(&state, asset).join(format!("plan-{c}.json"))).await.unwrap_or_default();
+            let drawn = (0..plan_c.len()).filter(|i| image_path(&state, asset, c, *i).exists()).count() as u32;
+            crate::activity::set(&key, "Pictures", &title, format!("Drawing the pictures round where you're reading (chapter {})", c + 1), drawn, plan_c.len() as u32);
+            let items: Vec<(usize, usize, Scene)> = todo.into_iter().map(|(_, cc, i, sc)| (cc, i, sc)).collect();
+            if let Err(e) = draw(&state, asset, &items).await {
+                tracing::warn!("drawing pictures: {e:#}");
+                failed = true;
+            }
+            if failed {
                 break;
             }
         }
+        crate::activity::clear(&key);
         DRAWING.lock().unwrap().remove(&asset);
     });
 }
 
-/// Draws a chapter's pictures not drawn yet, all in one go on the GPU. Not while the full cast
-/// is performing: the performer has the card, and stopping it would leave the listener waiting.
-async fn draw(state: &State, asset: i64, chapter: usize, scenes: &[Scene]) -> anyhow::Result<()> {
+/// Draws these pictures (chapter, index, scene) on the GPU, and the portraits of anyone in them
+/// who hasn't one yet. Not while the full cast is performing: the performer has the card, and
+/// stopping it would leave the listener waiting.
+async fn draw(state: &State, asset: i64, items: &[(usize, usize, Scene)]) -> anyhow::Result<()> {
     let style = style(state, asset).await?;
-    // Portraits of anyone pictured who hasn't one yet: drawn first, in the same go.
     let mut jobs = Vec::new();
     let mut portraits = HashSet::new();
-    for (i, sc) in scenes.iter().enumerate() {
-        if image_path(state, asset, chapter, i).exists() {
-            continue;
-        }
+    for (_, _, sc) in items {
         for c in &sc.characters {
             let Some(look) = style.characters.get(c) else { continue };
             let path = portrait_path(state, asset, c);
@@ -309,7 +350,7 @@ async fn draw(state: &State, asset: i64, chapter: usize, scenes: &[Scene]) -> an
             }
         }
     }
-    for (i, s) in scenes.iter().enumerate().filter(|(i, _)| !image_path(state, asset, chapter, *i).exists()) {
+    for (chapter, i, s) in items {
         // The scene's main character's portrait shown to the artist, so they look the same.
         let reference = s.characters.iter().find(|c| style.characters.contains_key(*c)).map(|c| portrait_path(state, asset, c));
         jobs.push(json!({
@@ -321,7 +362,7 @@ async fn draw(state: &State, asset: i64, chapter: usize, scenes: &[Scene]) -> an
             "seed": s.seed,
             "ref": reference,
             "ref_scale": 0.45,
-            "out": image_path(state, asset, chapter, i),
+            "out": image_path(state, asset, *chapter, *i),
         }));
     }
     if jobs.is_empty() {
@@ -336,34 +377,15 @@ async fn draw(state: &State, asset: i64, chapter: usize, scenes: &[Scene]) -> an
         }
         crate::activity::clear(&key);
     }
-    // How many are drawn, for the jobs pane (counted from the pictures as they land).
-    let outs: Vec<PathBuf> = jobs.iter().filter_map(|j| j["out"].as_str().map(PathBuf::from)).collect();
-    let total = outs.len() as u32;
-    let title = crate::activity::title(state, asset).await;
-    let key = format!("pictures-draw:{asset}:{chapter}");
-    let what = format!("Drawing chapter {}'s pictures", chapter + 1);
-    crate::activity::set(&key, "Pictures", &title, what.clone(), 0, total);
-    let ticker = {
-        let (key, title, what) = (key.clone(), title.clone(), what.clone());
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                let done = outs.iter().filter(|p| p.exists()).count() as u32;
-                crate::activity::set(&key, "Pictures", &title, what.clone(), done, total);
-            }
-        })
-    };
     let tts = state.settings.read().await.ai.tts_url.clone();
-    let sent = state
+    state
         .http
         .post(format!("{}/illustrate", tts.trim_end_matches('/')))
         .json(&json!({ "jobs": jobs }))
-        .timeout(std::time::Duration::from_secs(3600))
+        .timeout(std::time::Duration::from_secs(1800))
         .send()
         .await
-        .context("the voice server isn't running (Settings → Voices)")
-        .and_then(|r| r.error_for_status().map_err(Into::into));
-    ticker.abort();
-    crate::activity::clear(&key);
-    sent.map(|_| ())
+        .context("the voice server isn't running (Settings → Voices)")?
+        .error_for_status()?;
+    Ok(())
 }
