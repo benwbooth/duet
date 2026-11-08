@@ -151,7 +151,16 @@ async fn plan(state: &State, asset: i64, chapter: usize) -> anyhow::Result<Vec<S
     let has_own = {
         let a = db::asset(&state.db, asset).await?.context("no such book")?;
         let src = book::source(&a, &state.data_dir);
-        tokio::task::spawn_blocking(move || book::chapter(&src, asset, chapter).map(|c| c.html.contains("<img"))).await?.unwrap_or(false)
+        // (Real pictures, not the little ornaments many books put at a chapter's head: an image
+        // file of any size.)
+        tokio::task::spawn_blocking(move || {
+            let html = book::chapter(&src, asset, chapter).map(|c| c.html).unwrap_or_default();
+            html.split("src=\"").skip(1).filter_map(|rest| rest.split('"').next()).filter_map(|url| url.split("/res/").nth(1)).any(|path| {
+                book::resource(&src, path).map(|(bytes, _)| bytes.len() > 12_000).unwrap_or(false)
+            })
+        })
+        .await
+        .unwrap_or(false)
     };
     if text.len() < 20 || has_own {
         write_json(&path, &Vec::<Scene>::new()).await?;
