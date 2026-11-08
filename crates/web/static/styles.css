@@ -1570,3 +1570,10 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 .activity-now { margin: 1rem 0 1.5rem; max-width: 640px; }
 .activity-now h3 { font-size: 0.95rem; margin: 0 0 0.4rem; }
 @media (max-width: 760px) { .downloads-pane.activity-pane { left: 0.6rem; right: 0.6rem; } }
+
+/* Pictures sit in the text like a book's spot illustrations: half the column wide, the words
+   flowing round them, alternately right and left. */
+.page figure.illus { float: right; clear: both; width: 46%; margin: 0.25em 0 0.5em 1em; }
+.page figure.illus:nth-of-type(even) { float: left; margin: 0.25em 1em 0.5em 0; }
+.page figure.illus img { width: 100%; max-height: none; }
+.page figure.illus figcaption { font-size: 0.72em; }
