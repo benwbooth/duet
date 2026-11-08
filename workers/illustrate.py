@@ -44,13 +44,16 @@ def zimage(job):
     torch.cuda.empty_cache()
     pipe.transformer.to("cuda")
     pipe.vae.to("cuda")
+    # (Decoded a tile at a time: whole, the last step needed 2 GB more than the card had left.)
+    pipe.vae.enable_tiling()
     print(json.dumps({"ready": round(time.time() - t0, 1)}), file=sys.stderr, flush=True)
     for j, emb in zip(job["jobs"], embeds):
         t = time.time()
         img = pipe(
             prompt_embeds=emb,
-            width=int(j.get("width", job.get("width", 1216))),
-            height=int(j.get("height", job.get("height", 832))),
+            # (They're shown at half a column's width: this is plenty, and lighter to draw.)
+            width=int(j.get("width", job.get("width", 1024))),
+            height=int(j.get("height", job.get("height", 704))),
             num_inference_steps=9,
             guidance_scale=0.0,
             generator=torch.Generator("cuda").manual_seed(int(j.get("seed", 0))),
