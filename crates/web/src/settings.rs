@@ -147,6 +147,8 @@ pub fn SettingsPage() -> impl IntoView {
                     |x| x.proxy_url.clone(), |x, v| x.proxy_url = v)}
                 {text(s, "Browser inbox folder", "Drop ebooks/audiobooks here (e.g. the remote Firefox's downloads) and duet imports them automatically. Empty: disabled.",
                     |x| x.inbox_dir.clone(), |x, v| x.inbox_dir = v)}
+                {text(s, "Remote browser address", "Web UI of the Firefox-on-VPN container, shown inside duet's Browser page. Empty: built from this page's own address (port 3001).",
+                    |x| x.browser_url.clone(), |x, v| x.browser_url = v)}
             </section>
 
             <section>

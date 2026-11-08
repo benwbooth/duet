@@ -785,6 +785,15 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .dl-open { font-size: 0.85rem; font-weight: 600; min-width: 2.4rem; text-align: right; flex: none; }
 .clear-finished { font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
 .dl-dismiss { flex: none; }
+/* Embedded remote browser page. */
+.browser-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 1rem; align-items: start; }
+.browser-frame-wrap { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #000; }
+.browser-frame { width: 100%; height: min(78vh, 900px); border: 0; display: block; }
+.browser-side { display: grid; gap: 0.6rem; align-content: start; }
+.browser-side h2 { margin: 0; font-size: 1.05rem; }
+.inbox-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.3rem; font-size: 0.85rem; }
+.inbox-list li { padding: 0.35rem 0.55rem; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 900px) { .browser-layout { grid-template-columns: 1fr; } }
 /* List layout for the library: compact rows with a thumbnail. */
 .book-list { display: flex; flex-direction: column; gap: 0.4rem; }
 .book-row { display: flex; align-items: center; gap: 0.9rem; padding: 0.5rem 0.7rem; border-radius: 12px; color: inherit; text-decoration: none !important; border: 1px solid transparent; }

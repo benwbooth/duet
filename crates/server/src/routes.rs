@@ -76,6 +76,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/mirrors", get(mirrors_status))
         .route("/downloads", get(list_downloads).post(new_download))
         .route("/downloads/{id}", delete(clear_download))
+        .route("/inbox", get(inbox_status).post(inbox_import))
         .route("/ai/models", post(ai_models))
         .route("/ai/v1/chat/completions", post(chat_proxy))
         .route("/ai/setup", get(ai_detect))
@@ -505,6 +506,38 @@ async fn list_downloads(AxState(s): AxState<State>) -> ApiResult<Json<Vec<Downlo
 async fn new_download(AxState(s): AxState<State>, Json(d): Json<NewDownload>) -> ApiResult<StatusCode> {
     downloads::start(&s, d).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     Ok(StatusCode::ACCEPTED)
+}
+
+/// Files currently sitting in the browser inbox, waiting for import.
+async fn inbox_status(AxState(s): AxState<State>) -> ApiResult<Json<serde_json::Value>> {
+    let dir = s.settings.read().await.inbox_dir.clone();
+    let mut pending: Vec<String> = Vec::new();
+    if !dir.trim().is_empty() {
+        if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                if name.starts_with('.') {
+                    continue;
+                }
+                let ext = library::ext_of(&path);
+                if library::EBOOK_EXTS.contains(&ext.as_str()) || library::AUDIO_EXTS.contains(&ext.as_str()) {
+                    pending.push(name);
+                }
+            }
+        }
+        pending.sort();
+    }
+    Ok(Json(serde_json::json!({ "pending": pending })))
+}
+
+/// Runs one inbox import pass now (the background watcher runs every minute).
+async fn inbox_import(AxState(s): AxState<State>) -> ApiResult<Json<serde_json::Value>> {
+    let n = library::import_inbox_once(&s).await?;
+    Ok(Json(serde_json::json!({ "imported": n })))
 }
 
 async fn clear_download(AxState(s): AxState<State>, Path(id): Path<String>) -> ApiResult<StatusCode> {

@@ -336,14 +336,27 @@ fn ahead(state: &State, asset: i64) {
             if todo.is_empty() {
                 break;
             }
-            // (How the reader's chapter is coming along, for the jobs pane.)
-            let plan_c: Vec<Scene> = read_json(&dir(&state, asset).join(format!("plan-{c}.json"))).await.unwrap_or_default();
+            // (How the chapter being drawn is coming along, for the jobs pane: counted again from
+            // the pictures as they land, every few seconds while a batch is drawn.)
+            let cd = todo[0].1;
+            let plan_c: Vec<Scene> = read_json(&dir(&state, asset).join(format!("plan-{cd}.json"))).await.unwrap_or_default();
             let show_c = shown(&plan_c);
-            let wanted: Vec<usize> = (0..plan_c.len()).filter(|i| show_c(*i)).collect();
-            let drawn = wanted.iter().filter(|i| image_path(&state, asset, c, **i).exists()).count() as u32;
-            crate::activity::set(&key, "Pictures", &title, format!("Drawing the pictures round where you're reading (chapter {})", c + 1), drawn, wanted.len() as u32);
+            let wanted: Vec<PathBuf> = (0..plan_c.len()).filter(|i| show_c(*i)).map(|i| image_path(&state, asset, cd, i)).collect();
+            let what = if cd == c { format!("Drawing the pictures for the chapter you're reading ({})", cd + 1) } else { format!("Drawing the pictures for chapter {}, ahead of you", cd + 1) };
+            let ticker = {
+                let (key, title, what, wanted) = (key.clone(), title.clone(), what.clone(), wanted.clone());
+                tokio::spawn(async move {
+                    loop {
+                        let drawn = wanted.iter().filter(|p| p.exists()).count() as u32;
+                        crate::activity::set(&key, "Pictures", &title, what.clone(), drawn, wanted.len() as u32);
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    }
+                })
+            };
             let items: Vec<(usize, usize, Scene)> = todo.into_iter().map(|(_, cc, i, sc)| (cc, i, sc)).collect();
-            if let Err(e) = draw(&state, asset, &items).await {
+            let drew = draw(&state, asset, &items).await;
+            ticker.abort();
+            if let Err(e) = drew {
                 tracing::warn!("drawing pictures: {e:#}");
                 failed = true;
             }

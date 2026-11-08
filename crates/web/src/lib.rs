@@ -112,6 +112,7 @@ enum Route {
     Work(i64),
     Read(i64, Option<reader::Mode>),
     Discover,
+    Browser,
     Jobs,
     Settings,
     Setup,
@@ -125,6 +126,7 @@ impl Route {
             Some("work") => id().map(Route::Work).unwrap_or(Route::Library),
             Some("read") => id().map(|i| Route::Read(i, parts.get(2).and_then(|m| reader::Mode::parse(m)))).unwrap_or(Route::Library),
             Some("discover") => Route::Discover,
+            Some("browser") => Route::Browser,
             Some("jobs") => Route::Jobs,
             Some("settings") => Route::Settings,
             Some("setup") => Route::Setup,
@@ -136,6 +138,7 @@ impl Route {
         match self {
             Route::Library | Route::Work(_) | Route::Read(..) => "library",
             Route::Discover => "discover",
+            Route::Browser => "browser",
             Route::Jobs => "jobs",
             Route::Settings | Route::Setup => "settings",
         }
@@ -420,11 +423,13 @@ pub mod icons {
     pub const ALERT: &str = "M12 4 3 20h18zM12 10v4M12 17h.01";
     pub const PERSON: &str = "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM5 20a7 7 0 0 1 14 0";
     pub const COMIC: &str = "M4 4h16v16H4zM4 11h9M13 4v16";
+    pub const MONITOR: &str = "M4 5h16v10H4zM9 19h6M12 15v4";
 }
 
-const TABS: [(&str, &str, &str); 4] = [
+const TABS: [(&str, &str, &str); 5] = [
     ("library", "Library", icons::LIBRARY),
     ("discover", "Discover", icons::DISCOVER),
+    ("browser", "Browser", icons::MONITOR),
     ("jobs", "Jobs", icons::JOBS),
     ("settings", "Settings", icons::SETTINGS),
 ];
@@ -496,6 +501,7 @@ fn App() -> impl IntoView {
                         None => view! { <reader::Reader id/> }.into_any(),
                     },
                     Route::Discover => view! { <discover::Discover/> }.into_any(),
+                    Route::Browser => view! { <discover::BrowserPage/> }.into_any(),
                     Route::Jobs => view! { <discover::Jobs/> }.into_any(),
                     Route::Settings => view! { <settings::SettingsPage/> }.into_any(),
                     Route::Setup => view! { <setup::SetupPage/> }.into_any(),

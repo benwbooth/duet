@@ -319,6 +319,99 @@ fn ActivityNow() -> impl IntoView {
     }
 }
 
+/// Remote Firefox on the VPN, embedded in duet: browse bot-walled sites by
+/// hand; downloads land in the inbox and import into the library.
+#[component]
+pub fn BrowserPage() -> impl IntoView {
+    use duet_common::Settings;
+    #[derive(Deserialize, Clone, Default)]
+    struct InboxStatus {
+        #[serde(default)]
+        pending: Vec<String>,
+    }
+    let frame_url = RwSignal::new(String::new());
+    spawn_local(async move {
+        let configured = api::get::<Settings>("/api/settings").await.ok().map(|s| s.browser_url).unwrap_or_default();
+        let url = if configured.trim().is_empty() {
+            // Same host as duet, KasmVNC port of the aa-browser container.
+            let loc = web_sys::window().and_then(|w| w.location().href().ok()).unwrap_or_default();
+            let (proto, host) = match loc.split_once("://") {
+                Some((p, rest)) => (p, rest.split('/').next().unwrap_or("localhost").split(':').next().unwrap_or("localhost")),
+                None => ("http", "localhost"),
+            };
+            format!("{proto}://{host}:3001/")
+        } else {
+            configured
+        };
+        frame_url.set(url);
+    });
+    let pending = RwSignal::new(Vec::<String>::new());
+    let importing = RwSignal::new(false);
+    let toast = toast();
+    let refresh = move || {
+        spawn_local(async move {
+            if let Ok(st) = api::get::<InboxStatus>("/api/inbox").await {
+                pending.set(st.pending);
+            }
+        });
+    };
+    refresh();
+    if let Ok(h) = set_interval_with_handle(refresh, std::time::Duration::from_secs(10)) {
+        on_cleanup(move || h.clear());
+    }
+    let import_now = move |_| {
+        importing.set(true);
+        spawn_local(async move {
+            match api::post::<_, serde_json::Value>("/api/inbox", &()).await {
+                Ok(v) => {
+                    let n = v["imported"].as_u64().unwrap_or(0);
+                    toast.show(if n > 0 { format!("Imported {n} book{} from the browser", if n == 1 { "" } else { "s" }) } else { "Nothing new in the inbox".to_string() });
+                    refresh();
+                }
+                Err(e) => toast.show(e.0),
+            }
+            importing.set(false);
+        });
+    };
+
+    view! {
+        <header class="page-head">
+            <div class="titles">
+                <h1>"Browser"</h1>
+                <p class="subtitle">"The remote Firefox, on the VPN — for sites duet can't search itself"</p>
+            </div>
+        </header>
+        <div class="browser-layout">
+            <div class="browser-frame-wrap">
+                {move || (!frame_url.get().is_empty()).then(|| view! {
+                    <iframe class="browser-frame" src=frame_url.get() title="Remote Firefox" allow="clipboard-read; clipboard-write"></iframe>
+                })}
+            </div>
+            <aside class="browser-side">
+                <h2>"Inbox"</h2>
+                <p class="hint">"Files you download in the browser land here, then join your library."</p>
+                <div class="row">
+                    <button class="primary" disabled=move || importing.get() on:click=import_now>
+                        {move || if importing.get() { "Importing…" } else { "Import now" }}
+                    </button>
+                </div>
+                {move || {
+                    let files = pending.get();
+                    if files.is_empty() {
+                        view! { <p class="muted">"Inbox is empty."</p> }.into_any()
+                    } else {
+                        view! {
+                            <ul class="inbox-list">
+                                {files.into_iter().map(|f| view! { <li>{f}</li> }).collect_view()}
+                            </ul>
+                        }.into_any()
+                    }
+                }}
+            </aside>
+        </div>
+    }
+}
+
 #[component]
 pub fn Jobs() -> impl IntoView {
     let jobs = LocalResource::new(|| api::get::<Vec<Job>>("/api/jobs"));

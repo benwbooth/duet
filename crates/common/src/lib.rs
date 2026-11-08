@@ -245,6 +245,10 @@ pub struct Settings {
     /// (e.g. the remote Firefox's downloads). Empty: disabled.
     #[serde(default)]
     pub inbox_dir: String,
+    /// Remote browser (Firefox on the VPN) web UI address, shown inside
+    /// duet's Browser page. Empty: built from the page's own host (:3001).
+    #[serde(default)]
+    pub browser_url: String,
     pub qbittorrent: QbitSettings,
     pub indexers: Vec<Indexer>,
     /// Built-in public-domain sources that can be switched off.
@@ -306,6 +310,7 @@ impl Default for Settings {
             import_dir: String::new(),
             proxy_url: default_proxy_url(),
             inbox_dir: String::new(),
+            browser_url: String::new(),
             qbittorrent: QbitSettings::default(),
             indexers: Vec::new(),
             free_sources: FreeSources::default(),

@@ -42,45 +42,55 @@ pub struct FoundTrack {
     pub duration: f64,
 }
 
+/// One inbox pass: imports every new ebook/audiobook dropped in the folder.
+/// Returns how many works were added.
+pub async fn import_inbox_once(state: &State) -> anyhow::Result<usize> {
+    let dir = state.settings.read().await.inbox_dir.clone();
+    if dir.trim().is_empty() {
+        return Ok(0);
+    }
+    let dir = PathBuf::from(dir);
+    let mut entries = tokio::fs::read_dir(&dir).await?;
+    let mut imported = 0;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.file_name().map(|n| n.to_string_lossy().starts_with('.')).unwrap_or(true) {
+            continue;
+        }
+        let ext = ext_of(&path);
+        let kind = if EBOOK_EXTS.contains(&ext.as_str()) {
+            AssetKind::Ebook
+        } else if AUDIO_EXTS.contains(&ext.as_str()) {
+            AssetKind::Audiobook
+        } else {
+            continue;
+        };
+        // In-flight browser downloads; import once complete.
+        if ["part", "crdownload", "tmp", "opdownload"].contains(&ext.as_str()) {
+            continue;
+        }
+        match import_path(state, &path, kind, "inbox").await {
+            Ok(Some(_)) => {
+                tracing::info!("inbox: imported {}", path.display());
+                imported += 1;
+            }
+            Ok(None) => {}
+            Err(e) => tracing::debug!("inbox {}: {e:#}", path.display()),
+        }
+    }
+    Ok(imported)
+}
+
 /// Watches the browser inbox: any ebook/audiobook file dropped in (e.g. from
 /// the remote Firefox on the VPN) is imported into the library, once each.
 pub async fn watch_inbox(state: State) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        let dir = state.settings.read().await.inbox_dir.clone();
-        if dir.trim().is_empty() {
-            continue;
-        }
-        let dir = PathBuf::from(dir);
-        let mut entries = match tokio::fs::read_dir(&dir).await {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            if path.file_name().map(|n| n.to_string_lossy().starts_with('.')).unwrap_or(true) {
-                continue;
-            }
-            let ext = ext_of(&path);
-            let kind = if EBOOK_EXTS.contains(&ext.as_str()) {
-                AssetKind::Ebook
-            } else if AUDIO_EXTS.contains(&ext.as_str()) {
-                AssetKind::Audiobook
-            } else {
-                continue;
-            };
-            // In-flight browser downloads; import once complete.
-            if ["part", "crdownload", "tmp", "opdownload"].contains(&ext.as_str()) {
-                continue;
-            }
-            match import_path(&state, &path, kind, "inbox").await {
-                Ok(Some(_)) => tracing::info!("inbox: imported {}", path.display()),
-                Ok(None) => {}
-                Err(e) => tracing::debug!("inbox {}: {e:#}", path.display()),
-            }
+        if let Err(e) = import_inbox_once(&state).await {
+            tracing::debug!("inbox watch: {e:#}");
         }
     }
 }
