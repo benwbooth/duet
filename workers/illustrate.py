@@ -28,17 +28,27 @@ NEGATIVE = (
 
 def zimage(job):
     """Z-Image-Turbo (Alibaba Tongyi, Apache-2.0): far better at drawing the scene as described
-    than SDXL, with a full language model reading the prompt. Its parts are moved onto the card
-    one at a time (the text model and the image model don't both fit beside other work)."""
+    than SDXL, with a full language model reading the prompt. The text model and the image
+    model don't both fit on the card beside other work, so: every prompt read first, with the
+    text model alone on the card, then the image model alone draws them all (moving the two on
+    and off for every picture took twice as long)."""
     from diffusers import ZImagePipeline
 
+    t0 = time.time()
     pipe = ZImagePipeline.from_pretrained("Tongyi-MAI/Z-Image-Turbo", torch_dtype=torch.bfloat16)
-    pipe.enable_model_cpu_offload()
     pipe.set_progress_bar_config(disable=True)
-    for j in job["jobs"]:
+    pipe.text_encoder.to("cuda")
+    with torch.inference_mode():
+        embeds = [pipe.encode_prompt(j.get("full_prompt") or j["prompt"], device="cuda", do_classifier_free_guidance=False)[0] for j in job["jobs"]]
+    pipe.text_encoder.to("cpu")
+    torch.cuda.empty_cache()
+    pipe.transformer.to("cuda")
+    pipe.vae.to("cuda")
+    print(json.dumps({"ready": round(time.time() - t0, 1)}), file=sys.stderr, flush=True)
+    for j, emb in zip(job["jobs"], embeds):
         t = time.time()
         img = pipe(
-            prompt=j.get("full_prompt") or j["prompt"],
+            prompt_embeds=emb,
             width=int(j.get("width", job.get("width", 1216))),
             height=int(j.get("height", job.get("height", 832))),
             num_inference_steps=9,
