@@ -1654,3 +1654,8 @@ button, .transport { -webkit-user-select: none; user-select: none; }
   transform: translateZ(0.5px);
   background: linear-gradient(90deg, rgba(0, 0, 0, 0.38) 0, rgba(255, 255, 255, 0.18) 3px, rgba(0, 0, 0, 0.12) 7px, transparent 12px),
     linear-gradient(105deg, rgba(255, 255, 255, 0.14) 0%, transparent 35%, transparent 70%, rgba(0, 0, 0, 0.12) 100%); }
+/* The initial stands on the line the letters stand on (its foot level with theirs, as a drop
+   initial sits in a manuscript), and rises a little above them. */
+.tabs .brand .wordmark { align-items: flex-end; }
+.tabs .brand .wordmark .initial { font-size: 1.08em; }
+.tabs .brand .wordmark .rest { display: inline-block; line-height: 1; transform: translateY(0.19em); }
