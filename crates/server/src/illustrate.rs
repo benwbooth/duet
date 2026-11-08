@@ -170,7 +170,8 @@ async fn plan(state: &State, asset: i64, chapter: usize) -> anyhow::Result<Vec<S
          a discovery, a fright, a fight, a meeting), show that moment; whenever the story arrives somewhere \
          striking or atmospheric (a house, a street, a room, a landscape, a strange place), show the place itself, \
          with or without people; and the vivid, funny, eerie or important moments. For each give: the number of the sentence where it \
-         happens; a caption of a few words; and the scene for the artist in at most 40 words, the most \
+         happens; a caption for under the picture, one short sentence saying what it shows, as in an \
+         illustrated edition ('Dan drops the bottle into the trash outside the Burger King.'); and the scene for the artist in at most 40 words, the most \
          important first: who is there, described by how they look (the artist doesn't know their names: write \
          the look-book's description in, e.g. 'a fair-haired girl of seven in a pale blue dress and white \
          pinafore'), what they are doing, their expressions, then the setting, light and framing. No art \
