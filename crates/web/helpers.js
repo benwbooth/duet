@@ -2751,7 +2751,9 @@ const COVER_COLOURS = [
   "#5a5245", // taupe
 ];
 
-export function bookCover(book, title) {
+// The book's binding: the dominant colour of its cover picture (made dark enough to be a cloth
+// or leather binding), or a colour picked from its title when there's no picture.
+export function bookCover(book, title, coverUrl) {
   if (!book) return;
   let h = 2166136261;
   for (const ch of title || "") {
@@ -2759,6 +2761,59 @@ export function bookCover(book, title) {
     h = Math.imul(h, 16777619);
   }
   book.style.setProperty("--cover", COVER_COLOURS[(h >>> 0) % COVER_COLOURS.length]);
+  if (!coverUrl) return;
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => {
+    const c = dominantColour(img);
+    if (c) book.style.setProperty("--cover", c);
+  };
+  img.src = coverUrl;
+}
+
+// The colour that most of a picture is (ignoring white margins and black borders), counting
+// colourful pixels for more than grey ones; then set as a binding would be: deep, not garish.
+function dominantColour(img) {
+  try {
+    const S = 48;
+    const cv = document.createElement("canvas");
+    cv.width = S;
+    cv.height = S;
+    const ctx = cv.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, S, S);
+    const px = ctx.getImageData(0, 0, S, S).data;
+    const bins = new Map();
+    for (let i = 0; i < px.length; i += 4) {
+      const [r, g, b] = [px[i], px[i + 1], px[i + 2]];
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      const l = (max + min) / 510;
+      if (l > 0.93 || l < 0.05) continue;
+      const sat = max === min ? 0 : (max - min) / (255 - Math.abs(max + min - 255));
+      const key = ((r >> 5) << 6) | ((g >> 5) << 3) | (b >> 5);
+      const e = bins.get(key) || { w: 0, r: 0, g: 0, b: 0 };
+      const w = 0.25 + sat;
+      e.w += w; e.r += r * w; e.g += g * w; e.b += b * w;
+      bins.set(key, e);
+    }
+    let best = null;
+    for (const e of bins.values()) if (!best || e.w > best.w) best = e;
+    if (!best) return null;
+    let [r, g, b] = [best.r / best.w, best.g / best.w, best.b / best.w].map((v) => v / 255);
+    // To HSL, deepen, back.
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let H = 0, Sat = 0, L = (max + min) / 2;
+    if (max !== min) {
+      const d = max - min;
+      Sat = L > 0.5 ? d / (2 - max - min) : d / (max + min);
+      H = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+      H *= 60;
+    }
+    L = Math.min(0.4, Math.max(0.2, L * 0.7));
+    Sat = Math.min(0.62, Sat);
+    return `hsl(${H.toFixed(0)} ${(Sat * 100).toFixed(0)}% ${(L * 100).toFixed(0)}%)`;
+  } catch {
+    return null;
+  }
 }
 
 export function pagerSetSpread(book, spread) {

@@ -626,7 +626,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             let total = layout.get_untracked().map(|l| l.chapters).unwrap_or(1);
             crate::pager_set_place(&b, chapter.get_untracked().min(total.saturating_sub(1)) as u32, total as u32);
             if let Some(w) = work.get_untracked() {
-                crate::book_cover(&b, &w.title);
+                crate::book_cover(&b, &w.title, w.cover_url.clone());
             }
             crate::pager_set_curl(&b, prefs.get_untracked().page_curl);
             crate::pager_init(&b, &el, &pager_next, &pager_prev, &pager_page, &prefs.get_untracked().spread);

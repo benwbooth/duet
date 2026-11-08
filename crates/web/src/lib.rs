@@ -85,7 +85,7 @@ extern "C" {
     #[wasm_bindgen(js_name = pagerSetPlace)]
     fn pager_set_place(book: &web_sys::Element, chapter: u32, chapters: u32);
     #[wasm_bindgen(js_name = bookCover)]
-    fn book_cover(book: &web_sys::Element, title: &str);
+    fn book_cover(book: &web_sys::Element, title: &str, cover_url: Option<String>);
     #[wasm_bindgen(js_name = wordAt)]
     fn word_at(x: f64, y: f64) -> String;
     #[wasm_bindgen(js_name = copyText)]
