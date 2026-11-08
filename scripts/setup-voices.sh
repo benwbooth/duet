@@ -61,6 +61,7 @@ uv pip install --python "$design/bin/python" omnivoice snac soundfile accelerate
 uv pip install --python "$design/bin/python" --index-url "$torch_index" --reinstall-package torch --reinstall-package torchaudio torch torchaudio
 "$design/bin/hf" download k2-fsa/OmniVoice
 "$design/bin/hf" download maya-research/maya1
+"$design/bin/hf" download Tongyi-MAI/Z-Image-Turbo
 "$design/bin/hf" download hubertsiuzdak/snac_24khz
 
 step "[5/6] Qwen3-TTS weights (fallback reader)"

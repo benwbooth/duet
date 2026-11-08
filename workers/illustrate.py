@@ -26,8 +26,36 @@ NEGATIVE = (
 )
 
 
+def zimage(job):
+    """Z-Image-Turbo (Alibaba Tongyi, Apache-2.0): far better at drawing the scene as described
+    than SDXL, with a full language model reading the prompt. Its parts are moved onto the card
+    one at a time (the text model and the image model don't both fit beside other work)."""
+    from diffusers import ZImagePipeline
+
+    pipe = ZImagePipeline.from_pretrained("Tongyi-MAI/Z-Image-Turbo", torch_dtype=torch.bfloat16)
+    pipe.enable_model_cpu_offload()
+    pipe.set_progress_bar_config(disable=True)
+    for j in job["jobs"]:
+        t = time.time()
+        img = pipe(
+            prompt=j.get("full_prompt") or j["prompt"],
+            width=int(j.get("width", job.get("width", 1216))),
+            height=int(j.get("height", job.get("height", 832))),
+            num_inference_steps=9,
+            guidance_scale=0.0,
+            generator=torch.Generator("cuda").manual_seed(int(j.get("seed", 0))),
+        ).images[0]
+        os.makedirs(os.path.dirname(j["out"]), exist_ok=True)
+        tmp = j["out"] + ".part.png"
+        img.save(tmp)
+        os.replace(tmp, j["out"])
+        print(json.dumps({"out": j["out"], "seconds": round(time.time() - t, 1)}), flush=True)
+
+
 def main():
     job = json.loads(sys.argv[1])
+    if job.get("model") == "z-image":
+        return zimage(job)
     from diffusers import AutoencoderKL, StableDiffusionXLPipeline
     from PIL import Image
 

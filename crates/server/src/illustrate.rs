@@ -369,36 +369,17 @@ fn ahead(state: &State, asset: i64) {
 /// stopping it would leave the listener waiting.
 async fn draw(state: &State, asset: i64, items: &[(usize, usize, Scene)]) -> anyhow::Result<()> {
     let style = style(state, asset).await?;
+    // Z-Image-Turbo reads the whole description with a language model, so each picture's prompt
+    // is the scene, how everyone in it looks (the look-book, word for word: the same in every
+    // picture) and the style.
     let mut jobs = Vec::new();
-    let mut portraits = HashSet::new();
-    for (_, _, sc) in items {
-        for c in &sc.characters {
-            let Some(look) = style.characters.get(c) else { continue };
-            let path = portrait_path(state, asset, c);
-            if !path.exists() && portraits.insert(slug(c)) {
-                let p = format!("Portrait of {}, head and shoulders, facing the viewer, calm expression, plain soft background", look.trim_end_matches('.'));
-                jobs.push(json!({
-                    "prompt": p,
-                    "prompt_2": format!("{}. {p}", style.style),
-                    "seed": 4242 + slug(c).len() as u64,
-                    "width": 896, "height": 1152,
-                    "out": path,
-                }));
-            }
-        }
-    }
     for (chapter, i, s) in items {
-        // The scene's main character's portrait shown to the artist, so they look the same.
-        let reference = s.characters.iter().find(|c| style.characters.contains_key(*c)).map(|c| portrait_path(state, asset, c));
+        let looks: Vec<String> = s.characters.iter().filter_map(|c| style.characters.get(c).map(|l| format!("{c}: {l}"))).collect();
+        let who = if looks.is_empty() { String::new() } else { format!(" The people in it look like this. {}", looks.join(" ")) };
         jobs.push(json!({
-            // (Two prompts: SDXL reads each through its own text encoder, 77 tokens apiece:
-            // the moment and who's in it in one, the style in the other, so neither crowds
-            // the other out.)
+            "full_prompt": format!("{}{who} Art style: {}. No text or lettering.", s.scene, style.style),
             "prompt": s.scene,
-            "prompt_2": format!("{}. {}", style.style, s.scene),
             "seed": s.seed,
-            "ref": reference,
-            "ref_scale": 0.45,
             "out": image_path(state, asset, *chapter, *i),
         }));
     }
@@ -418,7 +399,7 @@ async fn draw(state: &State, asset: i64, items: &[(usize, usize, Scene)]) -> any
     state
         .http
         .post(format!("{}/illustrate", tts.trim_end_matches('/')))
-        .json(&json!({ "jobs": jobs }))
+        .json(&json!({ "jobs": jobs, "model": "z-image" }))
         .timeout(std::time::Duration::from_secs(1800))
         .send()
         .await
