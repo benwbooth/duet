@@ -1580,3 +1580,10 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 .bookview .page figure.illus img { display: block; width: 100%; height: auto; max-height: none; margin: 0; }
 .bookview .page figure.illus .illus-cap { display: block; margin-top: 0.35em; font-size: 0.72em; font-style: italic; text-align: center;
   color: color-mix(in srgb, currentColor 70%, transparent); }
+
+/* Text round the pictures, set the way a typesetter would: a word is never chopped to fit a
+   sliver of space beside a picture (the line moves down past it instead), and paragraphs are
+   broken for an even shape without a word left alone on its last line (the browser's version
+   of TeX's Knuth-Plass line breaking). */
+.bookview .page p { overflow-wrap: normal; text-wrap: pretty; }
+.bookview .page figure.illus { clear: none; }

@@ -2639,6 +2639,26 @@ export function countChapterPages(book, chapter, html) {
 
 // Pictures drawn while the chapter's open, put in as they arrive: each before the paragraph its
 // sentence starts in, and the pages laid out again round the place being read.
+// Whether a picture before this sentence's paragraph would sit too close to another: two
+// floats side by side squeeze the text between them into a sliver. At least two paragraphs (and
+// a few lines) of text between pictures.
+function crowded(container, span) {
+  let block = span.closest("p, blockquote, li, div");
+  if (!block || block === container) return false;
+  let n = 0, prev = block.previousElementSibling;
+  let chars = 0;
+  while (prev && n < 3) {
+    if (prev.matches("figure.illus")) return true;
+    chars += prev.textContent.length;
+    if (chars > 600) return false;
+    prev = prev.previousElementSibling;
+    n++;
+  }
+  // (And the one after it.)
+  const next = block.nextElementSibling;
+  return !!(next && next.matches("figure.illus"));
+}
+
 export function addPictures(container, list) {
   if (!container) return 0;
   if (typeof list === "string") list = JSON.parse(list);
@@ -2650,6 +2670,7 @@ export function addPictures(container, list) {
     // Not on the page being read: it would move the words under the reader's eyes. (It goes in
     // once they've turned past.)
     if (sentenceOnPage(container, p.sentence)) continue;
+    if (crowded(container, span)) continue;
     let block = span.closest("p, blockquote, li, h1, h2, h3, h4, h5, h6, div");
     if (!block || !container.contains(block) || block === container) block = span;
     const fig = document.createElement("figure");

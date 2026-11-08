@@ -323,10 +323,27 @@ struct Picture {
 /// starts in.
 fn with_pictures(html: &str, pictures: &[Picture]) -> String {
     let mut out = html.to_string();
+    // Where each goes (the start of its paragraph); then, a picture too near the one before is
+    // left out (two pictures side by side squeeze the text between them into a sliver): a few
+    // lines of text, from a different paragraph, between any two.
+    let mut places: Vec<(usize, &Picture)> = pictures
+        .iter()
+        .filter(|p| p.ready)
+        .filter_map(|p| {
+            let at = html.find(&format!("data-s=\"{}\"", p.sentence))?;
+            let block = ["<p", "<div", "<blockquote", "<h"].iter().filter_map(|t| html[..at].rfind(t)).max().unwrap_or(at);
+            Some((block, p))
+        })
+        .collect();
+    places.sort_by_key(|(b, _)| *b);
+    let mut kept: Vec<(usize, &Picture)> = Vec::new();
+    for (b, p) in places {
+        if kept.last().is_none_or(|(lb, _)| b > *lb && b - lb >= 1400) {
+            kept.push((b, p));
+        }
+    }
     // (Last first, so the places found earlier in the text stay put.)
-    for p in pictures.iter().filter(|p| p.ready).rev() {
-        let Some(at) = out.find(&format!("data-s=\"{}\"", p.sentence)) else { continue };
-        let block = ["<p", "<div", "<blockquote", "<h"].iter().filter_map(|t| out[..at].rfind(t)).max().unwrap_or(at);
+    for (block, p) in kept.into_iter().rev() {
         let caption = p.caption.replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;");
         let figure = format!(
             r#"<figure class="illus" data-for="{}"><span class="illus-in"><img src="{}" alt="{caption}" width="1216" height="832" loading="eager" decoding="async"><span class="illus-cap">{caption}</span></span></figure>"#,
