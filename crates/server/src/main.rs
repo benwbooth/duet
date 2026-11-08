@@ -146,6 +146,11 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(jobs::run(state.clone()));
     tokio::spawn(downloads::watch_torrents(state.clone()));
     tokio::spawn(setup::autostart(state.clone()));
+    // (Years for books added before years were read, without waiting for a library scan.)
+    {
+        let st = state.clone();
+        tokio::spawn(async move { library::backfill_years(&st).await });
+    }
     tokio::spawn(mirrors::refresh_loop(state.clone()));
 
     let app = routes::router(state, &args.web_dir);

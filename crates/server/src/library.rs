@@ -77,7 +77,7 @@ pub async fn scan(state: &State) -> anyhow::Result<ScanReport> {
 
 /// Reads publication years for works that predate year tracking (or whose
 /// editions didn't state one), from their first ebook file.
-async fn backfill_years(state: &State) {
+pub async fn backfill_years(state: &State) {
     let rows: Vec<(i64, String)> = sqlx::query_as(
         "SELECT w.id, a.path FROM works w JOIN assets a ON a.work_id = w.id AND a.kind = 'ebook'
          WHERE w.year IS NULL GROUP BY w.id",
