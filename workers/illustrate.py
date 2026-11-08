@@ -47,22 +47,38 @@ def zimage(job):
     # (Decoded a tile at a time: whole, the last step needed 2 GB more than the card had left.)
     pipe.vae.enable_tiling()
     print(json.dumps({"ready": round(time.time() - t0, 1)}), file=sys.stderr, flush=True)
+    # Every picture drawn (as latents) with the image model on the card; then it makes way and
+    # the decoder turns them into pictures (both at once ran the card out of memory beside other
+    # work).
+    latents = []
     for j, emb in zip(job["jobs"], embeds):
         t = time.time()
-        img = pipe(
-            prompt_embeds=emb,
-            # (They're shown at half a column's width: this is plenty, and lighter to draw.)
-            width=int(j.get("width", job.get("width", 1024))),
-            height=int(j.get("height", job.get("height", 704))),
-            num_inference_steps=9,
-            guidance_scale=0.0,
-            generator=torch.Generator("cuda").manual_seed(int(j.get("seed", 0))),
-        ).images[0]
+        with torch.inference_mode():
+            lat = pipe(
+                prompt_embeds=emb,
+                # (They're shown at half a column's width: this is plenty, and lighter to draw.)
+                width=int(j.get("width", job.get("width", 1024))),
+                height=int(j.get("height", job.get("height", 704))),
+                num_inference_steps=9,
+                guidance_scale=0.0,
+                generator=torch.Generator("cuda").manual_seed(int(j.get("seed", 0))),
+                output_type="latent",
+            ).images
+        latents.append((j, lat.to("cpu"), time.time() - t))
+    pipe.transformer.to("cpu")
+    torch.cuda.empty_cache()
+    for j, lat, secs in latents:
+        t = time.time()
+        with torch.inference_mode():
+            lat = lat.to("cuda", dtype=pipe.vae.dtype)
+            lat = (lat / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
+            image = pipe.vae.decode(lat, return_dict=False)[0]
+            img = pipe.image_processor.postprocess(image, output_type="pil")[0]
         os.makedirs(os.path.dirname(j["out"]), exist_ok=True)
         tmp = j["out"] + ".part.png"
         img.save(tmp)
         os.replace(tmp, j["out"])
-        print(json.dumps({"out": j["out"], "seconds": round(time.time() - t, 1)}), flush=True)
+        print(json.dumps({"out": j["out"], "seconds": round(secs + time.time() - t, 1)}), flush=True)
 
 
 def main():
