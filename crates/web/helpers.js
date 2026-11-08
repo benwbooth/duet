@@ -1047,6 +1047,13 @@ class Pager {
     // A fixed count (not a width) so rounding can't drop a column; overflow continues to the right.
     this.article.style.columnWidth = "auto";
     this.article.style.columnCount = this.spread ? "2" : "1";
+    // Text beside a half-width picture needs room for a decent line (about 22 ems): in narrower
+    // columns pictures stand on their own between the paragraphs instead.
+    {
+      const fs = parseFloat(getComputedStyle(this.article).fontSize) || 18;
+      const col = (this.width - (this.spread ? 4 : 2) * pad) / (this.spread ? 2 : 1);
+      this.article.classList.toggle("narrow-cols", col * 0.54 < fs * 22);
+    }
     this.article.style.columnGap = `${2 * pad}px`;
     // Measured from the first page: shifted to a later one, the book's scroll width only counts
     // what's to the right of it.

@@ -1587,3 +1587,5 @@ button, .transport { -webkit-user-select: none; user-select: none; }
    of TeX's Knuth-Plass line breaking). */
 .bookview .page p { overflow-wrap: normal; text-wrap: pretty; }
 .bookview .page figure.illus { clear: none; }
+.bookview .page.narrow-cols figure.illus, .bookview .page.narrow-cols figure.illus:nth-of-type(even) {
+  float: none; width: 72%; margin: 0.5em auto 0.9em; }
