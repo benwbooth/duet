@@ -90,6 +90,11 @@ pub async fn work_detail(db: &SqlitePool, id: i64) -> anyhow::Result<Option<Work
         series_index: r.get("series_index"),
         description: r.get("description"),
         year: r.get("year"),
+        subjects: r
+            .get::<Option<String>, _>("subjects")
+            .map(|s| s.split('\n').filter(|x| !x.is_empty()).map(str::to_string).collect())
+            .unwrap_or_default(),
+        pages: r.get("pages"),
         cover_url: cover_url(id, &cover),
         assets: work_assets(db, id).await?,
         position: get_position(db, id).await?,

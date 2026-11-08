@@ -436,18 +436,6 @@ pub fn icon(path: &'static str) -> impl IntoView {
     }
 }
 
-/// The app's mark: two pages, one with a sound wave.
-fn logo() -> impl IntoView {
-    view! {
-        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
-            <rect width="32" height="32" rx="8" fill="var(--accent)"/>
-            <path d="M7 9.5c3-1.4 6-1 8.5 1v13c-2.5-2-5.5-2.4-8.5-1z" fill="var(--bg)"/>
-            <path d="M25 9.5c-3-1.4-6-1-8.5 1v13c2.5-2 5.5-2.4 8.5-1z" fill="var(--bg)" opacity="0.75"/>
-            <path d="M19.5 15v3.5M21.5 13.5v6.5M23.3 15.5v2.5" stroke="var(--accent)" stroke-width="1.3" stroke-linecap="round"/>
-        </svg>
-    }
-}
-
 /// Whether the sidebar is tucked away while reading.
 #[derive(Clone, Copy)]
 pub struct SidebarHidden(pub RwSignal<bool>);
@@ -864,7 +852,10 @@ fn WorkPage(id: i64) -> impl IntoView {
                                         <p class="series">{s}{w.series_index.map(|i| format!(" · Book {i}")).unwrap_or_default()}</p>
                                     })}
                                     <h1>{w.title.clone()}</h1>
-                                    <p class="author">{w.author.clone().unwrap_or_default()}{w.year.map(|y| format!(" · {y}")).unwrap_or_default()}</p>
+                                    <p class="author">{w.author.clone().unwrap_or_default()}{w.year.map(|y| format!(" · {y}")).unwrap_or_default()}{w.pages.map(|p| format!(" · {p} pages")).unwrap_or_default()}</p>
+                                    {(!w.subjects.is_empty()).then(|| view! {
+                                        <div class="subjects">{w.subjects.iter().map(|s| view! { <span class="subject">{s.clone()}</span> }).collect_view()}</div>
+                                    })}
                                     <div class="pills">
                                         {has_e.then(|| view! { <span class="pill">{icon(icons::BOOK)}"Ebook"</span> })}
                                         {has_a.then(|| view! { <span class="pill">{icon(icons::HEADPHONES)}"Audiobook"</span> })}

@@ -32,6 +32,12 @@ pub struct WorkDetail {
     pub series_index: Option<f64>,
     pub description: Option<String>,
     pub year: Option<i32>,
+    /// Subjects and genres, looked up online.
+    #[serde(default)]
+    pub subjects: Vec<String>,
+    /// Pages in print, looked up online.
+    #[serde(default)]
+    pub pages: Option<i64>,
     pub cover_url: Option<String>,
     pub assets: Vec<Asset>,
     pub position: Option<Position>,

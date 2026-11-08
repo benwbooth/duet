@@ -70,6 +70,11 @@ pub async fn scan(state: &State) -> anyhow::Result<ScanReport> {
         .execute(&state.db)
         .await?;
     backfill_years(state).await;
+    // New books' details looked up online, in the background.
+    {
+        let st = state.clone();
+        tokio::spawn(async move { crate::metadata::backfill(&st).await });
+    }
     let (works,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM works").fetch_one(&state.db).await?;
     report.works = works as usize;
     Ok(report)

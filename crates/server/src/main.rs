@@ -19,6 +19,7 @@ mod images;
 mod jobs;
 mod library;
 mod libgen;
+mod metadata;
 mod mirrors;
 mod llm;
 mod qbit;
@@ -149,7 +150,11 @@ async fn main() -> anyhow::Result<()> {
     // (Years for books added before years were read, without waiting for a library scan.)
     {
         let st = state.clone();
-        tokio::spawn(async move { library::backfill_years(&st).await });
+        tokio::spawn(async move {
+            library::backfill_years(&st).await;
+            // And each book's details looked up online (year first published, description...).
+            metadata::backfill(&st).await;
+        });
     }
     tokio::spawn(mirrors::refresh_loop(state.clone()));
 
