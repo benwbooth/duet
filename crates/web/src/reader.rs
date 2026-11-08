@@ -853,6 +853,20 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     // Laid out by the Effect that watches `html` (once: laying out twice would
                     // lose "open at the end" when coming back from the next chapter).
                     html.set(ch.html);
+                    // Paused (just opened, say): show the sentence and word where the recording
+                    // is, as when it stopped, once the page is laid out.
+                    set_timeout(
+                        move || {
+                            if let Some(a) = audio.get_untracked() {
+                                if a.paused() && a.ready_state() > 0 {
+                                    if let Ok(ev) = web_sys::Event::new("timeupdate") {
+                                        let _ = a.dispatch_event(&ev);
+                                    }
+                                }
+                            }
+                        },
+                        std::time::Duration::from_millis(600),
+                    );
                     // The chapters either side, so a page can be dragged over into them. (Not
                     // for text made from the recording: its next chapter may not exist yet.)
                     if !transcript {
