@@ -491,7 +491,12 @@ class CurlGL {
     } else {
       gl.uniform3f(f.u_shp, 1, 0, 0);
     }
+    // (Flat pages leave no depth behind: the turning page is always in front of them. Where it
+    // lay almost flat it sat at nearly their depth, and the two fought pixel by pixel, the page
+    // underneath showing through the turning one's edge in slivers.)
+    gl.depthMask(false);
     gl.drawElements(gl.TRIANGLES, this.count, gl.UNSIGNED_SHORT, 0);
+    gl.depthMask(true);
   }
 
   // Just a picture of the book, flat (keeping the old page on screen while the next chapter loads).
