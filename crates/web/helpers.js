@@ -711,7 +711,7 @@ async function elementSnapshot(pager, offset, other) {
     const pages = Math.max(1, Math.round(sheet.scrollWidth / W));
     offset = other.last ? (pages - 1) * W : 0;
     copy.style.transform = `translateX(${-offset}px)`;
-    furniture = pager.furniture(offset);
+    furniture = pager.furniture(offset, true);
     // Its own running head and numbers (the chapter's title isn't known here: left blank).
     const rh = furniture.querySelector(".rh-chapter");
     if (rh) rh.textContent = "";
@@ -725,7 +725,7 @@ async function elementSnapshot(pager, offset, other) {
     const chEl = furniture.querySelector(".folio-chapter");
     if (chEl) chEl.textContent = chEl.textContent.replace(/\d+/, (n) => String(Number(n) + other.chapterStep));
   } else {
-    furniture = pager.furniture(offset);
+    furniture = pager.furniture(offset, true);
   }
   sheet.appendChild(furniture);
   // The read-along's paragraph and word tints go on the copy too (they're drawn over ranges of
@@ -1432,16 +1432,19 @@ class Pager {
 
   // The running head and page number as they read on the page at `offset` (they're beside the
   // text, not in it, so a copy of the page needs its own).
-  furniture(offset) {
+  // `flat`: for a page picture the curl turns, which is a flat sheet: no curved outline or fold
+  // shading (they belong to the open book, not the page, and turned with it they looked like a
+  // crease printed on the paper).
+  furniture(offset, flat) {
     const out = document.createDocumentFragment();
     // The page's curved outline and (two pages) the fold down the middle go with it too.
-    const warp = this.book.querySelector(":scope > .page-warp");
+    const warp = flat ? null : this.book.querySelector(":scope > .page-warp");
     if (warp) {
       const c = warp.cloneNode(true);
       c.classList.add("furniture-copy");
       out.appendChild(c);
     }
-    if (this.spread) {
+    if (this.spread && !flat) {
       const fold = document.createElement("div");
       fold.className = "fold-copy furniture-copy";
       out.appendChild(fold);
@@ -2485,6 +2488,17 @@ class Pager {
     on("wheel", (e) => {
       if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
       e.preventDefault();
+      // A mouse's sideways wheel clicks in steps a fraction of a second apart: each step is a
+      // whole turn, played out (following it like a finger made it stop and start, half turned
+      // and fading, at every step). A trackpad's smooth swipe moves the page with the fingers.
+      const stepped = e.deltaMode !== 0 || (Math.abs(e.deltaX) >= 60 && Number.isInteger(e.deltaX) && !swipe);
+      if (stepped) {
+        const now = performance.now();
+        if (this.busy || now - (this.wheelTurnAt || 0) < 350) return;
+        this.wheelTurnAt = now;
+        e.deltaX > 0 ? this.next() : this.prev();
+        return;
+      }
       if (!swipe) {
         if (this.busy || !this.curl) return;
         const dir = e.deltaX > 0 ? 1 : -1;
@@ -2512,7 +2526,9 @@ class Pager {
         this.pose(swipe.t, swipe.t.at);
       }
       clearTimeout(swipe.timer);
-      swipe.timer = setTimeout(endSwipe, 160);
+      // (The fingers have stopped, or lifted: a pause in the events a little longer than a
+      // trackpad leaves between them.)
+      swipe.timer = setTimeout(endSwipe, 300);
     }, { passive: false });
     on("pointerleave", () => {
       if (!drag) this.book.classList.remove("grab-edge");
