@@ -1628,9 +1628,9 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 /* On the shelves, each book is a little 3D book: turned a little to show the block of pages
    down its side, with the cover's hinge by the spine; it turns toward you when pointed at. */
 .bookcase .card { perspective: 1100px; }
-.bookcase .cover-wrap { transform-style: preserve-3d; transform: rotateY(-32deg); transform-origin: 40% 50%;
+.bookcase .cover-wrap { transform-style: preserve-3d; transform: rotateY(-15deg); transform-origin: 40% 50%;
   transition: transform 0.45s var(--ease-out); }
-.bookcase .card:hover .cover-wrap, .bookcase .card:focus-visible .cover-wrap { transform: translateY(-6px) rotateY(-8deg); }
+.bookcase .card:hover .cover-wrap, .bookcase .card:focus-visible .cover-wrap { transform: translateY(-6px) rotateY(-5deg); }
 .bookcase .cover-wrap .cover, .bookcase .card:hover .cover-wrap .cover { transform: translateZ(0); border-radius: 2px 4px 4px 2px; }
 /* The pages, seen from the side: a block of paper as deep as the book is thick. */
 .bookcase .cover-wrap::after {
