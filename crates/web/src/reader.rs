@@ -1088,25 +1088,46 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     let tap_seq = RwSignal::new(0u32);
     // Finds an untimed sentence in the recording: the stretch round the guess (`tr`, `secs`) is
     // heard and lined up with the book, and if the sentence turns up, playing moves to it.
-    let locate = move |c: usize, n: usize, word: usize, tr: usize, secs: f64| {
+    // Goes to a place in the recording, playing on from it if `play`.
+    let go_play = move |tr: usize, secs: f64, play: bool| {
+        book_pos.set((tr, secs));
+        seek_to(tr, secs);
+        if play {
+            match pending_seek.get_untracked() {
+                Some((s, _)) => pending_seek.set(Some((s, true))),
+                None => {
+                    if let Some(a) = audio_el() {
+                        let _ = a.play();
+                    }
+                }
+            }
+        }
+    };
+    // (Waits there, paused, while it looks: playing from the guess meanwhile started the reading
+    // a paragraph or two off.) If it isn't found, the guess it is.
+    let locate = move |c: usize, n: usize, word: usize, tr: usize, secs: f64, resume: bool| {
         let (Some(e), Some(a)) = (ebook.get_untracked(), audio_asset.get_untracked()) else { return };
         spawn_local(async move {
+            let found = async {
             // (Up to a minute either side, half a minute at a time, nearest first.)
             for back in [20.0, 50.0, -10.0, 80.0] {
                 let body = serde_json::json!({ "ebook": e.id, "audio": a.id, "track": tr, "start": (secs - back).max(0.0), "near": null });
-                let Ok(v) = api::post::<_, serde_json::Value>(&format!("/api/works/{id}/sync/live"), &body).await else { return };
+                let Ok(v) = api::post::<_, serde_json::Value>(&format!("/api/works/{id}/sync/live"), &body).await else { return None };
                 let spans: Vec<SyncSpan> = serde_json::from_value(v["spans"].clone()).unwrap_or_default();
                 let _ = sync.try_update(|x| x.merge(spans));
-                // Moved on meanwhile (another sentence chosen, or the page left): leave it.
-                if sentence.try_get_untracked() != Some(n as i32) || chapter.try_get_untracked() != Some(c) {
-                    return;
-                }
-                if let Some((t2, s2)) = sync.with_untracked(|x| x.of(c, n).map(|sp| (sp.track, sp.words.get(word).copied().unwrap_or(sp.start)))) {
-                    book_pos.set((t2, s2));
-                    seek_to(t2, s2);
-                    return;
+                if let Some(at) = sync.with_untracked(|x| x.of(c, n).map(|sp| (sp.track, sp.words.get(word).copied().unwrap_or(sp.start)))) {
+                    return Some(at);
                 }
             }
+            None
+            }
+            .await;
+            // Moved on meanwhile (another sentence chosen, or the page left): leave it.
+            if sentence.try_get_untracked() != Some(n as i32) || chapter.try_get_untracked() != Some(c) {
+                return;
+            }
+            let (t2, s2) = found.unwrap_or((tr, secs));
+            go_play(t2, s2, resume);
         });
     };
     let on_page_click = move |ev: web_sys::MouseEvent| {
@@ -1169,13 +1190,19 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                         if let Some(el) = page.get_untracked() {
                             crate::highlight(&el, n as i32, false);
                         }
+                        // Not timed yet: the time is only a guess, so the recording around it is
+                        // heard first and the sentence found exactly; then it plays from there.
+                        if sync.with_untracked(|x| x.of(c, n).is_none()) {
+                            let resume = playing.get_untracked();
+                            if let Some(a) = audio_el() {
+                                let _ = a.pause();
+                            }
+                            toast.show("Finding that sentence in the recording…".to_string());
+                            locate(c, n, word, tr, secs, resume);
+                            return;
+                        }
                         book_pos.set((tr, secs));
                         seek_to(tr, secs);
-                        // Not timed yet: that was a guess, so the recording around it is heard
-                        // now and the sentence found exactly; then it starts from there.
-                        if sync.with_untracked(|x| x.of(c, n).is_none()) {
-                            locate(c, n, word, tr, secs);
-                        }
                         return;
                     }
                 }
