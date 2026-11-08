@@ -161,11 +161,15 @@ async fn plan(state: &State, asset: i64, chapter: usize) -> anyhow::Result<Vec<S
     let (title, author) = title_author(state, asset).await?;
     let numbered: String = text.iter().enumerate().map(|(i, s)| format!("{i}: {s}\n")).collect();
     let looks: String = style.characters.iter().map(|(n, l)| format!("- {n}: {l}\n")).collect();
-    let want = (text.len() / 45).clamp(1, 14);
+    // (About one every page or two: often enough that what's happening is there to see.)
+    let want = (text.len() / 15).clamp(2, 48);
     let system = format!(
         "You are the illustration director for an illustrated edition of {title} by {author}. Read this chapter \
-         and choose about {want} moments to illustrate, spread through it (roughly one every few pages), each a \
-         vivid, important or delightful moment of the story. For each give: the number of the sentence where it \
+         and choose about {want} moments to illustrate, spread evenly through it (roughly one every page or two). \
+         Picture what the reader would want to see: whenever a character does something (an action, a gesture, \
+         a discovery, a fright, a fight, a meeting), show that moment; whenever the story arrives somewhere \
+         striking or atmospheric (a house, a street, a room, a landscape, a strange place), show the place itself, \
+         with or without people; and the vivid, funny, eerie or important moments. For each give: the number of the sentence where it \
          happens; a caption of a few words; and the scene for the artist in at most 40 words, the most \
          important first: who is there, described by how they look (the artist doesn't know their names: write \
          the look-book's description in, e.g. 'a fair-haired girl of seven in a pale blue dress and white \
