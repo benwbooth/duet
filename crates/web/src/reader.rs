@@ -1039,6 +1039,29 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     };
 
     let tap_seq = RwSignal::new(0u32);
+    // Finds an untimed sentence in the recording: the stretch round the guess (`tr`, `secs`) is
+    // heard and lined up with the book, and if the sentence turns up, playing moves to it.
+    let locate = move |c: usize, n: usize, word: usize, tr: usize, secs: f64| {
+        let (Some(e), Some(a)) = (ebook.get_untracked(), audio_asset.get_untracked()) else { return };
+        spawn_local(async move {
+            // (Up to a minute either side, half a minute at a time, nearest first.)
+            for back in [20.0, 50.0, -10.0, 80.0] {
+                let body = serde_json::json!({ "ebook": e.id, "audio": a.id, "track": tr, "start": (secs - back).max(0.0), "near": null });
+                let Ok(v) = api::post::<_, serde_json::Value>(&format!("/api/works/{id}/sync/live"), &body).await else { return };
+                let spans: Vec<SyncSpan> = serde_json::from_value(v["spans"].clone()).unwrap_or_default();
+                let _ = sync.try_update(|x| x.merge(spans));
+                // Moved on meanwhile (another sentence chosen, or the page left): leave it.
+                if sentence.try_get_untracked() != Some(n as i32) || chapter.try_get_untracked() != Some(c) {
+                    return;
+                }
+                if let Some((t2, s2)) = sync.with_untracked(|x| x.of(c, n).map(|sp| (sp.track, sp.words.get(word).copied().unwrap_or(sp.start)))) {
+                    book_pos.set((t2, s2));
+                    seek_to(t2, s2);
+                    return;
+                }
+            }
+        });
+    };
     let on_page_click = move |ev: web_sys::MouseEvent| {
         let target = crate::click_target(&ev);
         if let Some(link) = js_sys::Reflect::get(&target, &JsValue::from_str("link")).ok().and_then(|v| v.as_string()) {
@@ -1101,6 +1124,11 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                         }
                         book_pos.set((tr, secs));
                         seek_to(tr, secs);
+                        // Not timed yet: that was a guess, so the recording around it is heard
+                        // now and the sentence found exactly; then it starts from there.
+                        if sync.with_untracked(|x| x.of(c, n).is_none()) {
+                            locate(c, n, word, tr, secs);
+                        }
                         return;
                     }
                 }
@@ -1234,7 +1262,10 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         let showing = |s: usize| el.as_ref().is_some_and(|el| crate::sentence_on_page(el, s as i32));
         if m == Mode::ReadAudiobook && c != usize::MAX {
             let heard = sync.with_untracked(|x| x.at(track.get_untracked(), a.current_time()).cloned());
-            if !heard.as_ref().is_some_and(|h| h.chapter == c && showing(h.sentence)) {
+            // (A sentence just tapped on this page is where to start: the recording's already there.)
+            let tapped = sentence.get_untracked();
+            let tapped_here = tapped >= 0 && showing(tapped as usize);
+            if !tapped_here && !heard.as_ref().is_some_and(|h| h.chapter == c && showing(h.sentence)) {
                 // From the first word on the page (which may be partway through a sentence).
                 let (s, w) = el.as_ref().map(|el| {
                     let v = crate::first_word_on_page(el);
