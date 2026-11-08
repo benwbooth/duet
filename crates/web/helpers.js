@@ -2607,6 +2607,39 @@ export function countChapterPages(book, chapter, html) {
   return n;
 }
 
+// Pictures drawn while the chapter's open, put in as they arrive: each before the paragraph its
+// sentence starts in, and the pages laid out again round the place being read.
+export function addPictures(container, list) {
+  if (!container) return 0;
+  if (typeof list === "string") list = JSON.parse(list);
+  let added = 0;
+  for (const p of list || []) {
+    if (container.querySelector(`figure.illus[data-for="${p.sentence}"]`)) continue;
+    const span = container.querySelector(`.s[data-s="${p.sentence}"]`);
+    if (!span) continue;
+    let block = span.closest("p, blockquote, li, h1, h2, h3, h4, h5, h6, div");
+    if (!block || !container.contains(block) || block === container) block = span;
+    const fig = document.createElement("figure");
+    fig.className = "illus";
+    fig.dataset.for = p.sentence;
+    const img = document.createElement("img");
+    img.src = p.url;
+    img.alt = p.caption || "";
+    img.width = 1216;
+    img.height = 832;
+    const cap = document.createElement("figcaption");
+    cap.textContent = p.caption || "";
+    fig.append(img, cap);
+    block.parentNode.insertBefore(fig, block);
+    added++;
+  }
+  if (added) {
+    const pager = pagerOf(container);
+    if (pager) pager.relayoutSoon();
+  }
+  return added;
+}
+
 // Where this chapter's pages start in the whole book, and how many the book has (0: not known
 // yet), for the page numbers on the page and on its pictures.
 export function pagerSetBookPages(book, base, total) {

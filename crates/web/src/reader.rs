@@ -329,8 +329,8 @@ fn with_pictures(html: &str, pictures: &[Picture]) -> String {
         let block = ["<p", "<div", "<blockquote", "<h"].iter().filter_map(|t| out[..at].rfind(t)).max().unwrap_or(at);
         let caption = p.caption.replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;");
         let figure = format!(
-            r#"<figure class="illus"><img src="{}" alt="{caption}" width="1216" height="832" loading="eager" decoding="async"><figcaption>{caption}</figcaption></figure>"#,
-            p.url
+            r#"<figure class="illus" data-for="{}"><img src="{}" alt="{caption}" width="1216" height="832" loading="eager" decoding="async"><figcaption>{caption}</figcaption></figure>"#,
+            p.sentence, p.url
         );
         out.insert_str(block, &figure);
     }
@@ -663,6 +663,38 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             }
         });
     };
+    // Pictures drawn while the chapter's open go into it as they arrive (looked for every 15 s).
+    let picture_poll = set_interval_with_handle(
+        move || {
+            if !prefs.with_untracked(|p| p.pictures) {
+                return;
+            }
+            let (Some(e), Some(el)) = (ebook.get_untracked(), page.get_untracked()) else { return };
+            let c = chapter.get_untracked();
+            if c == usize::MAX || e.format == "transcript" {
+                return;
+            }
+            spawn_local(async move {
+                let Ok(list) = api::get::<Vec<Picture>>(&format!("/api/assets/{}/illustrations/{c}", e.id)).await else { return };
+                if chapter.try_get_untracked() != Some(c) {
+                    return;
+                }
+                let ready: Vec<serde_json::Value> = list
+                    .iter()
+                    .filter(|p| p.ready)
+                    .map(|p| serde_json::json!({ "sentence": p.sentence, "url": p.url, "caption": p.caption }))
+                    .collect();
+                crate::add_pictures(&el, &serde_json::Value::from(ready).to_string());
+            });
+        },
+        std::time::Duration::from_secs(15),
+    )
+    .ok();
+    on_cleanup(move || {
+        if let Some(p) = picture_poll {
+            p.clear();
+        }
+    });
     // Pictures through the book, on or off; remembered in Settings. (The chapter's laid out again
     // with them in.)
     let set_pictures = move |on: bool| {
