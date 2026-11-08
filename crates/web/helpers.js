@@ -349,9 +349,15 @@ class CurlGL {
     this.canvas.className = "page-gl";
     // The GPU can drop the context (driver reset, too many tabs); make a new one next turn.
     this.canvas.addEventListener("webglcontextlost", (e) => { e.preventDefault(); this.lost = true; });
-    const gl = this.canvas.getContext("webgl", { antialias: true, alpha: true, premultipliedAlpha: true });
+    // WebGL 2 where there is one: it can make smaller copies (mipmaps) of a page picture of any
+    // size, so the page's curled edge, where the picture is squeezed into a few pixels, is
+    // smoothed rather than speckled with moiré.
+    const opts = { antialias: true, alpha: true, premultipliedAlpha: true };
+    const gl = this.canvas.getContext("webgl2", opts) || this.canvas.getContext("webgl", opts);
     if (!gl) throw new Error("no WebGL");
     this.gl = gl;
+    this.mips = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
+    this.aniso = gl.getExtension("EXT_texture_filter_anisotropic");
     const sh = (type, src) => {
       const s = gl.createShader(type);
       gl.shaderSource(s, src);
@@ -411,7 +417,17 @@ class CurlGL {
     gl.bindTexture(gl.TEXTURE_2D, this.tex[unit]);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    if (this.mips) {
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    } else {
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    }
+    // (Squeezed one way only, as across the curl: sharp along it, smooth across it.)
+    if (this.aniso) {
+      const max = gl.getParameter(this.aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) || 1;
+      gl.texParameterf(gl.TEXTURE_2D, this.aniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(16, max));
+    }
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
