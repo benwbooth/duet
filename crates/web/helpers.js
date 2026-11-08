@@ -265,6 +265,9 @@ uniform vec2 u_view;
 uniform float u_hinge;
 uniform vec3 u_paper;
 uniform vec4 u_edge;   // leaf x0, width, height, hinge x (for the outline)
+uniform vec2 u_L0;
+uniform vec2 u_dir;
+uniform float u_R;
 varying vec2 v_pos;
 varying float v_theta;
 // A fine light-grey line round the sheet's free edges (not the bound one), so the turning page
@@ -278,7 +281,12 @@ vec3 outline(vec3 col) {
 }
 void main() {
   vec2 uv = v_pos / u_view;
-  float c = cos(v_theta);
+  // How far round the roll this point of paper is, worked out here for every pixel rather than
+  // at the mesh's corners: interpolated between corners, a roll lying almost flat and twisted
+  // across the mesh shaded in a sawtooth of grey and white bands.
+  float s = dot(v_pos - u_L0, u_dir);
+  float theta = clamp(s / max(u_R, 0.001), 0.0, 3.14159265);
+  float c = cos(theta);
   bool front = gl_FrontFacing == (u_flip < 0.5);
   if (front) {
     vec3 col = texture2D(u_front, uv).rgb;
@@ -293,7 +301,9 @@ void main() {
       col = texture2D(u_back, vec2((2.0 * u_hinge - v_pos.x) / u_view.x, uv.y)).rgb;
     }
     float dark = 0.4 * pow(max(0.0, 1.0 + c) / 2.0, 1.5);
-    float gloss = 0.3 * exp(-pow((v_theta - 2.2) / 0.41, 2.0));
+    // (The highlight fades as the roll gets too tight to show it: thinner than a few pixels it
+    // only shimmers.)
+    float gloss = 0.3 * exp(-pow((theta - 2.2) / 0.41, 2.0)) * smoothstep(2.0, 10.0, u_R);
     gl_FragColor = vec4(outline(col * (1.0 - dark) + gloss), 1.0);
   }
 }`;
