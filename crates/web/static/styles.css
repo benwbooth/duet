@@ -1589,3 +1589,11 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 .bookview .page figure.illus { clear: none; }
 .bookview .page.narrow-cols figure.illus, .bookview .page.narrow-cols figure.illus:nth-of-type(even) {
   float: none; width: 72%; margin: 0.5em auto 0.9em; }
+
+/* The jobs pane sits beside the sidebar, never over it (its Hide button is at the bottom). */
+.app:not(.no-sidebar) .downloads-pane.activity-pane { left: calc(var(--nav-w) + 1.2rem); }
+@media (max-width: 760px) { .app:not(.no-sidebar) .downloads-pane.activity-pane { left: 0.6rem; } }
+
+/* The tab that brings the sidebar back: always a sliver showing, as a hint. */
+.sidebar-tab { z-index: 30; width: 12px; opacity: 0.9; background: color-mix(in srgb, var(--surface) 85%, var(--accent) 15%);
+  border-color: color-mix(in srgb, var(--line) 50%, var(--accent) 50%); box-shadow: 1px 0 6px rgba(0, 0, 0, 0.25); }
