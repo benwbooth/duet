@@ -374,6 +374,10 @@ class CurlGL {
     this.gl = gl;
     this.mips = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
     this.aniso = gl.getExtension("EXT_texture_filter_anisotropic");
+    // Without multisampling (some drivers give none), edges the paper turns side-on to are
+    // drawn as jagged dashes: drawn at twice the resolution instead, and smoothed down.
+    this.ss = (gl.getParameter(gl.SAMPLES) || 0) >= 2 ? 1 : 2;
+    console.info(`duet page curl: WebGL ${this.mips ? 2 : 1}, ${gl.getParameter(gl.SAMPLES) || 0}x multisampling, ${this.ss}x resolution`);
     const sh = (type, src) => {
       const s = gl.createShader(type);
       gl.shaderSource(s, src);
@@ -470,9 +474,9 @@ class CurlGL {
     this.canvas.style.height = `${ch}px`;
     this.canvas.style.left = `${r.left - px}px`;
     this.canvas.style.top = `${r.top - py}px`;
-    if (this.canvas.width !== Math.round(cw * dpr) || this.canvas.height !== Math.round(ch * dpr)) {
-      this.canvas.width = Math.round(cw * dpr);
-      this.canvas.height = Math.round(ch * dpr);
+    if (this.canvas.width !== Math.round(cw * dpr * this.ss) || this.canvas.height !== Math.round(ch * dpr * this.ss)) {
+      this.canvas.width = Math.round(cw * dpr * this.ss);
+      this.canvas.height = Math.round(ch * dpr * this.ss);
     }
     this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
   }
