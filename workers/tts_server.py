@@ -107,6 +107,9 @@ def reaper():
             if models and now - last_used["qwen"] > limit:
                 print("unloading the voice design models (idle)", flush=True)
                 unload_qwen()
+            if drawing_now() and now - last_used.get("drawing", now) > 180:
+                print("stopping the picture drawing (idle)", flush=True)
+                stop_drawing()
             if fish.proc and now - last_used["fish"] > limit:
                 print("stopping Fish Audio (idle)", flush=True)
                 fish.stop()
@@ -183,8 +186,9 @@ class Fish:
 
     def _start(self):
         # Fish needs most of a 24 GB card: everything else on it makes way first (the voice
-        # designer, speech recognition and the aligner, and Ollama's chat model), or it runs out
-        # of memory while starting.
+        # designer, the picture drawing, speech recognition and the aligner, and Ollama's chat
+        # model), or it runs out of memory while starting.
+        stop_drawing()
         free_ollama()
         unload_qwen()
         with listen_lock:
@@ -297,6 +301,7 @@ def design(voice, desc, language):
 
     wav_path = os.path.join(args.voices, slug(voice) + ".wav")
     if os.path.exists(args.design_python):
+        stop_drawing()
         if args.engine == "fish" and args.fish_dir:
             fish.stop()  # the designers need the card
         unload_qwen()
@@ -413,7 +418,7 @@ def stop_drawing():
     global drawing
     p = drawing
     if p is not None and p.poll() is None:
-        print("listening: pictures paused", flush=True)
+        print("pictures: drawing stopped (the card's wanted)", flush=True)
         p.terminate()
         try:
             p.wait(20)
@@ -424,6 +429,41 @@ def stop_drawing():
 
 def drawing_now():
     return drawing is not None and drawing.poll() is None
+
+
+def draw(body):
+    """Pictures from the drawing process, which is kept running between batches (Z-Image takes a
+    minute or more to load); started when needed, and stopped when idle or the card's wanted."""
+    global drawing
+    touch("drawing")
+    if body.get("model") != "z-image":
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "illustrate.py")
+        r = subprocess.run([args.design_python, script, json.dumps(body)], stdout=subprocess.PIPE, text=True)
+        return [json.loads(l) for l in r.stdout.splitlines() if l.startswith("{")] if r.returncode == 0 else None
+    if not drawing_now():
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "illustrate.py")
+        drawing = subprocess.Popen([args.design_python, script, "--serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        line = drawing.stdout.readline()
+        if not line:
+            drawing = None
+            return None
+    proc = drawing
+    try:
+        proc.stdin.write(json.dumps(body) + "\n")
+        proc.stdin.flush()
+        made = []
+        for line in proc.stdout:
+            if not line.startswith("{"):
+                continue
+            msg = json.loads(line)
+            if msg.get("done"):
+                touch("drawing")
+                return made
+            if "out" in msg:
+                made.append(msg)
+        return None
+    except (BrokenPipeError, OSError, ValueError):
+        return None
 
 
 def listen_aligner():
@@ -669,15 +709,9 @@ class Handler(BaseHTTPRequestHandler):
                         release_gpu_whisper()
                     free_ollama()
                     free_gpu()
-                    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "illustrate.py")
-                    global drawing
-                    drawing = subprocess.Popen([args.design_python, script, json.dumps(body)], stdout=subprocess.PIPE, text=True)
-                    out, _ = drawing.communicate()
-                    code = drawing.returncode
-                    drawing = None
-                if code != 0:
+                    made = draw(body)
+                if made is None:
                     return self.reply(503, json.dumps({"error": "drawing stopped"}).encode(), "application/json")
-                made = [json.loads(l) for l in out.splitlines() if l.startswith("{")]
                 return self.reply(200, json.dumps({"made": made}).encode(), "application/json")
             if path in ("/v1/voices", "/voices"):
                 # Cast voices ahead of time, so a long recording never switches models midway.

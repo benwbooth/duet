@@ -56,7 +56,7 @@ def int8(model):
     return model
 
 
-def zimage(job):
+def zimage_pipe():
     """Z-Image-Turbo (Alibaba Tongyi, Apache-2.0): far better at drawing the scene as described
     than SDXL, with a full language model reading the prompt. Both its models in 8-bit, so they
     fit on the card together."""
@@ -75,6 +75,11 @@ def zimage(job):
     pipe.vae.tile_latent_min_size = 48
     pipe.vae.tile_overlap_factor = 0.25
     print(json.dumps({"ready": round(time.time() - t0, 1)}), file=sys.stderr, flush=True)
+    return pipe
+
+
+def zimage(job, pipe=None):
+    pipe = pipe or zimage_pipe()
     for j in job["jobs"]:
         t = time.time()
         with torch.inference_mode():
@@ -94,7 +99,24 @@ def zimage(job):
         print(json.dumps({"out": j["out"], "seconds": round(time.time() - t, 1)}), flush=True)
 
 
+def serve():
+    """Kept running (loading the model takes a minute or more): a job per line on stdin, the
+    pictures made reported on stdout, then {"done": true}."""
+    pipe = zimage_pipe()
+    print(json.dumps({"ready": True}), flush=True)
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            zimage(json.loads(line), pipe)
+        except Exception as e:
+            print(json.dumps({"error": str(e)}), flush=True)
+        print(json.dumps({"done": True}), flush=True)
+
+
 def main():
+    if sys.argv[1] == "--serve":
+        return serve()
     job = json.loads(sys.argv[1])
     if job.get("model") == "z-image":
         return zimage(job)
