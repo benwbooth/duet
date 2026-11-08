@@ -1552,3 +1552,6 @@ button, .transport { -webkit-user-select: none; user-select: none; }
   max-height: calc(var(--col-h, 70vh) * 0.62); border-radius: 3px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18); }
 .pictures-open { width: 100%; }
 .cast-panel .look { margin: 0.2rem 0; font-size: 0.86rem; color: var(--text); }
+.cast-panel .look { display: flex; gap: 0.7rem; align-items: flex-start; margin: 0.4rem 0; }
+.cast-panel .look img { width: 64px; height: 82px; object-fit: cover; border-radius: 6px; flex: none; }
+.cast-panel .look p { margin: 0; }

@@ -43,6 +43,17 @@ fn dir(state: &State, asset: i64) -> PathBuf {
     state.data_dir.join("cache").join("illustrations").join(asset.to_string())
 }
 
+/// A character's portrait: what they look like in every picture (drawn once, from the
+/// look-book, and then shown to the artist with each scene they're in).
+pub fn portrait_path(state: &State, asset: i64, name: &str) -> PathBuf {
+    dir(state, asset).join("portraits").join(format!("{}.png", slug(name)))
+}
+
+pub fn slug(name: &str) -> String {
+    let s: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    s.trim_matches('-').to_string()
+}
+
 pub fn image_path(state: &State, asset: i64, chapter: usize, i: usize) -> PathBuf {
     dir(state, asset).join(format!("{chapter}-{i}.png"))
 }
@@ -163,7 +174,7 @@ async fn plan(state: &State, asset: i64, chapter: usize) -> anyhow::Result<Vec<S
          character looking the same through the whole book: use the look-book, and for anyone pictured who \
          isn't in it, add a look of at most 20 words (age, build, hair, clothes, colours; for creatures, what \
          they are and wear), true to how the book describes them. Reply with JSON only: {{\"scenes\": \
-         [{{\"sentence\": <n>, \"caption\": \"<caption>\", \"scene\": \"<scene>\", \"characters\": [\"<name>\"]}}], \
+         [{{\"sentence\": <n>, \"caption\": \"<caption>\", \"scene\": \"<scene>\", \"characters\": [\"<name, the most prominent first>\"]}}], \
          \"new_looks\": {{\"<name>\": \"<look>\"}}}}."
     );
     let user = format!("Look-book:\n{}\nChapter:\n{numbered}", if looks.is_empty() { "(empty)\n".to_string() } else { looks });
@@ -263,22 +274,43 @@ fn ahead(state: &State, asset: i64, from: usize) {
 /// is performing: the performer has the card, and stopping it would leave the listener waiting.
 async fn draw(state: &State, asset: i64, chapter: usize, scenes: &[Scene]) -> anyhow::Result<()> {
     let style = style(state, asset).await?;
-    let jobs: Vec<_> = scenes
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !image_path(state, asset, chapter, *i).exists())
-        .map(|(i, s)| {
-            json!({
-                // (Two prompts: SDXL reads each through its own text encoder, 77 tokens apiece:
-                // the moment and who's in it in one, the style in the other, so neither crowds
-                // the other out.)
-                "prompt": s.scene,
-                "prompt_2": format!("{}. {}", style.style, s.scene),
-                "seed": s.seed,
-                "out": image_path(state, asset, chapter, i),
-            })
-        })
-        .collect();
+    // Portraits of anyone pictured who hasn't one yet: drawn first, in the same go.
+    let mut jobs = Vec::new();
+    let mut portraits = HashSet::new();
+    for (i, sc) in scenes.iter().enumerate() {
+        if image_path(state, asset, chapter, i).exists() {
+            continue;
+        }
+        for c in &sc.characters {
+            let Some(look) = style.characters.get(c) else { continue };
+            let path = portrait_path(state, asset, c);
+            if !path.exists() && portraits.insert(slug(c)) {
+                let p = format!("Portrait of {}, head and shoulders, facing the viewer, calm expression, plain soft background", look.trim_end_matches('.'));
+                jobs.push(json!({
+                    "prompt": p,
+                    "prompt_2": format!("{}. {p}", style.style),
+                    "seed": 4242 + slug(c).len() as u64,
+                    "width": 896, "height": 1152,
+                    "out": path,
+                }));
+            }
+        }
+    }
+    for (i, s) in scenes.iter().enumerate().filter(|(i, _)| !image_path(state, asset, chapter, *i).exists()) {
+        // The scene's main character's portrait shown to the artist, so they look the same.
+        let reference = s.characters.iter().find(|c| style.characters.contains_key(*c)).map(|c| portrait_path(state, asset, c));
+        jobs.push(json!({
+            // (Two prompts: SDXL reads each through its own text encoder, 77 tokens apiece:
+            // the moment and who's in it in one, the style in the other, so neither crowds
+            // the other out.)
+            "prompt": s.scene,
+            "prompt_2": format!("{}. {}", style.style, s.scene),
+            "seed": s.seed,
+            "ref": reference,
+            "ref_scale": 0.45,
+            "out": image_path(state, asset, chapter, i),
+        }));
+    }
     if jobs.is_empty() {
         return Ok(());
     }

@@ -201,7 +201,15 @@ pub fn PicturesPanel(asset: i64, on_close: impl Fn() + Clone + Send + Sync + 'st
                     {(!s.characters.is_empty()).then(|| view! {
                         <div class="cast-member">
                             <div class="cast-member-head"><strong>"How the characters look"</strong></div>
-                            {s.characters.into_iter().map(|(n, l)| view! { <p class="look"><strong>{n}</strong>": "{l}</p> }).collect_view()}
+                            {s.characters.into_iter().map(|(n, l)| {
+                                let src = format!("/api/assets/{asset}/illustrations/portrait/{}", js_sys::encode_uri_component(&n));
+                                view! {
+                                    <div class="look">
+                                        <img src=src alt="" onerror="this.style.display='none'"/>
+                                        <p><strong>{n}</strong>": "{l}</p>
+                                    </div>
+                                }
+                            }).collect_view()}
                         </div>
                     })}
                 }.into_any(),

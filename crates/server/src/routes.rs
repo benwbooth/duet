@@ -55,6 +55,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assets/{id}/cast/recast", post(cast_recast))
         .route("/assets/{id}/cast/members", get(cast_members))
         .route("/assets/{id}/illustrations/style", get(illus_style).put(put_illus_style))
+        .route("/assets/{id}/illustrations/portrait/{name}", get(illus_portrait))
         .route("/assets/{id}/illustrations/{chapter}", get(illus_chapter))
         .route("/assets/{id}/illustrations/{chapter}/{file}", get(illus_image))
         .route("/assets/{id}/cast/voice", post(cast_voice))
@@ -277,6 +278,12 @@ async fn illus_chapter(AxState(s): AxState<State>, Path((id, chapter)): Path<(i6
 async fn illus_image(AxState(s): AxState<State>, Path((id, chapter, file)): Path<(i64, usize, String)>) -> ApiResult<Response> {
     let i: usize = file.strip_suffix(".png").and_then(|n| n.parse().ok()).ok_or_else(|| ApiError::not_found("picture"))?;
     let bytes = tokio::fs::read(crate::illustrate::image_path(&s, id, chapter, i)).await.map_err(|_| ApiError::not_found("picture"))?;
+    Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-cache")], bytes).into_response())
+}
+
+/// A character's portrait (what they look like in every picture).
+async fn illus_portrait(AxState(s): AxState<State>, Path((id, name)): Path<(i64, String)>) -> ApiResult<Response> {
+    let bytes = tokio::fs::read(crate::illustrate::portrait_path(&s, id, &name)).await.map_err(|_| ApiError::not_found("portrait"))?;
     Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-cache")], bytes).into_response())
 }
 

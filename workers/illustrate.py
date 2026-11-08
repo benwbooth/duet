@@ -29,30 +29,54 @@ NEGATIVE = (
 def main():
     job = json.loads(sys.argv[1])
     from diffusers import AutoencoderKL, StableDiffusionXLPipeline
+    from PIL import Image
 
     vae = AutoencoderKL.from_pretrained(VAE, torch_dtype=torch.float16)
     pipe = StableDiffusionXLPipeline.from_pretrained(MODEL, vae=vae, torch_dtype=torch.float16, variant="fp16", use_safetensors=True)
     pipe.to("cuda")
     pipe.set_progress_bar_config(disable=True)
     w, h, steps = int(job.get("width", 1216)), int(job.get("height", 832)), int(job.get("steps", 30))
-    for j in job["jobs"]:
-        t = time.time()
-        gen = torch.Generator("cuda").manual_seed(int(j.get("seed", 0)))
-        img = pipe(
-            prompt=j["prompt"],
-            prompt_2=j.get("prompt_2") or j["prompt"],
-            negative_prompt=(j.get("negative") or "") + ", " + NEGATIVE,
-            width=w,
-            height=h,
-            num_inference_steps=steps,
-            guidance_scale=float(j.get("guidance", 6.5)),
-            generator=gen,
-        ).images[0]
-        os.makedirs(os.path.dirname(j["out"]), exist_ok=True)
-        tmp = j["out"] + ".part.png"
-        img.save(tmp)
-        os.replace(tmp, j["out"])
-        print(json.dumps({"out": j["out"], "seconds": round(time.time() - t, 1)}), flush=True)
+    # Pictures drawn from a character's portrait (IP-Adapter): the face and look carried over from
+    # it, so a character looks like themselves in every scene. The rest first (the portraits
+    # themselves among them), then the adapter is loaded for these.
+    plain = [j for j in job["jobs"] if not j.get("ref")]
+    referred = [j for j in job["jobs"] if j.get("ref")]
+    for group in (plain, referred):
+        if not group:
+            continue
+        if group is referred:
+            pipe.load_ip_adapter(
+                "h94/IP-Adapter", subfolder="sdxl_models", weight_name="ip-adapter-plus-face_sdxl_vit-h.safetensors",
+                image_encoder_folder="models/image_encoder",
+            )
+        for j in group:
+            t = time.time()
+            gen = torch.Generator("cuda").manual_seed(int(j.get("seed", 0)))
+            extra = {}
+            ref = j.get("ref")
+            if ref and os.path.exists(ref):
+                pipe.set_ip_adapter_scale(float(j.get("ref_scale", 0.45)))
+                extra["ip_adapter_image"] = Image.open(ref).convert("RGB")
+            elif group is referred:
+                # (Its portrait isn't there: drawn from the words alone.)
+                pipe.set_ip_adapter_scale(0.0)
+                extra["ip_adapter_image"] = Image.new("RGB", (224, 224), "white")
+            img = pipe(
+                prompt=j["prompt"],
+                prompt_2=j.get("prompt_2") or j["prompt"],
+                negative_prompt=(j.get("negative") or "") + ", " + NEGATIVE,
+                width=int(j.get("width", w)),
+                height=int(j.get("height", h)),
+                num_inference_steps=steps,
+                guidance_scale=float(j.get("guidance", 6.5)),
+                generator=gen,
+                **extra,
+            ).images[0]
+            os.makedirs(os.path.dirname(j["out"]), exist_ok=True)
+            tmp = j["out"] + ".part.png"
+            img.save(tmp)
+            os.replace(tmp, j["out"])
+            print(json.dumps({"out": j["out"], "seconds": round(time.time() - t, 1)}), flush=True)
 
 
 if __name__ == "__main__":
