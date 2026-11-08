@@ -262,13 +262,41 @@ impl SyncIndex {
                 after = Some(sp);
             }
         }
-        match (before, after) {
-            (Some(b), Some(a)) if b.track == a.track && a.sentence > b.sentence => {
-                let f = (sentence - b.sentence) as f64 / (a.sentence - b.sentence) as f64;
-                return Some((b.track, b.start + (a.start - b.start) * f));
+        // Times through the whole recording (so a guess can cross from one track into another).
+        let start_of = |t: usize| tracks.iter().take(t).sum::<f64>();
+        let global = |sp: &SyncSpan| start_of(sp.track) + sp.start;
+        let local = |g: f64| -> (usize, f64) {
+            let mut left = g.max(0.0);
+            for (i, d) in tracks.iter().enumerate() {
+                if left < *d || i + 1 == tracks.len() {
+                    return (i, left.min(*d));
+                }
+                left -= d;
             }
-            (Some(b), _) => return Some((b.track, b.end)),
-            (None, Some(a)) => return Some((a.track, a.start)),
+            (0, 0.0)
+        };
+        // How long a sentence usually takes here, from the sentences already timed.
+        let per = {
+            let mut gaps: Vec<f64> = self
+                .by_time
+                .windows(2)
+                .filter(|w| w[0].chapter == w[1].chapter && w[1].sentence == w[0].sentence + 1 && w[0].track == w[1].track)
+                .map(|w| w[1].start - w[0].start)
+                .filter(|g| *g > 0.2 && *g < 60.0)
+                .collect();
+            gaps.sort_by(|a, b| a.total_cmp(b));
+            gaps.get(gaps.len() / 2).copied().unwrap_or(4.5)
+        };
+        match (before, after) {
+            (Some(b), Some(a)) if a.sentence > b.sentence => {
+                let f = (sentence - b.sentence) as f64 / (a.sentence - b.sentence) as f64;
+                return Some(local(global(b) + (global(a) - global(b)) * f));
+            }
+            (Some(b), Some(_)) => return Some((b.track, b.start)),
+            // Only timed sentences further on (or only earlier ones): counted back (or on) from
+            // the nearest at the usual pace, rather than jumping to it.
+            (None, Some(a)) => return Some(local(global(a) - (a.sentence - sentence) as f64 * per)),
+            (Some(b), None) => return Some(local(global(b) + (sentence - b.sentence) as f64 * per)),
             _ => {}
         }
         // The chapter → track offset most of the sync agrees on.
