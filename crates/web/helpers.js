@@ -1219,9 +1219,19 @@ class Pager {
     return `${first}-${last}`;
   }
 
+  // A picture's key without the sentence and word being read aloud: while the recording plays the word moves
+  // on several times a second, and a picture a word or two behind looks the same mid-turn. (Held
+  // to the exact word, every picture went stale while it was being made, and the read-along's
+  // page turns happened with no animation.)
+  static steady(key) {
+    // (And without the sentence being read: the recording reaches the next one just as often
+    // right at the page's end.)
+    return key.split("|").slice(0, -2).join("|");
+  }
+
   snap(offset) {
     const s = this.snaps.get(offset);
-    return s && s.key === this.snapKey() && s.canvas && s.sig === this.pageSig(offset) ? s.canvas : null;
+    return s && s.canvas && s.sig === this.pageSig(offset) && Pager.steady(s.key) === Pager.steady(this.snapKey()) ? s.canvas : null;
   }
 
   // Pictures of these pages (by offset), making any that are missing.
@@ -1231,7 +1241,10 @@ class Pager {
     for (const offset of offsets) {
       let entry = this.snaps.get(offset);
       const sig = this.pageSig(offset);
-      if (!entry || entry.key !== key || entry.sig !== sig) {
+      // (Made again when the page itself has changed, or the word read aloud has, unless a
+      // turn is waiting on it: then one a word behind will do.)
+      const stale = entry && (Pager.steady(entry.key) !== Pager.steady(key) || (entry.key !== key && !this.busy));
+      if (!entry || stale || entry.sig !== sig) {
         entry = { key, sig, canvas: null };
         entry.promise = elementSnapshot(this, offset).then((c) => (entry.canvas = c));
         this.snaps.set(offset, entry);
