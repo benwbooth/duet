@@ -14,6 +14,9 @@ import os
 import sys
 import time
 
+# (Memory handed out in growable pieces: less of it lost to fragments.)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import torch
 
 MODEL = os.environ.get("DUET_IMAGE_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
@@ -65,7 +68,12 @@ def zimage(job):
     int8(pipe.transformer)
     int8(pipe.text_encoder)
     pipe.to("cuda")
+    # (The decoder a quarter of the picture at a time: whole, its last layers wanted more than
+    # the card had left beside other work.)
     pipe.vae.enable_tiling()
+    pipe.vae.tile_sample_min_size = 384
+    pipe.vae.tile_latent_min_size = 48
+    pipe.vae.tile_overlap_factor = 0.25
     print(json.dumps({"ready": round(time.time() - t0, 1)}), file=sys.stderr, flush=True)
     for j in job["jobs"]:
         t = time.time()
