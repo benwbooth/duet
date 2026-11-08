@@ -1,5 +1,6 @@
 //! duet: a self-hosted ebook + audiobook library that reads and plays books in sync.
 
+mod activity;
 mod ai;
 mod ai_setup;
 mod annas_archive;

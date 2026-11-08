@@ -1556,3 +1556,17 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 .cast-panel .look img { width: 64px; height: 82px; object-fit: cover; border-radius: 6px; flex: none; }
 .cast-panel .look p { margin: 0; }
 .page figure.illus figcaption { margin-top: 0.35em; font-size: 0.78em; line-height: 1.35; font-style: italic; color: color-mix(in srgb, currentColor 70%, transparent); text-align: center; }
+
+/* Jobs pane: background work, lower left (the downloads pane has the lower right) */
+.downloads-pane.activity-pane { right: auto; left: 1.2rem; z-index: 41; }
+.activity-list { list-style: none; margin: 0; padding: 0.3rem; max-height: min(50vh, 420px); overflow: auto; }
+.activity-list li { display: flex; padding: 0.6rem; border-radius: 10px; }
+.activity-list li + li { border-top: 1px solid var(--line); }
+.activity-list .dl-body { flex: 1; min-width: 0; }
+.activity-list .dl-name { font-weight: 600; font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.activity-list .act-detail { font-size: 0.8rem; color: var(--muted); margin: 0.15rem 0 0.35rem; }
+.progress.indeterminate > div { width: 35% !important; animation: indeterminate 1.4s ease-in-out infinite; }
+@keyframes indeterminate { from { margin-left: -35%; } to { margin-left: 100%; } }
+.activity-now { margin: 1rem 0 1.5rem; max-width: 640px; }
+.activity-now h3 { font-size: 0.95rem; margin: 0 0 0.4rem; }
+@media (max-width: 760px) { .downloads-pane.activity-pane { left: 0.6rem; right: 0.6rem; } }

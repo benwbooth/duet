@@ -64,6 +64,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assets/{id}/cast/{chapter}/{n}/words", get(cast_words))
         .route("/assets/{id}/link", post(link))
         .route("/jobs", get(list_jobs).post(new_job))
+        .route("/activity", get(activity))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/settings/test-qbittorrent", post(test_qbit))
         .route("/setup/voices", get(voices_status))
@@ -392,6 +393,11 @@ struct LinkReq {
 async fn link(AxState(s): AxState<State>, Path(id): Path<i64>, Json(r): Json<LinkReq>) -> ApiResult<Json<WorkDetail>> {
     library::link_asset(&s.db, id, r.work_id).await?;
     work(AxState(s), Path(r.work_id)).await
+}
+
+/// Everything going on in the background, with how far along it is.
+async fn activity(AxState(s): AxState<State>) -> Json<serde_json::Value> {
+    Json(crate::activity::list(&s).await)
 }
 
 async fn list_jobs(AxState(s): AxState<State>) -> ApiResult<Json<Vec<Job>>> {

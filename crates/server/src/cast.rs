@@ -847,7 +847,10 @@ fn direct_ahead(state: &State, asset: i64, chapter: usize) {
             }
             _ => chapter + 3,
         };
-        for c in (chapter..chapters).chain(0..chapter) {
+        let title = crate::activity::title(&state, asset).await;
+        let key = format!("cast-direct:{asset}");
+        for (k, c) in (chapter..chapters).chain(0..chapter).enumerate() {
+            crate::activity::set(&key, "Full cast", &title, format!("Directing chapter {} (who says what, and how)", c + 1), k as u32, chapters as u32);
             let Ok(Some(a)) = db::asset(&state.db, asset).await else { break };
             let src = book::source(&a, &state.data_dir);
             let Ok(Ok(sentences)) = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, c)).await else { break };
@@ -860,6 +863,7 @@ fn direct_ahead(state: &State, asset: i64, chapter: usize) {
                 }
             }
         }
+        crate::activity::clear(&key);
         DIRECTING.lock().unwrap().remove(&asset);
     });
 }
@@ -884,9 +888,16 @@ fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
             let src = book::source(&a, &state.data_dir);
             let Ok(Ok(sentences)) = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, c)).await else { return };
             let from = if c == chapter { n } else { 0 };
+            let title = crate::activity::title(&state, asset).await;
+            let key = format!("cast-perform:{asset}");
             for k in from..sentences.len() {
                 if moved() {
+                    crate::activity::clear(&key);
                     return;
+                }
+                let done_already = dir(&state, asset).join(format!("{c}-{k}.mp3")).exists();
+                if !done_already {
+                    crate::activity::set(&key, "Full cast", &title, format!("Performing chapter {} ahead of you", c + 1), (k - from) as u32, (sentences.len() - from) as u32);
                 }
                 // (If the voices are restarting, wait for them rather than give up: giving up left
                 // the listener's stretch marked as being worked on, so nothing more was performed.)
@@ -896,6 +907,7 @@ fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
                     if moved() || tries > 12 {
                         tracing::warn!("performing ahead ({c}, {k}): {e:#}");
                         LISTENER.lock().unwrap().remove(&asset);
+                        crate::activity::clear(&key);
                         return;
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
@@ -907,6 +919,7 @@ fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
                     }
                 }
             }
+            crate::activity::clear(&format!("cast-perform:{asset}"));
         }
     });
 }

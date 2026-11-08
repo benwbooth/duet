@@ -207,6 +207,92 @@ fn active(d: &duet_common::Download) -> bool {
         && d.progress < 1.0
 }
 
+/// Something duet is doing in the background (see the server's activity module).
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub struct Activity {
+    pub key: String,
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+    pub done: u32,
+    pub total: u32,
+    /// 0..1, or below 0 when there's no telling.
+    pub fraction: f64,
+    pub seconds: u64,
+}
+
+/// The background work as a list with progress bars (the jobs pane, and the Jobs page).
+#[component]
+pub fn ActivityList(list: Signal<Vec<Activity>>) -> impl IntoView {
+    view! {
+        <ul class="activity-list">
+            <For each=move || list.get() key=|a| a.key.clone() let:a>
+                {
+                    let known = a.fraction >= 0.0;
+                    let pct = (a.fraction * 100.0).clamp(0.0, 100.0);
+                    let count = (a.total > 0).then(|| format!("{} of {}", a.done.min(a.total), a.total));
+                    view! {
+                        <li>
+                            <div class="dl-body">
+                                <div class="dl-name" title=a.title.clone()>{format!("{} · {}", a.kind, a.title)}</div>
+                                <div class="act-detail">{a.detail.clone()}</div>
+                                <div class="progress" class:indeterminate=!known><div style=if known { format!("width:{pct:.1}%") } else { String::new() }></div></div>
+                                {count.map(|c| view! { <div class="dl-meta"><span>{c}</span></div> })}
+                            </div>
+                        </li>
+                    }
+                }
+            </For>
+        </ul>
+    }
+}
+
+/// The jobs pane in the lower-left corner: what's going on in the background (pictures being
+/// drawn, the full cast directed and performed ahead, books being synced), with progress. It
+/// opens when new work starts, and can be closed till the next.
+#[component]
+fn ActivityPane() -> impl IntoView {
+    let list = RwSignal::new(Vec::<Activity>::new());
+    let open = RwSignal::new(false);
+    let collapsed = RwSignal::new(false);
+    let seen = StoredValue::new(std::collections::HashSet::<String>::new());
+    let refresh = move || {
+        spawn_local(async move {
+            if let Ok(v) = api::get::<Vec<Activity>>("/api/activity").await {
+                // New work: show it.
+                let fresh = v.iter().any(|a| !seen.with_value(|s| s.contains(&a.key)));
+                seen.update_value(|s| s.extend(v.iter().map(|a| a.key.clone())));
+                if fresh {
+                    open.set(true);
+                }
+                list.set(v);
+            }
+        });
+    };
+    refresh();
+    if let Ok(h) = set_interval_with_handle(refresh, std::time::Duration::from_secs(2)) {
+        on_cleanup(move || h.clear());
+    }
+    view! {
+        <Show when=move || open.get() && !list.with(Vec::is_empty)>
+            <aside class="downloads-pane activity-pane" class:collapsed=move || collapsed.get()>
+                <header on:click=move |_| collapsed.update(|c| *c = !*c)>
+                    <span class="dl-head-icon"><span class="spinner small"></span></span>
+                    <strong>{move || match list.with(Vec::len) {
+                        1 => "Working on 1 thing".to_string(),
+                        n => format!("Working on {n} things"),
+                    }}</strong>
+                    <button class="icon-button" aria-label="Collapse">{move || if collapsed.get() { "▴" } else { "▾" }}</button>
+                    <button class="icon-button" aria-label="Close" on:click=move |ev| { ev.stop_propagation(); open.set(false) }>"×"</button>
+                </header>
+                <Show when=move || !collapsed.get()>
+                    <ActivityList list=list.into()/>
+                </Show>
+            </aside>
+        </Show>
+    }
+}
+
 #[component]
 fn DownloadsPane() -> impl IntoView {
     let panel = downloads_panel();
@@ -428,6 +514,7 @@ fn App() -> impl IntoView {
                 }}
             </main>
             <DownloadsPane/>
+            <ActivityPane/>
             <Show when=move || toast_sig.get().is_some()>
                 <div class="toast" role="status" on:click=move |_| toast_sig.set(None)>{move || toast_sig.get()}</div>
             </Show>

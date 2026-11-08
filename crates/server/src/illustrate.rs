@@ -157,8 +157,16 @@ async fn plan(state: &State, asset: i64, chapter: usize) -> anyhow::Result<Vec<S
         write_json(&path, &Vec::<Scene>::new()).await?;
         return Ok(vec![]);
     }
-    let style = style(state, asset).await?;
     let (title, author) = title_author(state, asset).await?;
+    let key = format!("pictures-plan:{asset}:{chapter}");
+    crate::activity::set(&key, "Pictures", &title, format!("Choosing the scenes for chapter {}", chapter + 1), 0, 0);
+    let planned = plan_with(state, asset, chapter, &text, &title, &author, &path).await;
+    crate::activity::clear(&key);
+    planned
+}
+
+async fn plan_with(state: &State, asset: i64, chapter: usize, text: &[String], title: &str, author: &str, path: &PathBuf) -> anyhow::Result<Vec<Scene>> {
+    let style = style(state, asset).await?;
     let numbered: String = text.iter().enumerate().map(|(i, s)| format!("{i}: {s}\n")).collect();
     let looks: String = style.characters.iter().map(|(n, l)| format!("- {n}: {l}\n")).collect();
     // (About one a page: a page holds ten-odd sentences.)
@@ -216,7 +224,7 @@ async fn plan(state: &State, asset: i64, chapter: usize) -> anyhow::Result<Vec<S
         .unwrap_or_default();
     scenes.sort_by_key(|s| s.sentence);
     scenes.dedup_by_key(|s| s.sentence);
-    write_json(&path, &scenes).await?;
+    write_json(path, &scenes).await?;
     Ok(scenes)
 }
 
@@ -319,18 +327,43 @@ async fn draw(state: &State, asset: i64, chapter: usize, scenes: &[Scene]) -> an
     if jobs.is_empty() {
         return Ok(());
     }
-    while crate::cast::performing_recently() {
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    if crate::cast::performing_recently() {
+        let title = crate::activity::title(state, asset).await;
+        let key = format!("pictures-wait:{asset}");
+        crate::activity::set(&key, "Pictures", &title, "Waiting for the full cast to finish with the graphics card", 0, 0);
+        while crate::cast::performing_recently() {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+        crate::activity::clear(&key);
     }
+    // How many are drawn, for the jobs pane (counted from the pictures as they land).
+    let outs: Vec<PathBuf> = jobs.iter().filter_map(|j| j["out"].as_str().map(PathBuf::from)).collect();
+    let total = outs.len() as u32;
+    let title = crate::activity::title(state, asset).await;
+    let key = format!("pictures-draw:{asset}:{chapter}");
+    let what = format!("Drawing chapter {}'s pictures", chapter + 1);
+    crate::activity::set(&key, "Pictures", &title, what.clone(), 0, total);
+    let ticker = {
+        let (key, title, what) = (key.clone(), title.clone(), what.clone());
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let done = outs.iter().filter(|p| p.exists()).count() as u32;
+                crate::activity::set(&key, "Pictures", &title, what.clone(), done, total);
+            }
+        })
+    };
     let tts = state.settings.read().await.ai.tts_url.clone();
-    state
+    let sent = state
         .http
         .post(format!("{}/illustrate", tts.trim_end_matches('/')))
         .json(&json!({ "jobs": jobs }))
         .timeout(std::time::Duration::from_secs(3600))
         .send()
         .await
-        .context("the voice server isn't running (Settings → Voices)")?
-        .error_for_status()?;
-    Ok(())
+        .context("the voice server isn't running (Settings → Voices)")
+        .and_then(|r| r.error_for_status().map_err(Into::into));
+    ticker.abort();
+    crate::activity::clear(&key);
+    sent.map(|_| ())
 }

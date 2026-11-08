@@ -298,6 +298,28 @@ pub fn Discover() -> impl IntoView {
 }
 
 #[component]
+fn ActivityNow() -> impl IntoView {
+    let list = RwSignal::new(Vec::<crate::Activity>::new());
+    let refresh = move || {
+        spawn_local(async move {
+            if let Ok(v) = api::get::<Vec<crate::Activity>>("/api/activity").await {
+                list.set(v);
+            }
+        });
+    };
+    refresh();
+    poll(2000, refresh);
+    view! {
+        <Show when=move || !list.with(Vec::is_empty)>
+            <section class="activity-now">
+                <h3>"In the background now"</h3>
+                <crate::ActivityList list=list.into()/>
+            </section>
+        </Show>
+    }
+}
+
+#[component]
 pub fn Jobs() -> impl IntoView {
     let jobs = LocalResource::new(|| api::get::<Vec<Job>>("/api/jobs"));
     poll(2000, move || jobs.refetch());
@@ -309,6 +331,7 @@ pub fn Jobs() -> impl IntoView {
             </div>
         </header>
         <p class="hint">"Jobs run one at a time and can take a while: a long book can take hours on one graphics card."</p>
+        <ActivityNow/>
         {move || {
             let all = jobs.get().and_then(|r| r.ok()).unwrap_or_default();
             // A failure that a later run of the same job has replaced is history, not news.
