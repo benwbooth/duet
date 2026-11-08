@@ -347,9 +347,16 @@ uniform sampler2D u_tex;
 uniform vec2 u_view;
 uniform vec4 u_sh;     // shadow: edge point, direction away from the turning page
 uniform vec3 u_shp;    // reach, strength, on
+uniform vec2 u_fold;   // the spine's x, strength (0: no fold)
 varying vec2 v_pos;
 void main() {
   vec3 col = texture2D(u_tex, v_pos / u_view).rgb;
+  if (u_fold.y > 0.0) {
+    // The same shading as the book's fold (styles.css): darkest at the spine, gone 40px out.
+    float d = abs(v_pos.x - u_fold.x) / 40.0;
+    float f = d < 0.3 ? mix(0.16, 0.06, d / 0.3) : mix(0.06, 0.0, clamp((d - 0.3) / 0.7, 0.0, 1.0));
+    col *= 1.0 - f * u_fold.y;
+  }
   if (u_shp.z > 0.5) {
     float d = dot(v_pos - u_sh.xy, u_sh.zw);
     float r = u_shp.x;
@@ -398,7 +405,7 @@ class CurlGL {
     if (!gl.getProgramParameter(flat, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(flat));
     this.flat = flat;
     this.f = {};
-    for (const n of ["u_rect", "u_view", "u_pad", "u_tex", "u_sh", "u_shp"]) this.f[n] = gl.getUniformLocation(flat, n);
+    for (const n of ["u_rect", "u_view", "u_pad", "u_tex", "u_sh", "u_shp", "u_fold"]) this.f[n] = gl.getUniformLocation(flat, n);
     this.flatLoc = gl.getAttribLocation(flat, "a_uv");
     gl.useProgram(prog);
     // A fine grid over the sheet: fine enough that the roll looks round from any angle, even
@@ -498,6 +505,7 @@ class CurlGL {
     gl.uniform2f(f.u_view, W, H);
     gl.uniform2f(f.u_pad, ...(this.pad || [0, 0]));
     gl.uniform1i(f.u_tex, unit);
+    gl.uniform2f(f.u_fold, ...(this.fold || [0, 0]));
     if (shadow) {
       gl.uniform4f(f.u_sh, shadow.edge.x, shadow.edge.y, shadow.dir.x, shadow.dir.y);
       gl.uniform3f(f.u_shp, shadow.reach, shadow.strength, 1);
@@ -514,6 +522,7 @@ class CurlGL {
 
   // Just a picture of the book, flat (keeping the old page on screen while the next chapter loads).
   cover(picture, W, H) {
+    this.fold = null;
     this.texture(0, picture);
     this.size(W, H);
     this.clear();
@@ -524,6 +533,7 @@ class CurlGL {
 
   draw(p) {
     const gl = this.gl, u = this.u;
+    this.fold = p.fold || null;
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     // The page uncovered beneath (texture 2) and the facing page that doesn't move (texture 0).
@@ -1919,7 +1929,11 @@ class Pager {
     if (r > w) { vx *= w / r; vy *= w / r; }
     P = { x: hp.x + vx, y: hp.y + vy };
     let d = Math.hypot(P.x - C.x, P.y - C.y);
-    const flat = { x0: t.leaf[0], w, W, H, hinge: t.hinge, ghost: !!t.ghost, paper: t.paper, squash: 1, under: true, still: t.still };
+    // (The open book's fold down the middle, on the pages lying flat: the pictures leave it out,
+    // as the turning sheet mustn't carry it.)
+    const dark = (this.book.closest(".reader") || {}).dataset?.theme === "dark";
+    const fold = this.spread ? [W / 2, dark ? 0.35 : 1] : null;
+    const flat = { x0: t.leaf[0], w, W, H, hinge: t.hinge, ghost: !!t.ghost, paper: t.paper, squash: 1, under: true, still: t.still, fold };
     if (d < 0.5) {
       // Lying flat: the lift line far off on the side away from the corner (s < 0 everywhere),
       // so the whole sheet is drawn flat, front up, over the page beneath it.
