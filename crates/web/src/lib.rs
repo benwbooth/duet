@@ -473,7 +473,7 @@ fn App() -> impl IntoView {
     view! {
         <div class="app" class:immersive=immersive class:no-sidebar=move || immersive() && sidebar_hidden.get()>
             <nav class="tabs">
-                <a class="brand" href="#/">{logo()}<span>"duet"</span></a>
+                <a class="brand" href="#/" aria-label="duet">{logo()}<span class="wordmark" aria-hidden="true"><span class="initial">"D"</span>"uet"</span></a>
                 {TABS.map(|(id, label, path)| view! {
                     <a href=format!("#/{}", if id == "library" { "" } else { id })
                         class:active=move || route.get().tab() == id>
