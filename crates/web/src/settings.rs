@@ -145,6 +145,8 @@ pub fn SettingsPage() -> impl IntoView {
                     |x| x.import_dir.clone(), |x, v| x.import_dir = v)}
                 {text(s, "Proxy for site searches", "HTTP proxy every Discover search and file download goes through — e.g. your VPN's forward proxy (http://localhost:8888). Empty: connect directly. LAN addresses (qBittorrent, indexers) always bypass it.",
                     |x| x.proxy_url.clone(), |x, v| x.proxy_url = v)}
+                {text(s, "Browser inbox folder", "Drop ebooks/audiobooks here (e.g. the remote Firefox's downloads) and duet imports them automatically. Empty: disabled.",
+                    |x| x.inbox_dir.clone(), |x, v| x.inbox_dir = v)}
             </section>
 
             <section>

@@ -241,6 +241,10 @@ pub struct Settings {
     /// (e.g. your VPN's forward proxy). Empty: connect directly.
     #[serde(default = "default_proxy_url")]
     pub proxy_url: String,
+    /// Browser inbox: duet imports any ebook/audiobook file dropped here
+    /// (e.g. the remote Firefox's downloads). Empty: disabled.
+    #[serde(default)]
+    pub inbox_dir: String,
     pub qbittorrent: QbitSettings,
     pub indexers: Vec<Indexer>,
     /// Built-in public-domain sources that can be switched off.
@@ -301,6 +305,7 @@ impl Default for Settings {
             library_dirs: Vec::new(),
             import_dir: String::new(),
             proxy_url: default_proxy_url(),
+            inbox_dir: String::new(),
             qbittorrent: QbitSettings::default(),
             indexers: Vec::new(),
             free_sources: FreeSources::default(),

@@ -146,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::spawn(jobs::run(state.clone()));
     tokio::spawn(downloads::watch_torrents(state.clone()));
+    tokio::spawn(library::watch_inbox(state.clone()));
     tokio::spawn(setup::autostart(state.clone()));
     // (Years for books added before years were read, without waiting for a library scan.)
     {
