@@ -149,9 +149,11 @@ async fn plan(state: &State, asset: i64, chapter: usize) -> anyhow::Result<Vec<S
         "You are the illustration director for an illustrated edition of {title} by {author}. Read this chapter \
          and choose about {want} moments to illustrate, spread through it (roughly one every few pages), each a \
          vivid, important or delightful moment of the story. For each give: the number of the sentence where it \
-         happens; a caption of a few words; and the scene for the artist in at most 45 words: who is there, \
-         where, what they are doing, their expressions, the setting, light and framing (no art style, no text, \
-         no names alone: say what people and creatures look like or name them from the look-book). Keep every \
+         happens; a caption of a few words; and the scene for the artist in at most 40 words, the most \
+         important first: who is there, described by how they look (the artist doesn't know their names: write \
+         the look-book's description in, e.g. 'a fair-haired girl of seven in a pale blue dress and white \
+         pinafore'), what they are doing, their expressions, then the setting, light and framing. No art \
+         style and no text in the picture. Keep every \
          character looking the same through the whole book: use the look-book, and for anyone pictured who \
          isn't in it, add a look of at most 20 words (age, build, hair, clothes, colours; for creatures, what \
          they are and wear), true to how the book describes them. Reply with JSON only: {{\"scenes\": \
@@ -260,13 +262,11 @@ async fn draw(state: &State, asset: i64, chapter: usize, scenes: &[Scene]) -> an
         .enumerate()
         .filter(|(i, _)| !image_path(state, asset, chapter, *i).exists())
         .map(|(i, s)| {
-            let looks: Vec<String> = s.characters.iter().filter_map(|c| style.characters.get(c).map(|l| format!("{c}: {l}"))).collect();
-            let who = if looks.is_empty() { String::new() } else { format!(" {}.", looks.join("; ")) };
             json!({
                 // (Two prompts: SDXL reads each through its own text encoder, 77 tokens apiece:
                 // the moment and who's in it in one, the style in the other, so neither crowds
                 // the other out.)
-                "prompt": format!("{}.{who}", s.scene.trim_end_matches('.')),
+                "prompt": s.scene,
                 "prompt_2": format!("{}. {}", style.style, s.scene),
                 "seed": s.seed,
                 "out": image_path(state, asset, chapter, i),
