@@ -2983,7 +2983,20 @@ function sentenceWords(container, n) {
   return ranges;
 }
 
+// One frame of the read-along. (A failure in one frame mustn't stop it for good: it went on
+// believing it was running, so no word was shown again until the page was reloaded.)
 function alongTick() {
+  try {
+    alongFrame();
+  } catch (e) {
+    console.warn("read-along:", e);
+    const st = along.st;
+    if (st && !st.audio.paused) requestAnimationFrame(alongTick);
+    else along.running = false;
+  }
+}
+
+function alongFrame() {
   const st = along.st;
   if (!st || !st.container.isConnected || !window.CSS || !CSS.highlights) {
     along.running = false;
