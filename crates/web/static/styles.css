@@ -1603,7 +1603,7 @@ button, .transport { -webkit-user-select: none; user-select: none; }
   font-family: 'Pinyon Script'; font-style: normal; font-weight: 400; font-display: swap;
   src: url(font-pinyon-script-latin.woff2) format('woff2');
 }
-.tabs .brand .wordmark { font: 400 2.05rem/1 'Pinyon Script', 'Snell Roundhand', cursive; color: var(--text); letter-spacing: 0.01em;
+.tabs .brand .wordmark { font: 400 2.35rem/1 'Pinyon Script', 'Snell Roundhand', cursive; color: var(--text); letter-spacing: 0.01em;
   display: inline-flex; align-items: baseline; padding-top: 0.15rem; }
 .tabs .brand .wordmark .initial {
   font-size: 1.55em; line-height: 0.8; margin-right: 0.02em;
