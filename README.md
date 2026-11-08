@@ -7,7 +7,7 @@ A self-hosted book reader and audiobook player that keeps the two in sync. It's 
 - **Full-cast audiobooks from ebooks.** A chat model attributes the dialogue and writes a voice description for each character. Qwen3-TTS *VoiceDesign* builds a voice from that description, which is then cloned for consistency. Narration and dialogue are recorded chapter by chapter, and the result is synced automatically.
 - **Ebooks from audiobooks.** The audio is transcribed, cleaned up into paragraphs and headings by the chat model, and written out as an EPUB.
 - **Voice assistant.** You can ask about the book so far (without spoilers), define a selected word, or talk to a character or the narrator in their own voice. It works through the microphone or by typing.
-- **Discover and download.** There are built-in free sources (Project Gutenberg, Standard Ebooks, Internet Archive public-domain texts, LibriVox audiobooks). Your own Torznab indexers (Prowlarr, Jackett) are also supported, with downloads through qBittorrent and automatic import when they finish.
+- **Discover and download.** There are built-in free sources (Project Gutenberg, Standard Ebooks, Internet Archive public-domain texts, LibriVox audiobooks) and, from the Open SLUM list, Anna's Archive (title search + fast downloads, or one file out of its big preservation torrents through qBittorrent), LibGen (which includes the RandomBook mirrors), and Audiobook Bay audiobooks (magnet links for qBittorrent; Z-Library and Sci-Hub sit behind bot challenges everywhere and are covered through Anna's Archive instead). Your own Torznab indexers (Prowlarr, Jackett) are also supported, with downloads through qBittorrent and automatic import when they finish. See `docs/downloads.md`.
 
 ## Running
 

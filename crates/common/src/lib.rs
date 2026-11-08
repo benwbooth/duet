@@ -13,6 +13,8 @@ pub struct WorkSummary {
     pub author: Option<String>,
     pub series: Option<String>,
     pub series_index: Option<f64>,
+    /// Publication year, when any edition states one.
+    pub year: Option<i32>,
     pub has_ebook: bool,
     pub has_audiobook: bool,
     pub has_sync: bool,
@@ -29,6 +31,7 @@ pub struct WorkDetail {
     pub series: Option<String>,
     pub series_index: Option<f64>,
     pub description: Option<String>,
+    pub year: Option<i32>,
     pub cover_url: Option<String>,
     pub assets: Vec<Asset>,
     pub position: Option<Position>,
@@ -223,16 +226,25 @@ pub struct NewJob {
 /// Everything configured on the settings page. Stored as one JSON document.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
-#[derive(Default)]
 pub struct Settings {
     /// Folders scanned for books and audiobooks.
     pub library_dirs: Vec<String>,
     /// Where downloads and generated files are written (inside the library).
     pub import_dir: String,
+    /// HTTP proxy all site searches and downloads go through
+    /// (e.g. your VPN's forward proxy). Empty: connect directly.
+    #[serde(default = "default_proxy_url")]
+    pub proxy_url: String,
     pub qbittorrent: QbitSettings,
     pub indexers: Vec<Indexer>,
     /// Built-in public-domain sources that can be switched off.
     pub free_sources: FreeSources,
+    /// Anna's Archive (search requires a member secret key).
+    pub annas_archive: AnnasArchiveSettings,
+    /// Library Genesis — includes the RandomBook / libgen.pw / libgen.me mirrors.
+    pub libgen: LibGenSettings,
+    /// Audiobook Bay (audiobook torrents as magnet links).
+    pub audiobookbay: AudiobookBaySettings,
     pub ai: AiSettings,
     pub reader: ReaderSettings,
     /// The first-run guide was finished or skipped.
@@ -252,6 +264,10 @@ pub struct QbitSettings {
     pub category_audiobooks: String,
     /// Import finished downloads into the library automatically.
     pub auto_import: bool,
+    /// Host-side path that qBittorrent's `url` sees as its save path (for
+    /// Dockerized qBittorrent, e.g. /downloads -> /mnt/stuff/Downloads).
+    /// Empty: duet assumes qBittorrent runs on this host.
+    pub host_save_path: String,
 }
 
 impl Default for QbitSettings {
@@ -264,6 +280,30 @@ impl Default for QbitSettings {
             category_ebooks: "duet-ebooks".into(),
             category_audiobooks: "duet-audiobooks".into(),
             auto_import: true,
+            host_save_path: String::new(),
+        }
+    }
+}
+
+fn default_proxy_url() -> String {
+    "http://localhost:8888".into()
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            library_dirs: Vec::new(),
+            import_dir: String::new(),
+            proxy_url: default_proxy_url(),
+            qbittorrent: QbitSettings::default(),
+            indexers: Vec::new(),
+            free_sources: FreeSources::default(),
+            annas_archive: AnnasArchiveSettings::default(),
+            libgen: LibGenSettings::default(),
+            audiobookbay: AudiobookBaySettings::default(),
+            ai: AiSettings::default(),
+            reader: ReaderSettings::default(),
+            setup_done: false,
         }
     }
 }
@@ -289,11 +329,68 @@ pub struct FreeSources {
     pub standard_ebooks: bool,
     pub librivox: bool,
     pub internet_archive: bool,
+    pub annas_archive: bool,
+    pub libgen: bool,
+    pub audiobookbay: bool,
 }
 
 impl Default for FreeSources {
     fn default() -> Self {
-        FreeSources { gutenberg: true, standard_ebooks: true, librivox: true, internet_archive: true }
+        FreeSources { gutenberg: true, standard_ebooks: true, librivox: true, internet_archive: true, annas_archive: true, libgen: true, audiobookbay: true }
+    }
+}
+
+/// Anna's Archive: search is scraped from the mirror's /search pages, and
+/// downloads go through the member fast-download API. Anna's Archive now
+/// challenges anonymous requests, so `secret_key` (the account secret shown
+/// on your account page, the same key the fast-download API uses) is
+/// required; the server trades it for a session cookie and never logs it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AnnasArchiveSettings {
+    /// Which mirror to use (domains rotate; check the current list on the
+    /// Anna's Archive Wikipedia page before changing it).
+    pub mirror: String,
+    pub secret_key: String,
+}
+
+impl Default for AnnasArchiveSettings {
+    fn default() -> Self {
+        AnnasArchiveSettings { mirror: "https://annas-archive.gl".into(), secret_key: String::new() }
+    }
+}
+
+/// Library Genesis (LibGen). The RandomBook, libgen.pw and libgen.me mirrors
+/// serve the same database, so one search covers them all; downloads go
+/// through the mirror's own `/ads.php` → `/get.php` hop.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct LibGenSettings {
+    /// Which mirror to use (Open SLUM tracks these; change it here if the
+    /// default stops answering).
+    pub base_url: String,
+}
+
+impl Default for LibGenSettings {
+    fn default() -> Self {
+        LibGenSettings { base_url: "https://libgen.li".into() }
+    }
+}
+
+/// Audiobook Bay: a community torrent index for audiobooks. There is no
+/// official API; duet searches the listing pages and fetches each torrent's
+/// detail page for its info hash, then builds a magnet link for qBittorrent.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AudiobookBaySettings {
+    /// Base URL of the site (current mirrors: audiobookbay.lu and friends;
+    /// change it here if the default stops working).
+    pub base_url: String,
+}
+
+impl Default for AudiobookBaySettings {
+    fn default() -> Self {
+        AudiobookBaySettings { base_url: "https://audiobookbay.lu".into() }
     }
 }
 
@@ -453,6 +550,10 @@ pub struct Download {
     pub state: String,
     pub size: Option<i64>,
     pub source: String,
+    /// Unix seconds when the download started (direct: row creation;
+    /// torrents: qBittorrent's added_on). Newest first in the pane.
+    #[serde(default)]
+    pub started_at: Option<i64>,
 }
 
 /// A question to the assistant, typed or transcribed from the microphone.

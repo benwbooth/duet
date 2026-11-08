@@ -22,6 +22,9 @@ pub struct Torrent {
     pub category: String,
     #[serde(default)]
     pub content_path: String,
+    /// Unix seconds when qBittorrent added it.
+    #[serde(default)]
+    pub added_on: i64,
 }
 
 impl Torrent {
@@ -118,5 +121,25 @@ impl Qbit {
     pub async fn list(&self, s: &QbitSettings, category: &str) -> anyhow::Result<Vec<Torrent>> {
         let resp = self.send(s, || self.http.get(Self::url(s, "torrents/info")).query(&[("category", category)])).await?;
         Ok(resp.json().await?)
+    }
+
+    /// Removes a torrent from qBittorrent but keeps its files on disk
+    /// (duet-managed downloads are already imported into the library).
+    pub async fn remove(&self, s: &QbitSettings, hash: &str) -> anyhow::Result<()> {
+        self.send(s, || {
+            self.http
+                .post(Self::url(s, "torrents/delete"))
+                .form(&[("hashes", hash), ("deleteFiles", "false")])
+        })
+        .await?
+        .error_for_status()?;
+        Ok(())
+    }
+
+    /// Exports a torrent's .torrent bytes (useful for magnets once qBittorrent
+    /// has fetched their metadata).
+    pub async fn export(&self, s: &QbitSettings, hash: &str) -> anyhow::Result<Vec<u8>> {
+        let resp = self.send(s, || self.http.get(Self::url(s, "torrents/export")).query(&[("hash", hash)])).await?;
+        Ok(resp.bytes().await?.to_vec())
     }
 }

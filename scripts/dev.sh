@@ -43,7 +43,9 @@ stamp() { printf '\033[2m%s\033[0m %s\n' "$(date +%T)" "$*"; }
 
 build_web() {
   stamp "building UI"
-  if crates/web/build.sh >/dev/null 2>"$root/target/dev-web.err"; then
+  # Empty (not unset): overrides ~/.cargo/config.toml's kache wrapper, which
+  # has served stale artifacts. Unset would fall back to the config file.
+  if RUSTC_WORKSPACE_WRAPPER= RUSTC_WRAPPER= crates/web/build.sh >/dev/null 2>"$root/target/dev-web.err"; then
     stamp "UI ready"
   else
     cat "$root/target/dev-web.err" >&2
@@ -53,7 +55,9 @@ build_web() {
 
 restart_server() {
   stamp "building server"
-  if ! cargo build -p duet-server; then
+  # Empty (not unset): overrides ~/.cargo/config.toml's kache wrapper, which
+  # has served stale artifacts. Unset would fall back to the config file.
+  if ! RUSTC_WORKSPACE_WRAPPER= RUSTC_WRAPPER= cargo build -p duet-server; then
     stamp "server build failed; keeping the running server"
     return
   fi

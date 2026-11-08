@@ -165,11 +165,14 @@ fn result_column(heading: &'static str, path: &'static str, options: Vec<SearchR
 }
 
 /// The places Discover searches, as (id for the API, name shown).
-const SOURCES: [(&str, &str); 5] = [
+const SOURCES: [(&str, &str); 8] = [
     ("gutenberg", "Project Gutenberg"),
     ("standard_ebooks", "Standard Ebooks"),
     ("internet_archive", "Internet Archive"),
+    ("annas_archive", "Anna's Archive"),
+    ("libgen", "LibGen"),
     ("librivox", "LibriVox"),
+    ("audiobookbay", "Audiobook Bay"),
     ("indexers", "Your indexers"),
 ];
 
@@ -261,7 +264,7 @@ pub fn Discover() -> impl IntoView {
                 <span class="spinner"></span>
             </Show>
         </form>
-        <p class="hint">"Free sources: Project Gutenberg, Standard Ebooks, Internet Archive and LibriVox. Add your own Torznab indexers in "<a href="#/settings">"Settings"</a>"."</p>
+        <p class="hint">"Free sources plus Anna's Archive and Audiobook Bay. Anna's Archive needs your member secret key, set in "<a href="#/settings">"Settings"</a>"."</p>
 
         <Show when=move || !status.with(Vec::is_empty)>
             <div class="source-status">
@@ -291,7 +294,6 @@ pub fn Discover() -> impl IntoView {
                 {group(r.results).into_iter().map(|g| view! { <FoundBook g download/> }).collect_view()}
             </div>
         })}
-
     }
 }
 

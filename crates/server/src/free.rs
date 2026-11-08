@@ -1,9 +1,12 @@
-//! Built-in sources of free, legally downloadable books: Project Gutenberg (via Gutendex),
-//! Standard Ebooks, LibriVox and Internet Archive public-domain texts.
+//! Built-in sources: Project Gutenberg (via Gutendex), Standard Ebooks,
+//! LibriVox and Internet Archive public-domain texts, plus Anna's Archive
+//! ebooks and Audiobook Bay audiobooks.
 
-use duet_common::{AssetKind, DownloadTarget, FreeSources, SearchResult};
+use duet_common::{AnnasArchiveSettings, AssetKind, AudiobookBaySettings, DownloadTarget, FreeSources, LibGenSettings, SearchResult};
 use kuchikiki::traits::TendrilSink;
 use serde::Deserialize;
+
+use crate::{annas_archive::AnnasArchive, audiobookbay::AudiobookBay, libgen::LibGen};
 
 /// How long one source may take before the others are shown without it.
 const SOURCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
@@ -30,29 +33,122 @@ async fn source(
     })
 }
 
+/// Tries each mirror (your configured primary, then the Open SLUM known
+/// set) until one answers with results. The first working mirror wins, and
+/// the whole loop is bounded (40s) so a slow mirror never blocks search.
+async fn failover<'a>(
+    name: &str,
+    mirrors: Vec<String>,
+    mut attempt: impl FnMut(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<SearchResult>>> + 'a + Send>>,
+) -> Option<anyhow::Result<Vec<SearchResult>>> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+    let mut last_err: Option<anyhow::Error> = None;
+    for mirror in &mirrors {
+        if std::time::Instant::now() > deadline {
+            break;
+        }
+        match attempt(mirror.clone()).await {
+            Ok(v) if !v.is_empty() => return Some(Ok(v)),
+            Ok(_) => last_err = Some(anyhow::anyhow!("{name} answered but had nothing")),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Some(Err(last_err.unwrap_or_else(|| anyhow::anyhow!("{name}: no mirrors"))))
+}
+
 /// Searches one built-in source by its id ("gutenberg", "standard_ebooks", "internet_archive",
-/// "librivox"), if it's switched on.
-pub async fn search_one(http: &reqwest::Client, enabled: &FreeSources, id: &str, q: &str) -> Option<anyhow::Result<Vec<SearchResult>>> {
+/// "librivox", "annas_archive", "libgen", "audiobookbay"), if it's switched on.
+pub async fn search_one(
+    http: &reqwest::Client,
+    http_cookies: &reqwest::Client,
+    annas: &AnnasArchive,
+    enabled: &FreeSources,
+    aa: &AnnasArchiveSettings,
+    libgen: &LibGenSettings,
+    abb: &AudiobookBaySettings,
+    id: &str,
+    q: &str,
+) -> Option<anyhow::Result<Vec<SearchResult>>> {
     match id {
         "gutenberg" => source("Project Gutenberg", enabled.gutenberg, gutenberg(http, q)).await,
         "standard_ebooks" => source("Standard Ebooks", enabled.standard_ebooks, standard_ebooks(http, q)).await,
         "internet_archive" => source("Internet Archive", enabled.internet_archive, internet_archive(http, q)).await,
         "librivox" => source("LibriVox", enabled.librivox, librivox(http, q)).await,
+        "annas_archive" => {
+            if !enabled.annas_archive {
+                None
+            } else {
+                let known = crate::mirrors::annas_archive_list();
+                failover("Anna's Archive", crate::mirrors::ordered(&aa.mirror, &known), |m| Box::pin(async move {
+                    annas.search(http, m.as_str(), &aa.secret_key, q).await
+                })).await
+            }
+        }
+        "libgen" => {
+            if !enabled.libgen {
+                None
+            } else {
+                let known = crate::mirrors::libgen_list();
+                failover("LibGen", crate::mirrors::ordered(&libgen.base_url, &known), |m| Box::pin(async move {
+                    LibGen::search(http, m.as_str(), q).await
+                })).await
+            }
+        }
+        "audiobookbay" => {
+            if !enabled.audiobookbay {
+                None
+            } else {
+                failover("Audiobook Bay", crate::mirrors::ordered(&abb.base_url, crate::mirrors::AUDIOBOOK_BAY), |m| Box::pin(async move {
+                    AudiobookBay::search(http_cookies, m.as_str(), q).await
+                })).await
+            }
+        }
         _ => None,
     }
 }
 
-pub async fn search(http: &reqwest::Client, enabled: &FreeSources, q: &str, kind: AssetKind) -> Vec<anyhow::Result<Vec<SearchResult>>> {
+pub async fn search(
+    http: &reqwest::Client,
+    http_cookies: &reqwest::Client,
+    annas: &AnnasArchive,
+    enabled: &FreeSources,
+    aa: &AnnasArchiveSettings,
+    libgen: &LibGenSettings,
+    abb: &AudiobookBaySettings,
+    q: &str,
+    kind: AssetKind,
+) -> Vec<anyhow::Result<Vec<SearchResult>>> {
     match kind {
         AssetKind::Ebook => {
-            let (s, g, ia) = tokio::join!(
+            let annas_known = crate::mirrors::annas_archive_list();
+            let libgen_known = crate::mirrors::libgen_list();
+            let annas_search = failover("Anna's Archive", crate::mirrors::ordered(&aa.mirror, &annas_known), move |m| Box::pin(async move {
+                let key = aa.secret_key.clone();
+                let q = q.to_string();
+                annas.search(http, m.as_str(), &key, &q).await
+            }));
+            let libgen_search = failover("LibGen", crate::mirrors::ordered(&libgen.base_url, &libgen_known), |m| Box::pin(async move {
+                LibGen::search(http, m.as_str(), q).await
+            }));
+            let (s, g, ia, annas, lg) = tokio::join!(
                 source("Standard Ebooks", enabled.standard_ebooks, standard_ebooks(http, q)),
                 source("Project Gutenberg", enabled.gutenberg, gutenberg(http, q)),
                 source("Internet Archive", enabled.internet_archive, internet_archive(http, q)),
+                async { if enabled.annas_archive { annas_search.await } else { None } },
+                async { if enabled.libgen { libgen_search.await } else { None } },
             );
-            [s, g, ia].into_iter().flatten().collect()
+            [s, g, ia, annas, lg].into_iter().flatten().collect()
         }
-        AssetKind::Audiobook => source("LibriVox", enabled.librivox, librivox(http, q)).await.into_iter().collect(),
+        AssetKind::Audiobook => {
+            let abb_search = failover("Audiobook Bay", crate::mirrors::ordered(&abb.base_url, crate::mirrors::AUDIOBOOK_BAY), |m| Box::pin(async move {
+                AudiobookBay::search(http_cookies, m.as_str(), q).await
+            }));
+            let (lv, ab) = tokio::join!(
+                source("LibriVox", enabled.librivox, librivox(http, q)),
+                async { if enabled.audiobookbay { abb_search.await } else { None } },
+            );
+            [lv, ab].into_iter().flatten().collect()
+        }
     }
 }
 

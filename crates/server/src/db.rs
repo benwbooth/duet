@@ -41,7 +41,7 @@ pub fn cover_url(id: i64, cover: &Option<String>) -> Option<String> {
 
 pub async fn list_works(db: &SqlitePool) -> anyhow::Result<Vec<WorkSummary>> {
     let rows = sqlx::query(
-        "SELECT w.id, w.title, w.author, w.series, w.series_index, w.cover_path,
+        "SELECT w.id, w.title, w.author, w.series, w.series_index, w.year, w.cover_path,
             EXISTS(SELECT 1 FROM assets a WHERE a.work_id = w.id AND a.kind = 'ebook') AS has_ebook,
             EXISTS(SELECT 1 FROM assets a WHERE a.work_id = w.id AND a.kind = 'audiobook') AS has_audiobook,
             EXISTS(SELECT 1 FROM sync_maps s WHERE s.work_id = w.id) AS has_sync,
@@ -64,6 +64,7 @@ pub async fn list_works(db: &SqlitePool) -> anyhow::Result<Vec<WorkSummary>> {
                 author: r.get("author"),
                 series: r.get("series"),
                 series_index: r.get("series_index"),
+                year: r.get("year"),
                 has_ebook: r.get("has_ebook"),
                 has_audiobook: r.get("has_audiobook"),
                 has_sync: r.get("has_sync"),
@@ -88,6 +89,7 @@ pub async fn work_detail(db: &SqlitePool, id: i64) -> anyhow::Result<Option<Work
         series: r.get("series"),
         series_index: r.get("series_index"),
         description: r.get("description"),
+        year: r.get("year"),
         cover_url: cover_url(id, &cover),
         assets: work_assets(db, id).await?,
         position: get_position(db, id).await?,

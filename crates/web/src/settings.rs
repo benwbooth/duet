@@ -143,6 +143,8 @@ pub fn SettingsPage() -> impl IntoView {
                 </div>
                 {text(s, "Import folder", "Downloads and generated audiobooks/ebooks go here. Empty: the data directory.",
                     |x| x.import_dir.clone(), |x, v| x.import_dir = v)}
+                {text(s, "Proxy for site searches", "HTTP proxy every Discover search and file download goes through — e.g. your VPN's forward proxy (http://localhost:8888). Empty: connect directly. LAN addresses (qBittorrent, indexers) always bypass it.",
+                    |x| x.proxy_url.clone(), |x, v| x.proxy_url = v)}
             </section>
 
             <section>
@@ -152,6 +154,14 @@ pub fn SettingsPage() -> impl IntoView {
                 {toggle(s, "Standard Ebooks", |x| x.free_sources.standard_ebooks, |x, v| x.free_sources.standard_ebooks = v)}
                 {toggle(s, "Internet Archive (public domain texts)", |x| x.free_sources.internet_archive, |x, v| x.free_sources.internet_archive = v)}
                 {toggle(s, "LibriVox audiobooks", |x| x.free_sources.librivox, |x, v| x.free_sources.librivox = v)}
+                {toggle(s, "Anna's Archive ebooks", |x| x.free_sources.annas_archive, |x, v| x.free_sources.annas_archive = v)}
+                {toggle(s, "LibGen ebooks (incl. RandomBook mirrors)", |x| x.free_sources.libgen, |x, v| x.free_sources.libgen = v)}
+                {text(s, "LibGen mirror", "e.g. https://libgen.li or https://libgen.bz", |x| x.libgen.base_url.clone(), |x, v| x.libgen.base_url = v)}
+                {toggle(s, "Audiobook Bay audiobooks", |x| x.free_sources.audiobookbay, |x, v| x.free_sources.audiobookbay = v)}
+                {text(s, "Anna's Archive mirror", "Current mirrors are listed on the Anna's Archive Wikipedia page.", |x| x.annas_archive.mirror.clone(), |x, v| x.annas_archive.mirror = v)}
+                {secret(s, "Anna's Archive secret key", |x| x.annas_archive.secret_key.clone(), |x, v| x.annas_archive.secret_key = v)}
+                <p class="hint">"The key from your Anna's Archive account page (the same key the fast-download API uses). It is sent to the mirror above when you search or download. If a mirror dies, duet automatically tries the other known mirrors (Open SLUM list)."</p>
+                {text(s, "Audiobook Bay site", "e.g. https://audiobookbay.lu", |x| x.audiobookbay.base_url.clone(), |x, v| x.audiobookbay.base_url = v)}
             </section>
 
             <section>
@@ -162,6 +172,7 @@ pub fn SettingsPage() -> impl IntoView {
                 {secret(s, "Password", |x| x.qbittorrent.password.clone(), |x, v| x.qbittorrent.password = v)}
                 {text(s, "Category for ebooks", "", |x| x.qbittorrent.category_ebooks.clone(), |x, v| x.qbittorrent.category_ebooks = v)}
                 {text(s, "Category for audiobooks", "", |x| x.qbittorrent.category_audiobooks.clone(), |x, v| x.qbittorrent.category_audiobooks = v)}
+                {text(s, "Host save path", "If qBittorrent runs in Docker, where this machine mounts the folder it sees as its save path (e.g. /mnt/stuff/Downloads). Empty: same machine.", |x| x.qbittorrent.host_save_path.clone(), |x, v| x.qbittorrent.host_save_path = v)}
                 {toggle(s, "Import finished downloads automatically", |x| x.qbittorrent.auto_import, |x, v| x.qbittorrent.auto_import = v)}
                 <button on:click=test_qbit>"Test connection"</button>
             </section>
@@ -244,8 +255,7 @@ pub fn SettingsPage() -> impl IntoView {
 
 /// Installs and runs the local voice stack: Fish Audio S2-Pro for acting, Qwen3-TTS for casting.
 #[component]
-pub fn VoicesSetup(s: RwSignal<Settings>) -> impl IntoView {
-    let status = RwSignal::new(None::<VoiceSetup>);
+pub fn VoicesSetup(s: RwSignal<Settings>) -> impl IntoView {    let status = RwSignal::new(None::<VoiceSetup>);
     let busy = RwSignal::new(false);
     let show_log = RwSignal::new(false);
     let server_log = RwSignal::new(Vec::<String>::new());

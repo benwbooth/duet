@@ -208,6 +208,7 @@ fn active(d: &duet_common::Download) -> bool {
 #[component]
 fn DownloadsPane() -> impl IntoView {
     let panel = downloads_panel();
+    let toast = toast();
     // Follow progress while the panel is open; look in now and then for torrents started elsewhere.
     let tick = RwSignal::new(0u32);
     if let Ok(h) = set_interval_with_handle(
@@ -231,22 +232,50 @@ fn DownloadsPane() -> impl IntoView {
     // Newest first; finished ones from earlier sessions aren't news.
     let shown = move || panel.list.get().into_iter().take(12).collect::<Vec<_>>();
     let busy = move || panel.list.with(|l| l.iter().filter(|d| active(d)).count());
+    // Items with nothing left to do: dismissible one by one, or all at once.
+    let any_finished = move || panel.list.with(|l| l.iter().any(|d| !active(d)));
+    let dismiss = move |id: String| {
+        spawn_local(async move {
+            match api::remove(&format!("/api/downloads/{id}")).await {
+                Ok(()) => panel.refresh(),
+                Err(e) => toast.show(e.0),
+            }
+        });
+    };
+    let clear_finished = move |_| {
+        let ids: Vec<String> = panel.list.with(|l| l.iter().filter(|d| !active(d)).map(|d| d.id.clone()).collect());
+        spawn_local(async move {
+            for id in ids {
+                let _ = api::remove(&format!("/api/downloads/{id}")).await;
+            }
+            panel.refresh();
+        });
+    };
     view! {
         <Show when=move || panel.open.get() && !panel.list.with(Vec::is_empty)>
             <aside class="downloads-pane" class:collapsed=move || panel.collapsed.get()>
                 <header on:click=move |_| panel.collapsed.update(|c| *c = !*c)>
-                    {move || if busy() > 0 { view! { <span class="spinner small"></span> }.into_any() } else { view! { {icon(icons::CHECK)} }.into_any() }}
-                    <strong>{move || match busy() {
-                        0 => "Downloads finished".to_string(),
-                        1 => "Downloading 1 item".to_string(),
-                        n => format!("Downloading {n} items"),
+                    <span class="dl-head-icon">{move || if busy() > 0 { view! { <span class="spinner small"></span> }.into_any() } else { view! { {icon(icons::CHECK)} }.into_any() }}</span>
+                    <strong>{move || {
+                        let n = busy();
+                        if n == 0 {
+                            "Downloads".to_string()
+                        } else if n == 1 {
+                            "Downloading 1 item".to_string()
+                        } else {
+                            format!("Downloading {n} items")
+                        }
                     }}</strong>
                     <button class="icon-button" aria-label="Collapse">{move || if panel.collapsed.get() { "▴" } else { "▾" }}</button>
+                    <Show when=move || any_finished()>
+                        <button class="icon-button clear-finished" title="Clear finished downloads" aria-label="Clear finished downloads"
+                            on:click=move |ev| { ev.stop_propagation(); clear_finished(()); }>"Clear"</button>
+                    </Show>
                     <button class="icon-button" aria-label="Close" on:click=move |ev| { ev.stop_propagation(); panel.open.set(false) }>"×"</button>
                 </header>
                 <Show when=move || !panel.collapsed.get()>
                     <ul>
-                        <For each=shown key=|d| (d.id.clone(), (d.progress * 100.0) as i64, d.state.clone()) let:d>
+                        <For each=shown key=|d| d.id.clone() let:d>
                             {
                                 let done = d.state == "imported" || (!active(&d) && d.state != "failed");
                                 let failed = d.state == "failed";
@@ -264,6 +293,13 @@ fn DownloadsPane() -> impl IntoView {
                                             </div>
                                         </div>
                                         {done.then(|| view! { <a class="dl-open" href="#/">"Open"</a> })}
+                                        {(done || failed).then(|| view! {
+                                            <button class="icon-button dl-dismiss" title="Remove from downloads" aria-label="Remove from downloads"
+                                                on:click={
+                                                    let id = d.id.clone();
+                                                    move |_| dismiss(id.clone())
+                                                }>"×"</button>
+                                        })}
                                     </li>
                                 }
                             }
@@ -440,7 +476,7 @@ fn book_card(w: WorkSummary) -> impl IntoView {
             </div>
             <div class="info">
                 <div class="title">{w.title.clone()}</div>
-                <div class="author">{w.author.clone().unwrap_or_default()}</div>
+                <div class="author">{byline(&w)}</div>
                 <div class="format-badges">
                     {w.has_ebook.then(|| view! { <span class="fbadge ebook">{icon(icons::BOOK)}"Ebook"</span> })}
                     {w.has_audiobook.then(|| view! { <span class="fbadge audio">{icon(icons::HEADPHONES)}"Audiobook"</span> })}
@@ -458,6 +494,47 @@ enum Shelf {
     Synced,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Layout {
+    Shelf,
+    Grid,
+    List,
+}
+
+/// One row in list layout: cover thumbnail, title, byline, badges, progress.
+fn book_row(w: WorkSummary) -> impl IntoView {
+    let pct = w.progress.unwrap_or(0.0) * 100.0;
+    view! {
+        <a class="book-row" href=format!("#/work/{}", w.id)>
+            <div class="row-cover">{cover(w.cover_url.clone(), w.title.clone())}</div>
+            <div class="row-main">
+                <div class="title">{w.title.clone()}</div>
+                <div class="author">{byline(&w)}</div>
+                <div class="format-badges">
+                    {w.has_ebook.then(|| view! { <span class="fbadge ebook">{icon(icons::BOOK)}"Ebook"</span> })}
+                    {w.has_audiobook.then(|| view! { <span class="fbadge audio">{icon(icons::HEADPHONES)}"Audiobook"</span> })}
+                </div>
+            </div>
+            {w.progress.filter(|p| *p > 0.0).map(|_| view! {
+                <div class="row-progress">
+                    <div class="progress"><div style=format!("width:{pct:.1}%")></div></div>
+                    <span class="pct">{format!("{pct:.0}%")}</span>
+                </div>
+            })}
+        </a>
+    }
+}
+
+/// "Author · 2011", or whichever half exists.
+fn byline(w: &WorkSummary) -> String {
+    match (&w.author, w.year) {
+        (Some(a), Some(y)) => format!("{a} · {y}"),
+        (Some(a), None) => a.clone(),
+        (None, Some(y)) => y.to_string(),
+        (None, None) => String::new(),
+    }
+}
+
 #[component]
 fn Library() -> impl IntoView {
     let works = LocalResource::new(|| api::get::<Vec<WorkSummary>>("/api/library"));
@@ -473,6 +550,7 @@ fn Library() -> impl IntoView {
     });
     let filter = RwSignal::new(String::new());
     let shelf = RwSignal::new(Shelf::All);
+    let layout = RwSignal::new(Layout::Shelf);
     let scanning = RwSignal::new(false);
     let toast = toast();
     let scan = move |_| {
@@ -579,21 +657,44 @@ fn Library() -> impl IntoView {
                     </Show>
                     <div class="shelf-head">
                         <h2>"All books"</h2>
-                        <div class="chips" role="tablist">
+                        <div class="chips" role="tablist" aria-label="Layout">
+                            {[(Layout::Shelf, "Shelf"), (Layout::Grid, "Grid"), (Layout::List, "List")].map(|(k, label)| view! {
+                                <button class="chip-button" class:active=move || layout.get() == k on:click=move |_| layout.set(k)>{label}</button>
+                            })}
+                        </div>
+                        <div class="chips" role="tablist" aria-label="Filter">
                             {[(Shelf::All, "All"), (Shelf::Ebooks, "Ebooks"), (Shelf::Audiobooks, "Audiobooks"), (Shelf::Synced, "Synced")].map(|(k, label)| view! {
                                 <button class="chip-button" class:active=move || shelf.get() == k on:click=move |_| shelf.set(k)>{label}</button>
                             })}
                         </div>
                     </div>
                     {move || shown().is_empty().then(|| view! { <p class="empty">"No books match."</p> })}
-                    // A wooden bookcase: the frame (sides and top), and inside it the shelves.
-                    <div class="bookcase-frame">
-                        <div class="grid bookcase">
-                            <For each=shown key=|w| (w.id, w.progress.map(|p| (p * 1000.0) as i64)) let:w>
-                                {book_card(w)}
-                            </For>
-                        </div>
-                    </div>
+                    {move || match layout.get() {
+                        // A wooden bookcase: the frame (sides and top), and inside it the shelves.
+                        Layout::Shelf => view! {
+                            <div class="bookcase-frame">
+                                <div class="grid bookcase">
+                                    <For each=shown key=|w| (w.id, w.progress.map(|p| (p * 1000.0) as i64)) let:w>
+                                        {book_card(w)}
+                                    </For>
+                                </div>
+                            </div>
+                        }.into_any(),
+                        Layout::Grid => view! {
+                            <div class="grid plain">
+                                <For each=shown key=|w| (w.id, w.progress.map(|p| (p * 1000.0) as i64)) let:w>
+                                    {book_card(w)}
+                                </For>
+                            </div>
+                        }.into_any(),
+                        Layout::List => view! {
+                            <div class="book-list">
+                                <For each=shown key=|w| (w.id, w.progress.map(|p| (p * 1000.0) as i64)) let:w>
+                                    {book_row(w)}
+                                </For>
+                            </div>
+                        }.into_any(),
+                    }}
                 }.into_any()
             }}
         </Suspense>
@@ -673,7 +774,7 @@ fn WorkPage(id: i64) -> impl IntoView {
                                         <p class="series">{s}{w.series_index.map(|i| format!(" · Book {i}")).unwrap_or_default()}</p>
                                     })}
                                     <h1>{w.title.clone()}</h1>
-                                    <p class="author">{w.author.clone().unwrap_or_default()}</p>
+                                    <p class="author">{w.author.clone().unwrap_or_default()}{w.year.map(|y| format!(" · {y}")).unwrap_or_default()}</p>
                                     <div class="pills">
                                         {has_e.then(|| view! { <span class="pill">{icon(icons::BOOK)}"Ebook"</span> })}
                                         {has_a.then(|| view! { <span class="pill">{icon(icons::HEADPHONES)}"Audiobook"</span> })}

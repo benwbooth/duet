@@ -2,6 +2,8 @@
 
 mod ai;
 mod ai_setup;
+mod annas_archive;
+mod audiobookbay;
 mod audiotext;
 mod book;
 mod cast;
@@ -14,6 +16,8 @@ mod free;
 mod images;
 mod jobs;
 mod library;
+mod libgen;
+mod mirrors;
 mod llm;
 mod qbit;
 mod routes;
@@ -44,10 +48,19 @@ pub struct AppState {
     pub db: sqlx::SqlitePool,
     pub data_dir: PathBuf,
     pub settings: RwLock<Settings>,
+    /// Direct client: qBittorrent, local AI services, anything on LAN.
     pub http: reqwest::Client,
+    /// Site client: external site searches/downloads, via Settings →
+    /// proxy when set. Cached by proxy URL; rebuilt when it changes.
+    pub site: tokio::sync::Mutex<(String, reqwest::Client)>,
+    /// Cookie variant of the site client (WordPress sites like Audiobook Bay
+    /// need session cookies). Cached alongside.
+    pub site_cookies: tokio::sync::Mutex<(String, reqwest::Client)>,
     /// Wakes the job runner when a job is queued.
     pub jobs_wake: Notify,
     pub qbit: qbit::Qbit,
+    /// Anna's Archive session cache (search logins).
+    pub annas: annas_archive::AnnasArchive,
     pub voices: setup::Voices,
     pub pull: ai_setup::Pull,
     /// How the workers reach this server (for the chat proxy).
@@ -55,6 +68,49 @@ pub struct AppState {
 }
 
 pub type State = Arc<AppState>;
+
+/// Builds the site client: direct when no proxy is set, otherwise through
+/// it — with localhost and LAN always bypassed (Torznab indexers on the LAN
+/// must not go out through the VPN).
+fn site_client_for(proxy_url: &str, user_agent: &str, cookies: bool) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder().user_agent(user_agent);
+    if cookies {
+        builder = builder.cookie_store(true);
+    }
+    if !proxy_url.trim().is_empty() {
+        if let Ok(proxy) = reqwest::Proxy::all(proxy_url.trim()) {
+            let no_proxy = reqwest::NoProxy::from_string("localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16");
+            builder = builder.proxy(proxy.no_proxy(no_proxy));
+        }
+    }
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+}
+
+impl AppState {
+    /// The client for external sites (Discover searches, downloads, the AA
+    /// catalogue, mirror refreshes): via the configured proxy when set.
+    pub async fn site_client(&self) -> reqwest::Client {
+        self.site_client_inner(false).await
+    }
+
+    /// Cookie-store variant (Audiobook Bay is WordPress and needs it).
+    pub async fn site_cookie_client(&self) -> reqwest::Client {
+        self.site_client_inner(true).await
+    }
+
+    async fn site_client_inner(&self, cookies: bool) -> reqwest::Client {
+        let proxy_url = self.settings.read().await.proxy_url.trim().to_string();
+        let cache = if cookies { &self.site_cookies } else { &self.site };
+        let mut cache = cache.lock().await;
+        if cache.0 == proxy_url {
+            return cache.1.clone();
+        }
+        let ua = format!("duet/{} (+https://github.com/benwbooth/duet)", env!("CARGO_PKG_VERSION"));
+        let client = site_client_for(&proxy_url, &ua, cookies);
+        *cache = (proxy_url, client.clone());
+        client
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -75,7 +131,10 @@ async fn main() -> anyhow::Result<()> {
         data_dir: args.data_dir.clone(),
         settings: RwLock::new(settings),
         qbit: qbit::Qbit::new()?,
-        http,
+        annas: annas_archive::AnnasArchive::new(),
+        http: http.clone(),
+        site: tokio::sync::Mutex::new((String::new(), http.clone())),
+        site_cookies: tokio::sync::Mutex::new((String::new(), http)),
         jobs_wake: Notify::new(),
         voices: setup::Voices::default(),
         pull: ai_setup::Pull::default(),
@@ -85,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(jobs::run(state.clone()));
     tokio::spawn(downloads::watch_torrents(state.clone()));
     tokio::spawn(setup::autostart(state.clone()));
+    tokio::spawn(mirrors::refresh_loop(state.clone()));
 
     let app = routes::router(state, &args.web_dir);
     let listener = tokio::net::TcpListener::bind(args.listen).await?;

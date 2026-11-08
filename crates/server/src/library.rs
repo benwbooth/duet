@@ -31,6 +31,8 @@ pub struct Meta {
     pub series: Option<String>,
     pub series_index: Option<f64>,
     pub description: Option<String>,
+    /// Publication year, when the file states one (EPUBs and comics often do).
+    pub year: Option<i32>,
     pub cover: Option<Vec<u8>>,
 }
 
@@ -67,9 +69,33 @@ pub async fn scan(state: &State) -> anyhow::Result<ScanReport> {
     sqlx::query("DELETE FROM works WHERE NOT EXISTS (SELECT 1 FROM assets WHERE assets.work_id = works.id)")
         .execute(&state.db)
         .await?;
+    backfill_years(state).await;
     let (works,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM works").fetch_one(&state.db).await?;
     report.works = works as usize;
     Ok(report)
+}
+
+/// Reads publication years for works that predate year tracking (or whose
+/// editions didn't state one), from their first ebook file.
+async fn backfill_years(state: &State) {
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT w.id, a.path FROM works w JOIN assets a ON a.work_id = w.id AND a.kind = 'ebook'
+         WHERE w.year IS NULL GROUP BY w.id",
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    for (id, path) in rows {
+        let p = PathBuf::from(path);
+        let year = tokio::task::spawn_blocking(move || ebook_meta(&p).year).await.unwrap_or_default();
+        if let Some(y) = year {
+            let _ = sqlx::query("UPDATE works SET year = ? WHERE id = ? AND year IS NULL")
+                .bind(y)
+                .bind(id)
+                .execute(&state.db)
+                .await;
+        }
+    }
 }
 
 /// Every ebook file, and every audiobook (a folder of tracks, or a single .m4b), under `dir`.
@@ -168,8 +194,25 @@ pub fn match_key(title: &str, author: Option<&str>) -> String {
     format!("{}|{}", text::title_key(title), surname)
 }
 
+/// Calibre and LibGen title their files "Title - Author"; the library
+/// convention is bare title with the author in its own field.
+pub fn clean_title(title: &str, author: Option<&str>) -> String {
+    let t = title.trim().to_string();
+    if let Some(a) = author.map(str::trim).filter(|a| !a.is_empty()) {
+        for sep in [" - ", " by "] {
+            if let Some((head, tail)) = t.rsplit_once(sep) {
+                if tail.eq_ignore_ascii_case(a) && !head.trim().is_empty() {
+                    return head.trim().to_string();
+                }
+            }
+        }
+    }
+    t
+}
+
 async fn find_or_create_work(db: &SqlitePool, meta: &Meta) -> anyhow::Result<i64> {
-    let key = match_key(&meta.title, meta.author.as_deref());
+    let title = clean_title(&meta.title, meta.author.as_deref());
+    let key = match_key(&title, meta.author.as_deref());
     let title_part = key.split('|').next().unwrap_or("").to_string();
     // Exact match, or a same-title work where one side has no author.
     let existing: Option<(i64,)> = sqlx::query_as(
@@ -186,25 +229,28 @@ async fn find_or_create_work(db: &SqlitePool, meta: &Meta) -> anyhow::Result<i64
         // Fill in anything the first edition lacked.
         sqlx::query(
             "UPDATE works SET author = COALESCE(author, ?), series = COALESCE(series, ?),
-                series_index = COALESCE(series_index, ?), description = COALESCE(description, ?) WHERE id = ?",
+                series_index = COALESCE(series_index, ?), description = COALESCE(description, ?),
+                year = COALESCE(year, ?) WHERE id = ?",
         )
         .bind(&meta.author)
         .bind(&meta.series)
         .bind(meta.series_index)
         .bind(&meta.description)
+        .bind(meta.year)
         .bind(id)
         .execute(db)
         .await?;
         return Ok(id);
     }
     let (id,): (i64,) = sqlx::query_as(
-        "INSERT INTO works (title, author, series, series_index, description, match_key) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        "INSERT INTO works (title, author, series, series_index, description, year, match_key) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
     )
-    .bind(&meta.title)
+    .bind(&title)
     .bind(&meta.author)
     .bind(&meta.series)
     .bind(meta.series_index)
     .bind(&meta.description)
+    .bind(meta.year)
     .bind(&key)
     .fetch_one(db)
     .await?;
@@ -238,6 +284,23 @@ fn meta_from_filename(path: &Path) -> Meta {
     }
 }
 
+/// First plausible publication year in free text ("2011-03-15" or "2011").
+fn parse_year(s: &str) -> Option<i32> {
+    let digits: Vec<char> = s.chars().collect();
+    for i in 0..digits.len().saturating_sub(3) {
+        if digits[i..i + 4].iter().all(|c| c.is_ascii_digit())
+            && (i == 0 || !digits[i - 1].is_ascii_digit())
+            && digits.get(i + 4).is_none_or(|c| !c.is_ascii_digit())
+        {
+            let year: i32 = digits[i..i + 4].iter().collect::<String>().parse().ok()?;
+            if (1000..=2100).contains(&year) {
+                return Some(year);
+            }
+        }
+    }
+    None
+}
+
 pub fn ebook_meta(path: &Path) -> Meta {
     if ext_of(path) == "epub"
         && let Ok(mut doc) = epub::doc::EpubDoc::new(path) {
@@ -255,6 +318,7 @@ pub fn ebook_meta(path: &Path) -> Meta {
                 description: get("description").map(|d| strip_tags(&d)),
                 series,
                 series_index,
+                year: get("date").as_deref().and_then(parse_year),
                 cover: None,
             };
             meta.cover = doc.get_cover().map(|(bytes, _)| bytes);
@@ -295,6 +359,7 @@ fn comic_meta(path: &Path) -> Meta {
         meta.description = xml_field(&xml, "Summary");
         meta.series_index = number.and_then(|n| n.parse().ok());
         meta.series = series;
+        meta.year = xml_field(&xml, "Year").and_then(|y| y.parse().ok());
     }
     meta.cover = images::comic_page(path, 0).ok().map(|(bytes, _)| bytes);
     meta
@@ -425,6 +490,13 @@ mod tests {
     }
 
     #[test]
+    fn strips_author_suffix() {
+        assert_eq!(clean_title("Doctor Sleep - Stephen King", Some("Stephen King")), "Doctor Sleep");
+        assert_eq!(clean_title("Dune", Some("Frank Herbert")), "Dune");
+        assert_eq!(clean_title("Emma", None), "Emma");
+    }
+
+    #[test]
     fn natural_order() {
         let mut v = vec![PathBuf::from("a/Track 10.mp3"), PathBuf::from("a/Track 2.mp3")];
         v.sort_by_key(|p| natural_key(p));
@@ -455,9 +527,11 @@ pub async fn merge_works(db: &SqlitePool, from: i64, into: i64) -> anyhow::Resul
 
 /// After a download is imported: put it in the book it was fetched for. If another work already
 /// has that title and author it joins that one; otherwise its work takes on that title, so the
-/// other half of an ebook + audiobook pair finds it.
+/// other half of an ebook + audiobook pair finds it. Download titles often read
+/// "Title - Author"; the suffix is stripped so editions link up.
 pub async fn adopt(db: &SqlitePool, work_id: i64, title: &str, author: Option<&str>) -> anyhow::Result<i64> {
-    let key = match_key(title, author);
+    let title = clean_title(title, author);
+    let key = match_key(&title, author);
     let other: Option<(i64,)> = sqlx::query_as("SELECT id FROM works WHERE match_key = ? AND id != ? ORDER BY id LIMIT 1")
         .bind(&key)
         .bind(work_id)
@@ -468,7 +542,7 @@ pub async fn adopt(db: &SqlitePool, work_id: i64, title: &str, author: Option<&s
         return Ok(into);
     }
     sqlx::query("UPDATE works SET title = ?, author = COALESCE(?, author), match_key = ? WHERE id = ?")
-        .bind(title)
+        .bind(&title)
         .bind(author)
         .bind(&key)
         .bind(work_id)

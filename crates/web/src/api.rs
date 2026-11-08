@@ -50,3 +50,7 @@ pub async fn post<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> Api
 pub async fn put<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> ApiResult<T> {
     send("PUT", url, body).await
 }
+
+pub async fn remove(url: &str) -> ApiResult<()> {
+    decode(Request::delete(url).send().await.map_err(|e| ApiError(e.to_string()))?).await
+}

@@ -88,16 +88,50 @@ async fn direct(
     title: &str,
     author: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
-    let (url, filename) = if url.starts_with("https://archive.org/metadata/") {
-        let (u, ext) = resolve_archive(&state.http, url).await?;
-        (u, format!("{filename}.{ext}"))
-    } else {
-        (url.to_string(), filename.to_string())
-    };
+    // Resolve the real file URL. LibGen's get.php keys are single-use-ish
+    // and its CDN nodes flake (500s), so resolve fresh on every attempt.
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 1..=3 {
+        let attempt_url = if url.starts_with("https://archive.org/metadata/") && attempt == 1 {
+            let site = state.site_client().await;
+            let (u, ext) = resolve_archive(&site, url).await?;
+            (u, format!("{filename}.{ext}"))
+        } else {
+            let settings = state.settings.read().await.clone();
+            let mirror = settings.annas_archive.mirror.trim_end_matches('/').to_string();
+            let key = settings.annas_archive.secret_key.clone();
+            // All download resolutions go through the site client (proxy when set).
+            let site = state.site_client().await;
+            if url.starts_with(&format!("{mirror}/md5/")) || (mirror.contains("annas-archive") && url.contains("/md5/")) {
+                let md5 = url.rsplit('/').next().unwrap_or("").split('?').next().unwrap_or("").to_string();
+                let download_url = state.annas.resolve_download(&site, &mirror, &key, &md5).await?;
+                (download_url, filename.to_string())
+            } else if url.contains("/ads.php?md5=") {
+                let download_url = crate::libgen::resolve_download(&site, url).await?;
+                (download_url, filename.to_string())
+            } else {
+                (url.to_string(), filename.to_string())
+            }
+        };
+        match fetch_one(state, id, &attempt_url.0, &attempt_url.1, kind, title, author).await {
+            Ok(p) => return Ok(p),
+            Err(e) => {
+                tracing::warn!("download {url} attempt {attempt}: {e:#}");
+                last_err = Some(e);
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("download failed")))
+}
+
+async fn fetch_one(state: &State, id: &str, url: &str, filename: &str, kind: AssetKind, title: &str, author: Option<&str>) -> anyhow::Result<PathBuf> {
+    let (url, filename) = (url.to_string(), filename.to_string());
     let dir = import_dir(state, kind).await;
     tokio::fs::create_dir_all(&dir).await?;
     let dest = dir.join(&filename);
-    let resp = state.http.get(&url).send().await?.error_for_status()?;
+    let site = state.site_client().await;
+    let resp = site.get(&url).send().await?.error_for_status()?;
     let total = resp.content_length();
     sqlx::query("UPDATE downloads SET size = ? WHERE id = ?").bind(total.map(|t| t as i64)).bind(id).execute(&state.db).await?;
     let tmp = dest.with_extension("part");
@@ -154,7 +188,11 @@ fn unzip(zip_path: &Path, out: &Path) -> anyhow::Result<()> {
 /// Imports whatever books and audiobooks are at `path` (a file or a folder); returns the works
 /// they went into.
 pub async fn import_found(state: &State, path: &Path, origin: &str) -> anyhow::Result<Vec<i64>> {
+    // Bulk torrents store books under bare AACIDs (no extension), so sniff
+    // those by magic bytes and give them a real one before walking.
     let p = path.to_path_buf();
+    let sniff_path = p.clone();
+    tokio::task::spawn_blocking(move || sniff_extensionless(&sniff_path)).await?;
     let found = tokio::task::spawn_blocking(move || library::walk(&p)).await?;
     let mut works = Vec::new();
     for (p, kind) in found {
@@ -165,15 +203,56 @@ pub async fn import_found(state: &State, path: &Path, origin: &str) -> anyhow::R
     Ok(works)
 }
 
+/// Renames bare-AACID files (no extension) by their magic bytes so the
+/// library walker recognises them: PDF, ZIP-based (epub), MOBI, DJVU.
+pub fn sniff_extensionless(path: &Path) {
+    fn visit(path: &Path) {
+        if !path.exists() {
+            return;
+        }
+        if path.is_file() {
+            if path.extension().is_none() {
+                if let Ok(bytes) = std::fs::read(path).map(|b| b.into_iter().take(128).collect::<Vec<_>>()) {
+                    let ext = if bytes.starts_with(b"%PDF") {
+                        Some("pdf")
+                    } else if bytes.starts_with(b"PK\x03\x04") {
+                        Some("epub")
+                    } else if bytes.windows(8).any(|w| w == b"BOOKMOBI") {
+                        Some("mobi")
+                    } else if bytes.starts_with(b"DJVU") {
+                        Some("djvu")
+                    } else {
+                        None
+                    };
+                    if let Some(ext) = ext {
+                        let name = path.to_string_lossy().into_owned();
+                        let renamed = format!("{name}.{ext}");
+                        if !Path::new(&renamed).exists() {
+                            let _ = std::fs::rename(path, &renamed);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                visit(&entry.path());
+            }
+        }
+    }
+    visit(path);
+}
+
 pub async fn list(state: &State) -> anyhow::Result<Vec<Download>> {
-    let rows: Vec<(String, String, String, String, String, f64, Option<i64>)> = sqlx::query_as(
-        "SELECT id, name, kind, source, state, progress, size FROM downloads ORDER BY created_at DESC LIMIT 100",
+    let rows: Vec<(String, String, String, String, String, f64, Option<i64>, String)> = sqlx::query_as(
+        "SELECT id, name, kind, source, state, progress, size, created_at FROM downloads ORDER BY created_at DESC LIMIT 100",
     )
     .fetch_all(&state.db)
     .await?;
     let mut out: Vec<Download> = rows
         .into_iter()
-        .map(|(id, name, kind, source, st, progress, size)| Download {
+        .map(|(id, name, kind, source, st, progress, size, created_at)| Download {
             id,
             name,
             kind: AssetKind::parse(&kind).unwrap_or(AssetKind::Ebook),
@@ -181,6 +260,10 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<Download>> {
             state: st,
             size,
             source,
+            started_at: created_at
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .ok()
+                .map(|t| t.timestamp()),
         })
         .collect();
     let settings = state.settings.read().await.clone();
@@ -195,11 +278,59 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<Download>> {
                     state: t.state,
                     size: Some(t.size),
                     source: "qBittorrent".into(),
+                    started_at: (t.added_on > 0).then_some(t.added_on),
                 });
             }
         }
     }
+    // Newest started first, so the pane reads in start order.
+    out.sort_by_key(|d| std::cmp::Reverse(d.started_at.unwrap_or(0)));
     Ok(out)
+}
+
+/// Dismisses one finished item from the pane. Direct downloads in a terminal
+/// state have their row deleted; duet-managed torrents are removed from
+/// qBittorrent (files stay on disk — imports already happened).
+pub async fn clear(state: &State, id: &str) -> anyhow::Result<()> {
+    let done: Option<(String,)> =
+        sqlx::query_as("DELETE FROM downloads WHERE id = ? AND state IN ('imported', 'failed') RETURNING id")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
+    if done.is_some() {
+        return Ok(());
+    }
+    let settings = state.settings.read().await.clone();
+    if !settings.qbittorrent.enabled {
+        bail!("nothing to clear");
+    }
+    // Only duet's own categories: never touch foreign torrents.
+    for kind in [AssetKind::Ebook, AssetKind::Audiobook] {
+        for t in state.qbit.list(&settings.qbittorrent, &category(&settings, kind)).await? {
+            if t.hash.eq_ignore_ascii_case(id) && (!t.state.eq_ignore_ascii_case("downloading") || t.finished()) {
+                state.qbit.remove(&settings.qbittorrent, &t.hash).await?;
+                return Ok(());
+            }
+        }
+    }
+    bail!("that download is still running")
+}
+
+/// qBittorrent inside Docker saves into its container `/downloads`; on the
+/// host the same folder is `Settings → qBittorrent → Host save path`.
+fn to_host_path(settings: &duet_common::QbitSettings, container_path: &str) -> PathBuf {
+    let host = settings.host_save_path.trim();
+    if host.is_empty() {
+        return PathBuf::from(container_path);
+    }
+    if let Some(rest) = container_path.strip_prefix("/downloads") {
+        let mut p = PathBuf::from(host);
+        if let Some(rel) = rest.strip_prefix('/') {
+            p.push(rel);
+        }
+        return p;
+    }
+    PathBuf::from(container_path)
 }
 
 /// Imports finished torrents in duet's categories, once each.
@@ -227,7 +358,7 @@ async fn import_finished(state: &State) -> anyhow::Result<()> {
             if done.is_some() {
                 continue;
             }
-            let n = import_found(state, Path::new(&t.content_path), "download").await?.len();
+            let n = import_found(state, &to_host_path(&settings.qbittorrent, &t.content_path), "download").await?.len();
             tracing::info!("imported {n} item(s) from torrent {}", t.name);
             sqlx::query("INSERT INTO imported_torrents (hash) VALUES (?)").bind(&t.hash).execute(&state.db).await?;
         }

@@ -8,7 +8,7 @@ use axum::{
     extract::{Multipart, Path, Query, Request, State as AxState},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use duet_common::{
     AskReply, AskRequest, AssetKind, FreeSources, BookLayout, CastMember, Chapter, Download, Job, NewDownload, NewJob, Position,
@@ -68,7 +68,9 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/setup/voices/stop", post(voices_stop))
         .route("/setup/voices/log", get(voices_log))
         .route("/search", get(search))
+        .route("/mirrors", get(mirrors_status))
         .route("/downloads", get(list_downloads).post(new_download))
+        .route("/downloads/{id}", delete(clear_download))
         .route("/ai/models", post(ai_models))
         .route("/ai/v1/chat/completions", post(chat_proxy))
         .route("/ai/setup", get(ai_detect))
@@ -397,10 +399,13 @@ struct SearchResponse {
 /// Searches every source for both ebooks and audiobooks at once; the UI groups the hits by book.
 async fn search(AxState(s): AxState<State>, Query(q): Query<SearchQuery>) -> ApiResult<Json<SearchResponse>> {
     let settings = s.settings.read().await.clone();
+    // All site searches go through the proxy when one is set (Settings).
+    let site = s.site_client().await;
+    let site_cookies = s.site_cookie_client().await;
     let mut results = Vec::new();
     let mut errors = Vec::new();
     if let Some(src) = q.source.as_deref().filter(|s| *s != "indexers") {
-        match free::search_one(&s.http, &settings.free_sources, src, &q.q).await {
+        match free::search_one(&site, &site_cookies, &s.annas, &settings.free_sources, &settings.annas_archive, &settings.libgen, &settings.audiobookbay, src, &q.q).await {
             Some(Ok(v)) => results = v,
             Some(Err(e)) => errors.push(format!("{e:#}")),
             None => {}
@@ -410,14 +415,14 @@ async fn search(AxState(s): AxState<State>, Query(q): Query<SearchQuery>) -> Api
     let only_indexers = q.source.as_deref() == Some("indexers");
     let kinds = [AssetKind::Ebook, AssetKind::Audiobook];
     let indexer_searches = settings.indexers.iter().filter(|i| i.enabled).flat_map(|ix| {
-        let (http, q) = (&s.http, &q.q);
+        let (http, q) = (&site, &q.q);
         kinds.map(move |kind| async move { (ix.name.clone(), torznab::search(http, ix, q, kind).await) })
     });
-    let none = FreeSources { gutenberg: false, standard_ebooks: false, librivox: false, internet_archive: false };
+    let none = FreeSources { gutenberg: false, standard_ebooks: false, librivox: false, internet_archive: false, annas_archive: false, libgen: false, audiobookbay: false };
     let free_on = if only_indexers { &none } else { &settings.free_sources };
     let (free_ebooks, free_audio, ix_results) = tokio::join!(
-        free::search(&s.http, free_on, &q.q, AssetKind::Ebook),
-        free::search(&s.http, free_on, &q.q, AssetKind::Audiobook),
+        free::search(&site, &site_cookies, &s.annas, free_on, &settings.annas_archive, &settings.libgen, &settings.audiobookbay, &q.q, AssetKind::Ebook),
+        free::search(&site, &site_cookies, &s.annas, free_on, &settings.annas_archive, &settings.libgen, &settings.audiobookbay, &q.q, AssetKind::Audiobook),
         futures_util::future::join_all(indexer_searches)
     );
     for r in free_ebooks.into_iter().chain(free_audio) {
@@ -440,6 +445,11 @@ async fn search(AxState(s): AxState<State>, Query(q): Query<SearchQuery>) -> Api
     Ok(Json(SearchResponse { results, errors }))
 }
 
+/// The mirror lists duet is trying right now (Open SLUM, refreshed live).
+async fn mirrors_status() -> Json<serde_json::Value> {
+    Json(crate::mirrors::status())
+}
+
 async fn list_downloads(AxState(s): AxState<State>) -> ApiResult<Json<Vec<Download>>> {
     Ok(Json(downloads::list(&s).await?))
 }
@@ -447,6 +457,11 @@ async fn list_downloads(AxState(s): AxState<State>) -> ApiResult<Json<Vec<Downlo
 async fn new_download(AxState(s): AxState<State>, Json(d): Json<NewDownload>) -> ApiResult<StatusCode> {
     downloads::start(&s, d).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     Ok(StatusCode::ACCEPTED)
+}
+
+async fn clear_download(AxState(s): AxState<State>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    downloads::clear(&s, &id).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

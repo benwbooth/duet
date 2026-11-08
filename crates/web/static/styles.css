@@ -226,6 +226,7 @@ main { margin-left: var(--nav-w); padding: 2rem 2.4rem 6rem; max-width: 1280px; 
 .cover-progress > div { height: 100%; background: var(--accent-2); }
 .progress { height: 5px; border-radius: 5px; background: var(--line); overflow: hidden; }
 .progress > div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 5px; transition: width 0.3s; }
+.catalog-build .progress { margin: 0.6rem 0 0.8rem; }
 .badge { font-size: 0.72rem; padding: 0.12rem 0.5rem; border-radius: 99px; background: var(--accent-soft); font-weight: 500; }
 .badge.sync { background: var(--good-soft); color: var(--good); }
 
@@ -764,12 +765,13 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 @keyframes panel-up { from { opacity: 0; transform: translateY(30px) scale(0.95); } }
 .downloads-pane header { display: flex; align-items: center; gap: 0.6rem; padding: 0.7rem 0.6rem 0.7rem 1rem; cursor: pointer; border-bottom: 1px solid var(--line); }
 .downloads-pane.collapsed header { border-bottom: 0; }
-.downloads-pane header strong { flex: 1; font-size: 0.92rem; }
+.downloads-pane header strong { flex: 1; font-size: 0.92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dl-head-icon { width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
 .downloads-pane header .icon { color: var(--good); width: 18px; height: 18px; }
 .downloads-pane header .spinner { color: var(--accent); }
 .downloads-pane header .icon-button { min-height: 28px; padding: 0.15rem 0.45rem; box-shadow: none; border: 0; background: none; color: var(--muted); }
-.downloads-pane ul { list-style: none; margin: 0; padding: 0.3rem; max-height: min(50vh, 420px); overflow: auto; }
-.downloads-pane li { display: flex; align-items: center; gap: 0.7rem; padding: 0.6rem; border-radius: 10px; animation: rise 0.35s var(--ease-out) both; }
+.downloads-pane ul { list-style: none; margin: 0; padding: 0.3rem; max-height: min(50vh, 420px); overflow: auto; scrollbar-gutter: stable; }
+.downloads-pane li { display: flex; align-items: center; gap: 0.7rem; padding: 0.6rem; border-radius: 10px; animation: rise 0.35s var(--ease-out) both; min-height: 3.2rem; box-sizing: border-box; }
 .downloads-pane li + li { border-top: 1px solid var(--line); }
 .dl-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); flex: none; }
 .dl-icon .icon { width: 18px; height: 18px; }
@@ -777,10 +779,24 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .downloads-pane li.failed .dl-icon { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
 .dl-body { flex: 1; min-width: 0; display: grid; gap: 0.3rem; }
 .dl-name { font-weight: 500; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dl-meta { display: flex; gap: 0.7rem; color: var(--muted); font-size: 0.76rem; }
+.dl-meta { display: flex; gap: 0.7rem; color: var(--muted); font-size: 0.76rem; min-height: 1.1rem; align-items: center; white-space: nowrap; overflow: hidden; }
 .downloads-pane li.done .progress > div { background: var(--good); }
 .downloads-pane li.failed .dl-meta span:first-child { color: var(--danger); }
-.dl-open { font-size: 0.85rem; font-weight: 600; }
+.dl-open { font-size: 0.85rem; font-weight: 600; min-width: 2.4rem; text-align: right; flex: none; }
+.clear-finished { font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
+.dl-dismiss { flex: none; }
+/* List layout for the library: compact rows with a thumbnail. */
+.book-list { display: flex; flex-direction: column; gap: 0.4rem; }
+.book-row { display: flex; align-items: center; gap: 0.9rem; padding: 0.5rem 0.7rem; border-radius: 12px; color: inherit; text-decoration: none !important; border: 1px solid transparent; }
+.book-row:hover { background: var(--surface); border-color: var(--line); }
+.book-row .row-cover { width: 44px; flex: none; }
+.book-row .row-cover .cover { aspect-ratio: 2/3; width: 100%; border-radius: 4px; }
+.book-row .row-main { flex: 1; min-width: 0; display: grid; gap: 0.15rem; }
+.book-row .title { font-weight: 600; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.book-row .author { color: var(--muted); font-size: 0.83rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.book-row .format-badges { margin-top: 0; }
+.book-row .row-progress { width: min(200px, 30%); flex: none; display: grid; gap: 0.2rem; }
+.book-row .row-progress .pct { color: var(--muted); font-size: 0.76rem; text-align: right; }
 @media (max-width: 760px) { .downloads-pane { right: 0.6rem; left: 0.6rem; width: auto; bottom: calc(72px + env(safe-area-inset-bottom)); } }
 
 /* Ebook / Audiobook badges under library books */

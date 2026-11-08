@@ -176,11 +176,25 @@ fn chapter_dom(src: &Source, asset_id: i64, index: usize) -> anyhow::Result<Node
     for n in junk {
         n.detach();
     }
+    rewrite_resource_urls(&body, asset_id, &base);
+    Ok(body)
+}
+
+/// Points every image/link URL in the chapter at the book's own resources.
+fn rewrite_resource_urls(body: &NodeRef, asset_id: i64, base: &str) {
     let res_url = |path: &str| {
         format!("/api/assets/{asset_id}/res/{}", path.split('/').map(|p| urlencoding::encode(p).into_owned()).collect::<Vec<_>>().join("/"))
     };
     let external = |v: &str| v.starts_with("http:") || v.starts_with("https:") || v.starts_with("mailto:") || v.starts_with("data:");
-    for el in body.select("img, image, a, source, video, audio").into_iter().flatten() {
+    for node in body.inclusive_descendants() {
+        let Some(el) = node.as_element() else { continue };
+        // Local names match regardless of namespace, so SVG <image>/<a>
+        // are covered here even though CSS selectors may miss them.
+        let tag: &str = el.name.local.as_ref();
+        let is_link = tag == "a";
+        if !matches!(tag, "img" | "image" | "a" | "source" | "video" | "audio" | "use") {
+            continue;
+        }
         let mut attrs = el.attributes.borrow_mut();
         // Responsive images ("a.png 1x, a-2x.png 2x"): the browser prefers these over src, so
         // every candidate has to point into the book too.
@@ -197,15 +211,15 @@ fn chapter_dom(src: &Source, asset_id: i64, index: usize) -> anyhow::Result<Node
                 .join(", ");
             attrs.insert("srcset", rewritten);
         }
-        for name in ["src", "href", "xlink:href", "poster"] {
+        for name in ["src", "href", "poster"] {
             let Some(v) = attrs.get(name).map(str::to_string) else { continue };
             if external(&v) {
                 continue;
             }
-            if el.name.local.as_ref() == "a" {
+            if is_link {
                 // Links to other chapters: the UI turns data-href into navigation.
                 if let Some((file, frag)) = v.split_once('#').or(Some((v.as_str(), ""))) {
-                    let target = if file.is_empty() { base.clone() } else { resolve(&base, file) };
+                    let target = if file.is_empty() { base.to_string() } else { resolve(base, file) };
                     attrs.insert("data-href", format!("{target}#{frag}"));
                     attrs.insert("href", "#".to_string());
                 }
@@ -213,8 +227,35 @@ fn chapter_dom(src: &Source, asset_id: i64, index: usize) -> anyhow::Result<Node
                 attrs.insert(name, res_url(&resolve(&base, &v)));
             }
         }
+        // Namespaced attributes (SVG's xlink:href): invisible to the plain
+        // string getters above, which only see the null namespace.
+        let ns_keys: Vec<_> = attrs
+            .map
+            .iter()
+            .filter(|(n, a)| a.prefix.is_some() && n.local.as_ref() == "href")
+            .map(|(n, _)| n.clone())
+            .collect();
+        for key in ns_keys {
+            let v = match attrs.map.get(&key) {
+                Some(a) => a.value.clone(),
+                None => continue,
+            };
+            if external(&v) {
+                continue;
+            }
+            if is_link {
+                if let Some((file, frag)) = v.split_once('#').or(Some((v.as_str(), ""))) {
+                    let target = if file.is_empty() { base.to_string() } else { resolve(base, file) };
+                    attrs.insert("data-href", format!("{target}#{frag}"));
+                    if let Some(a) = attrs.map.get_mut(&key) {
+                        a.value = "#".to_string();
+                    }
+                }
+            } else if let Some(a) = attrs.map.get_mut(&key) {
+                a.value = res_url(&resolve(&base, &v));
+            }
+        }
     }
-    Ok(body)
 }
 
 fn block_of(node: &NodeRef) -> Option<NodeRef> {
@@ -370,6 +411,20 @@ mod tests {
     #[test]
     fn resolves_paths() {
         assert_eq!(resolve("OEBPS/text/ch1.xhtml", "../images/a.png"), "OEBPS/images/a.png");
+    }
+
+    #[test]
+    fn rewrites_svg_image_hrefs() {
+        // Calibre-style SVG cover page: the image reference lives in the
+        // xlink namespace, which plain attribute getters can't see.
+        let doc = kuchikiki::parse_html()
+            .one(r#"<body><div><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image width="780" height="1186" xlink:href="cover.jpeg"></image></svg></div></body>"#)
+            .document_node;
+        let body = doc.select_first("body").unwrap().as_node().clone();
+        rewrite_resource_urls(&body, 4, "titlepage.xhtml");
+        let html = body.to_string();
+        assert!(html.contains("/api/assets/4/res/cover.jpeg"), "{html}");
+        assert!(!html.contains("xlink:href=\"cover.jpeg\""), "{html}");
     }
 
     #[test]
