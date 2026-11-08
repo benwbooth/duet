@@ -252,7 +252,10 @@ void main() {
   vec2 c = u_view * 0.5;
   vec2 scr = c + (P.xy - c) * D / (D - P.z);
   vec2 full = u_view + 2.0 * u_pad;
-  gl_Position = vec4((scr.x + u_pad.x) / full.x * 2.0 - 1.0, 1.0 - (scr.y + u_pad.y) / full.y * 2.0, -P.z / (8.0 * D), 1.0);
+  // Depth spread over as much of the range as the paper can use (it rises at most a page's
+  // width): squeezed into a sliver of it, the two sides of a tight roll, a pixel or two apart,
+  // came out at the same depth and broke each other up in dashes along the roll's edge.
+  gl_Position = vec4((scr.x + u_pad.x) / full.x * 2.0 - 1.0, 1.0 - (scr.y + u_pad.y) / full.y * 2.0, -P.z / (2.2 * max(u_leaf.y, 1.0)), 1.0);
 }`;
 
 const CURL_FS = `
