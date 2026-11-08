@@ -290,10 +290,13 @@ void main() {
   float s = dot(v_pos - u_L0, u_dir);
   float theta = clamp(s / max(u_R, 0.001), 0.0, 3.14159265);
   float c = cos(theta);
+  // A roll only a few pixels across turns its shading into a dark band thinner than a pixel,
+  // which the screen can only draw as broken dashes: the tighter the roll, the softer it's shaded.
+  float soft = smoothstep(3.0, 24.0, u_R);
   bool front = gl_FrontFacing == (u_flip < 0.5);
   if (front) {
     vec3 col = texture2D(u_front, uv).rgb;
-    float shade = 0.42 * pow(1.0 - max(c, 0.0), 1.5);
+    float shade = 0.42 * pow(1.0 - max(c, 0.0), 1.5) * soft;
     gl_FragColor = vec4(outline(col * (1.0 - shade)), 1.0);
   } else {
     vec3 col;
@@ -303,7 +306,7 @@ void main() {
     } else {
       col = texture2D(u_back, vec2((2.0 * u_hinge - v_pos.x) / u_view.x, uv.y)).rgb;
     }
-    float dark = 0.4 * pow(max(0.0, 1.0 + c) / 2.0, 1.5);
+    float dark = 0.4 * pow(max(0.0, 1.0 + c) / 2.0, 1.5) * mix(0.35, 1.0, soft);
     // (The highlight fades as the roll gets too tight to show it: thinner than a few pixels it
     // only shimmers.)
     float gloss = 0.3 * exp(-pow((theta - 2.2) / 0.41, 2.0)) * smoothstep(2.0, 10.0, u_R);
