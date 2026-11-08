@@ -233,6 +233,18 @@ static LOCKS: LazyLock<std::sync::Mutex<std::collections::HashMap<i64, std::sync
 /// Books whose pictures are being drawn.
 static DRAWING: LazyLock<std::sync::Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
 
+/// When the recording was last being lined up with the book (it listens on the GPU, and the
+/// reader is waiting on it: pictures give way).
+static LISTENED: LazyLock<std::sync::Mutex<Option<std::time::Instant>>> = LazyLock::new(Default::default);
+
+pub fn listening() {
+    *LISTENED.lock().unwrap() = Some(std::time::Instant::now());
+}
+
+fn listened_recently() -> bool {
+    LISTENED.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(90))
+}
+
 /// Where each book's reader is (chapter, sentence): pictures are drawn nearest it first.
 static READER: LazyLock<std::sync::Mutex<std::collections::HashMap<i64, (usize, usize)>>> = LazyLock::new(Default::default);
 
@@ -368,12 +380,12 @@ async fn draw(state: &State, asset: i64, items: &[(usize, usize, Scene)]) -> any
     if jobs.is_empty() {
         return Ok(());
     }
-    if crate::cast::performing_recently() {
+    if crate::cast::performing_recently() || listened_recently() {
         let title = crate::activity::title(state, asset).await;
         let key = format!("pictures-wait:{asset}");
-        crate::activity::set(&key, "Pictures", &title, "Waiting for the full cast to finish with the graphics card", 0, 0);
-        while crate::cast::performing_recently() {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        crate::activity::set(&key, "Pictures", &title, "Waiting while the graphics card is busy with the audio (the full cast, or lining up the recording)", 0, 0);
+        while crate::cast::performing_recently() || listened_recently() {
+            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
         }
         crate::activity::clear(&key);
     }

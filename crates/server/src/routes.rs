@@ -754,6 +754,7 @@ struct LiveSyncReq {
 /// Syncs while you listen: the voice server hears the next stretch of audio and finds it in the
 /// book; the sentences it places are added to this pairing's sync map and returned.
 async fn sync_live(AxState(s): AxState<State>, Path(id): Path<i64>, Json(r): Json<LiveSyncReq>) -> ApiResult<Json<serde_json::Value>> {
+    crate::illustrate::listening();
     let ebook = asset_or_404(&s, r.ebook).await?;
     let book_json = jobs::book_json_cached(&s, &ebook).await?;
     let audio_path = db::track_path(&s.db, r.audio, r.track).await?.ok_or_else(|| ApiError::not_found("track"))?;

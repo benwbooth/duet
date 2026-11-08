@@ -403,11 +403,31 @@ def book_index(path):
     return bw, idx
 
 
+# The pictures being drawn (a subprocess), so listening can take the card from it.
+drawing = None
+
+
+def stop_drawing():
+    """Listening comes first (the reader is waiting on it): pictures being drawn give up the
+    card, and carry on later from where they got to."""
+    global drawing
+    p = drawing
+    if p is not None and p.poll() is None:
+        print("listening: pictures paused", flush=True)
+        p.terminate()
+        try:
+            p.wait(20)
+        except subprocess.TimeoutExpired:
+            p.kill()
+        free_gpu()
+
+
 def listen_model():
     """Whisper for finding where in the book the audio is: on the graphics card when there is
     one. (Exact word times come from the forced aligner, not from Whisper.)"""
     from common import whisper as load_whisper
 
+    stop_drawing()
     key = "live:" + args.listen_model
     if key not in whisper:
         whisper[key], _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda")
@@ -633,10 +653,14 @@ class Handler(BaseHTTPRequestHandler):
                     free_ollama()
                     free_gpu()
                     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "illustrate.py")
-                    r = subprocess.run([args.design_python, script, json.dumps(body)], stdout=subprocess.PIPE, text=True)
-                if r.returncode != 0:
-                    return self.reply(500, json.dumps({"error": "drawing failed"}).encode(), "application/json")
-                made = [json.loads(l) for l in r.stdout.splitlines() if l.startswith("{")]
+                    global drawing
+                    drawing = subprocess.Popen([args.design_python, script, json.dumps(body)], stdout=subprocess.PIPE, text=True)
+                    out, _ = drawing.communicate()
+                    code = drawing.returncode
+                    drawing = None
+                if code != 0:
+                    return self.reply(503, json.dumps({"error": "drawing stopped"}).encode(), "application/json")
+                made = [json.loads(l) for l in out.splitlines() if l.startswith("{")]
                 return self.reply(200, json.dumps({"made": made}).encode(), "application/json")
             if path in ("/v1/voices", "/voices"):
                 # Cast voices ahead of time, so a long recording never switches models midway.
