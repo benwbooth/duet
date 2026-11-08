@@ -391,8 +391,11 @@ class CurlGL {
     for (const n of ["u_rect", "u_view", "u_pad", "u_tex", "u_sh", "u_shp"]) this.f[n] = gl.getUniformLocation(flat, n);
     this.flatLoc = gl.getAttribLocation(flat, "a_uv");
     gl.useProgram(prog);
-    // A fine grid over the sheet: fine enough that the roll looks round from any angle.
-    const NX = 72, NY = 48, verts = [], idx = [];
+    // A fine grid over the sheet: fine enough that the roll looks round from any angle, even
+    // laid almost down near the spine, where the roll is only a few pixels across (a coarser
+    // grid drew its edge there as a staircase of grey slivers). About 24,000 corners: nothing
+    // to a graphics card, and still within 16-bit indices.
+    const NX = 200, NY = 120, verts = [], idx = [];
     for (let j = 0; j <= NY; j++) for (let i = 0; i <= NX; i++) verts.push(i / NX, j / NY);
     for (let j = 0; j < NY; j++)
       for (let i = 0; i < NX; i++) {
