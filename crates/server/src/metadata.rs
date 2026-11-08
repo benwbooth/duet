@@ -42,9 +42,15 @@ pub async fn enrich(state: &State, id: i64) -> anyhow::Result<()> {
         .map(|d| clean(&d));
     let mut subjects: Vec<String> = Vec::new();
     for s in gb.subjects.iter().chain(ol.subjects.iter()) {
-        let s = s.trim();
-        if !s.is_empty() && s.len() < 40 && !subjects.iter().any(|x| x.eq_ignore_ascii_case(s)) {
-            subjects.push(s.to_string());
+        // (One way of writing them: "JUVENILE FICTION" and "classics" alike as "Juvenile fiction".)
+        let lower = s.trim().to_lowercase();
+        let mut c = lower.chars();
+        let s = match c.next() {
+            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            None => continue,
+        };
+        if s.len() < 40 && !subjects.iter().any(|x| x.eq_ignore_ascii_case(&s)) {
+            subjects.push(s);
         }
         if subjects.len() >= 6 {
             break;
