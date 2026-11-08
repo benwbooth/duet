@@ -1624,3 +1624,33 @@ button, .transport { -webkit-user-select: none; user-select: none; }
   -webkit-background-clip: text; background-clip: text; color: transparent;
   filter: drop-shadow(0 1px 0 rgba(0, 0, 0, 0.6));
 }
+
+/* On the shelves, each book is a little 3D book: turned a little to show the block of pages
+   down its side, with the cover's hinge by the spine; it turns toward you when pointed at. */
+.bookcase .card { perspective: 1100px; }
+.bookcase .cover-wrap { transform-style: preserve-3d; transform: rotateY(-26deg); transform-origin: 40% 50%;
+  transition: transform 0.45s var(--ease-out); }
+.bookcase .card:hover .cover-wrap, .bookcase .card:focus-visible .cover-wrap { transform: translateY(-6px) rotateY(-8deg); }
+.bookcase .cover-wrap .cover, .bookcase .card:hover .cover-wrap .cover { transform: translateZ(0); border-radius: 2px 4px 4px 2px; }
+/* The pages, seen from the side: a block of paper as deep as the book is thick. */
+.bookcase .cover-wrap::after {
+  content: ""; position: absolute; top: 3px; bottom: 3px; right: 1px; width: 26px;
+  transform-origin: right center; transform: rotateY(-90deg);
+  background: repeating-linear-gradient(90deg, #f6f0e2 0 1px, #ddd3be 1px 2px, #efe7d4 2px 3px);
+  box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.28), inset -3px 0 4px rgba(0, 0, 0, 0.2);
+}
+/* The back board behind the pages. */
+.bookcase .cover-wrap::before {
+  content: ""; position: absolute; inset: 0; border-radius: 2px 4px 4px 2px;
+  transform: translateZ(-27px); background: color-mix(in srgb, var(--surface-2) 40%, #2a1a10);
+  box-shadow: 0 6px 10px rgba(0, 0, 0, 0.5);
+}
+/* The hinge: a soft crease down the cover by the spine, and a sheen across the board. */
+.bookcase .cover-wrap .cover { position: relative; }
+.bookcase .card .cover-wrap > .cover + .marks::before { content: none; }
+.bookcase .cover-wrap > .cover { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15), 6px 6px 12px -4px rgba(0, 0, 0, 0.55); }
+.bookcase .cover-wrap .hinge { display: none; }
+.bookcase .cover-wrap .hinge { display: block; position: absolute; inset: 0; pointer-events: none; border-radius: 2px 4px 4px 2px;
+  transform: translateZ(0.5px);
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.38) 0, rgba(255, 255, 255, 0.18) 3px, rgba(0, 0, 0, 0.12) 7px, transparent 12px),
+    linear-gradient(105deg, rgba(255, 255, 255, 0.14) 0%, transparent 35%, transparent 70%, rgba(0, 0, 0, 0.12) 100%); }

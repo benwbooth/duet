@@ -558,6 +558,7 @@ fn book_card(w: WorkSummary) -> impl IntoView {
         <a class="card" href=format!("#/work/{}", w.id)>
             <div class="cover-wrap">
                 {cover(w.cover_url.clone(), w.title.clone())}
+                <span class="hinge" aria-hidden="true"></span>
                 {format_marks(&w)}
                 {w.progress.filter(|p| *p > 0.0).map(|p| view! {
                     <div class="cover-progress"><div style=format!("width:{:.1}%", p * 100.0)></div></div>
