@@ -2660,9 +2660,15 @@ export function addPictures(container, list) {
     img.alt = p.caption || "";
     img.width = 1216;
     img.height = 832;
-    const cap = document.createElement("figcaption");
+    // (Picture and caption in one unbreakable box: a float split at a column's foot left its
+    // caption at the top of the next column, over the text there.)
+    const inner = document.createElement("span");
+    inner.className = "illus-in";
+    const cap = document.createElement("span");
+    cap.className = "illus-cap";
     cap.textContent = p.caption || "";
-    fig.append(img, cap);
+    inner.append(img, cap);
+    fig.append(inner);
     block.parentNode.insertBefore(fig, block);
     added++;
   }

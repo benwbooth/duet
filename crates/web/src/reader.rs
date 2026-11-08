@@ -329,7 +329,7 @@ fn with_pictures(html: &str, pictures: &[Picture]) -> String {
         let block = ["<p", "<div", "<blockquote", "<h"].iter().filter_map(|t| out[..at].rfind(t)).max().unwrap_or(at);
         let caption = p.caption.replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;");
         let figure = format!(
-            r#"<figure class="illus" data-for="{}"><img src="{}" alt="{caption}" width="1216" height="832" loading="eager" decoding="async"><figcaption>{caption}</figcaption></figure>"#,
+            r#"<figure class="illus" data-for="{}"><span class="illus-in"><img src="{}" alt="{caption}" width="1216" height="832" loading="eager" decoding="async"><span class="illus-cap">{caption}</span></span></figure>"#,
             p.sentence, p.url
         );
         out.insert_str(block, &figure);

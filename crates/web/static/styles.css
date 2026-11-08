@@ -1572,8 +1572,11 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 @media (max-width: 760px) { .downloads-pane.activity-pane { left: 0.6rem; right: 0.6rem; } }
 
 /* Pictures sit in the text like a book's spot illustrations: half the column wide, the words
-   flowing round them, alternately right and left. */
-.page figure.illus { float: right; clear: both; width: 46%; margin: 0.25em 0 0.5em 1em; }
-.page figure.illus:nth-of-type(even) { float: left; margin: 0.25em 1em 0.5em 0; }
-.page figure.illus img { width: 100%; max-height: none; }
-.page figure.illus figcaption { font-size: 0.72em; }
+   flowing round them, alternately right and left, with clear space between. The picture and its
+   caption are one inline-block, which can't be split between columns or pages. */
+.bookview .page figure.illus { float: right; clear: both; width: 46%; margin: 4px 0 10px 22px; padding: 0; break-inside: avoid; }
+.bookview .page figure.illus:nth-of-type(even) { float: left; margin: 4px 22px 10px 0; }
+.bookview .page figure.illus .illus-in { display: inline-block; width: 100%; vertical-align: top; text-indent: 0; line-height: 1.3; }
+.bookview .page figure.illus img { display: block; width: 100%; height: auto; max-height: none; margin: 0; }
+.bookview .page figure.illus .illus-cap { display: block; margin-top: 0.35em; font-size: 0.72em; font-style: italic; text-align: center;
+  color: color-mix(in srgb, currentColor 70%, transparent); }
