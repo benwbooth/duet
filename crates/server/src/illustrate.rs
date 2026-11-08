@@ -161,11 +161,11 @@ async fn plan(state: &State, asset: i64, chapter: usize) -> anyhow::Result<Vec<S
     let (title, author) = title_author(state, asset).await?;
     let numbered: String = text.iter().enumerate().map(|(i, s)| format!("{i}: {s}\n")).collect();
     let looks: String = style.characters.iter().map(|(n, l)| format!("- {n}: {l}\n")).collect();
-    // (About one every page or two: often enough that what's happening is there to see.)
-    let want = (text.len() / 15).clamp(2, 48);
+    // (About one a page: a page holds ten-odd sentences.)
+    let want = (text.len() / 10).clamp(2, 120);
     let system = format!(
         "You are the illustration director for an illustrated edition of {title} by {author}. Read this chapter \
-         and choose about {want} moments to illustrate, spread evenly through it (roughly one every page or two). \
+         and choose about {want} moments to illustrate, spread evenly through it (roughly one a page, so about every ten sentences). \
          Picture what the reader would want to see: whenever a character does something (an action, a gesture, \
          a discovery, a fright, a fight, a meeting), show that moment; whenever the story arrives somewhere \
          striking or atmospheric (a house, a street, a room, a landscape, a strange place), show the place itself, \
