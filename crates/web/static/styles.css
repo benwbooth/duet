@@ -1658,6 +1658,6 @@ button, .transport { -webkit-user-select: none; user-select: none; }
    initial sits in a manuscript), and rises a little above them. */
 .tabs .brand .wordmark { align-items: flex-end; }
 .tabs .brand .wordmark .initial { font-size: 1.08em; }
-.tabs .brand .wordmark .rest { display: inline-block; line-height: 1; transform: translateY(0.19em); }
+.tabs .brand .wordmark .rest { display: inline-block; line-height: 1; transform: translateY(0.07em); }
 .subjects { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.35rem 0 0.6rem; }
 .subjects .subject { font-size: 0.78rem; padding: 0.15rem 0.6rem; border-radius: 999px; background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); }
