@@ -1598,16 +1598,29 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 .sidebar-tab { z-index: 30; width: 12px; opacity: 0.9; background: color-mix(in srgb, var(--surface) 85%, var(--accent) 15%);
   border-color: color-mix(in srgb, var(--line) 50%, var(--accent) 50%); box-shadow: 1px 0 6px rgba(0, 0, 0, 0.25); }
 
-/* The wordmark in calligraphy: an illuminated, many-coloured initial D, and "uet" in plain ink. */
+/* The wordmark as a page of a storybook manuscript: an illuminated initial D, gilded, on a
+   painted ground in a gold frame, and "uet" in black-letter calligraphy. */
 @font-face {
-  font-family: 'Pinyon Script'; font-style: normal; font-weight: 400; font-display: swap;
-  src: url(font-pinyon-script-latin.woff2) format('woff2');
+  font-family: 'UnifrakturMaguntia'; font-style: normal; font-weight: 400; font-display: swap;
+  src: url(font-unifraktur-maguntia-latin.woff2) format('woff2');
 }
-.tabs .brand .wordmark { font: 400 2.35rem/1 'Pinyon Script', 'Snell Roundhand', cursive; color: var(--text); letter-spacing: 0.01em;
-  display: inline-flex; align-items: baseline; padding-top: 0.15rem; }
+.tabs .brand .wordmark { font: 400 2rem/1 'UnifrakturMaguntia', 'Old English Text MT', serif; color: var(--text);
+  display: inline-flex; align-items: flex-end; gap: 0.06em; }
 .tabs .brand .wordmark .initial {
-  font-size: 1.55em; line-height: 0.8; margin-right: 0.02em;
-  background: linear-gradient(135deg, #c0392b 0%, #e67e22 28%, #f1c40f 46%, #27ae60 64%, #2980b9 82%, #8e44ad 100%);
+  position: relative; display: inline-grid; place-items: center; width: 1.32em; height: 1.32em; margin-right: 0.04em;
+  font-size: 1.25em; line-height: 1;
+  border-radius: 3px;
+  background:
+    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.18) 0 6%, transparent 7%),
+    radial-gradient(circle at 82% 78%, #e8c25a 0 4%, transparent 5%),
+    radial-gradient(circle at 82% 22%, #c0392b 0 4%, transparent 5%),
+    radial-gradient(circle at 18% 78%, #c0392b 0 4%, transparent 5%),
+    radial-gradient(ellipse at 50% 40%, #2c5aa0 0%, #1b3566 60%, #12234a 100%);
+  box-shadow: inset 0 0 0 2px #d9b24c, inset 0 0 0 3px #7a5a12, inset 0 0 0 5px #a83226, 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+.tabs .brand .wordmark .initial::before {
+  content: "D"; font-size: 0.95em; padding-top: 0.08em;
+  background: linear-gradient(180deg, #fff3b0 0%, #f4d36a 30%, #c9962a 62%, #8a5e12 100%);
   -webkit-background-clip: text; background-clip: text; color: transparent;
-  filter: drop-shadow(0 1px 0 rgba(120, 80, 10, 0.35)) drop-shadow(0 0 6px rgba(241, 196, 15, 0.25));
+  filter: drop-shadow(0 1px 0 rgba(0, 0, 0, 0.6));
 }
