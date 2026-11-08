@@ -244,15 +244,16 @@ fn listened_recently() -> bool {
     LISTENED.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(90))
 }
 
-/// Sentences per picture (about one a page with the pictures set into the text).
-const PER: usize = 30;
+/// Sentences per picture (about two a page with the pictures set into the text).
+const PER: usize = 15;
 
 /// Which of a chapter's scenes are shown: all, unless it was planned more densely than now
-/// (then every second or third, so pictures already drawn are kept).
+/// (then evenly fewer of them, so pictures already drawn are kept).
 fn shown(scenes: &[Scene]) -> impl Fn(usize) -> bool + use<> {
+    // (Kept evenly: two of every three, one of every two... whatever brings it to the density.)
     let span = scenes.last().map(|s| s.sentence + 1).unwrap_or(1);
-    let stride = ((scenes.len() * PER + span / 2) / span.max(1)).max(1);
-    move |i| i % stride == 0
+    let keep = ((span as f64 / PER as f64) / scenes.len().max(1) as f64).min(1.0);
+    move |i| ((i + 1) as f64 * keep).floor() > (i as f64 * keep).floor() || keep >= 1.0
 }
 
 /// Where each book's reader is (chapter, sentence): pictures are drawn nearest it first.
