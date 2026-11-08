@@ -1088,6 +1088,9 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     let tap_seq = RwSignal::new(0u32);
     // Finds an untimed sentence in the recording: the stretch round the guess (`tr`, `secs`) is
     // heard and lined up with the book, and if the sentence turns up, playing moves to it.
+    // A tapped sentence being found in the recording: whether to play when it is.
+    let locating = RwSignal::new(None::<bool>);
+    let locate_run = StoredValue::new(0u32);
     // Goes to a place in the recording, playing on from it if `play`.
     let go_play = move |tr: usize, secs: f64, play: bool| {
         book_pos.set((tr, secs));
@@ -1106,7 +1109,12 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     // (Waits there, paused, while it looks: playing from the guess meanwhile started the reading
     // a paragraph or two off.) If it isn't found, the guess it is.
     let locate = move |c: usize, n: usize, word: usize, tr: usize, secs: f64, resume: bool| {
-        let (Some(e), Some(a)) = (ebook.get_untracked(), audio_asset.get_untracked()) else { return };
+        let (Some(e), Some(a)) = (ebook.get_untracked(), audio_asset.get_untracked()) else {
+            locating.set(None);
+            return;
+        };
+        let run = locate_run.get_value() + 1;
+        locate_run.set_value(run);
         spawn_local(async move {
             let found = async {
             // (Up to a minute either side, half a minute at a time, nearest first.)
@@ -1122,7 +1130,13 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             None
             }
             .await;
-            // Moved on meanwhile (another sentence chosen, or the page left): leave it.
+            // Another sentence tapped meanwhile: that one's search decides.
+            if locate_run.try_get_value() != Some(run) {
+                return;
+            }
+            let resume = locating.try_get_untracked().flatten().unwrap_or(resume);
+            let _ = locating.try_set(None);
+            // Moved on meanwhile (the page or chapter left): leave it.
             if sentence.try_get_untracked() != Some(n as i32) || chapter.try_get_untracked() != Some(c) {
                 return;
             }
@@ -1198,6 +1212,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                                 let _ = a.pause();
                             }
                             toast.show("Finding that sentence in the recording…".to_string());
+                            locating.set(Some(resume));
                             locate(c, n, word, tr, secs, resume);
                             return;
                         }
@@ -1326,6 +1341,13 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     // (you've turned pages, or jumped), the recording moves there first.
     let toggle = move |_| {
         let Some(a) = audio_el() else { return };
+        // A tapped sentence still being found in the recording: Play starts it when it's found
+        // (playing now would start from wherever the recording was, often pages back).
+        if let Some(resume) = locating.get_untracked() {
+            locating.set(Some(!resume));
+            toast.show(if resume { "Won't start when it's found." } else { "Starting there as soon as it's found…" }.to_string());
+            return;
+        }
         if !a.paused() {
             let _ = a.pause();
             return;
