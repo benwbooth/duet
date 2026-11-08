@@ -135,8 +135,14 @@ async fn plan(state: &State, asset: i64, chapter: usize) -> anyhow::Result<Vec<S
         return Ok(p);
     }
     let text = sentences(state, asset, chapter).await?;
-    // Title pages, contents and such: no pictures.
-    if text.len() < 20 {
+    // Title pages, contents and such, and chapters with pictures of their own (an illustrated
+    // edition already has its artist): none.
+    let has_own = {
+        let a = db::asset(&state.db, asset).await?.context("no such book")?;
+        let src = book::source(&a, &state.data_dir);
+        tokio::task::spawn_blocking(move || book::chapter(&src, asset, chapter).map(|c| c.html.contains("<img"))).await?.unwrap_or(false)
+    };
+    if text.len() < 20 || has_own {
         write_json(&path, &Vec::<Scene>::new()).await?;
         return Ok(vec![]);
     }
