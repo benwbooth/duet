@@ -26,59 +26,64 @@ NEGATIVE = (
 )
 
 
+def int8(model):
+    """Big linear layers held as 8-bit integers with a scale per output channel (as for the
+    performer, see fish_launch.py): half the memory, so the image model and its text model both
+    fit on the card beside other work instead of spilling into system memory and crawling."""
+    from torch import nn
+
+    class Int8Linear(nn.Module):
+        def __init__(self, linear):
+            super().__init__()
+            w = linear.weight.data.float()
+            scale = w.abs().amax(dim=1).clamp(min=1e-8) / 127.0
+            self.register_buffer("weight", torch.round(w / scale[:, None]).clamp(-127, 127).to(torch.int8))
+            self.register_buffer("scale", scale.to(torch.bfloat16))
+            self.bias = linear.bias
+            self.in_features, self.out_features = linear.in_features, linear.out_features
+
+        def forward(self, x):
+            out = nn.functional.linear(x, self.weight.to(x.dtype)) * self.scale.to(x.dtype)
+            return out + self.bias if self.bias is not None else out
+
+    for module in list(model.modules()):
+        for name, child in list(module.named_children()):
+            if isinstance(child, nn.Linear) and child.weight.numel() >= 1 << 20:
+                setattr(module, name, Int8Linear(child))
+    return model
+
+
 def zimage(job):
     """Z-Image-Turbo (Alibaba Tongyi, Apache-2.0): far better at drawing the scene as described
-    than SDXL, with a full language model reading the prompt. The text model and the image
-    model don't both fit on the card beside other work, so: every prompt read first, with the
-    text model alone on the card, then the image model alone draws them all (moving the two on
-    and off for every picture took twice as long)."""
+    than SDXL, with a full language model reading the prompt. Both its models in 8-bit, so they
+    fit on the card together."""
     from diffusers import ZImagePipeline
 
     t0 = time.time()
     pipe = ZImagePipeline.from_pretrained("Tongyi-MAI/Z-Image-Turbo", torch_dtype=torch.bfloat16)
     pipe.set_progress_bar_config(disable=True)
-    pipe.text_encoder.to("cuda")
-    with torch.inference_mode():
-        embeds = [pipe.encode_prompt(j.get("full_prompt") or j["prompt"], device="cuda", do_classifier_free_guidance=False)[0] for j in job["jobs"]]
-    pipe.text_encoder.to("cpu")
-    torch.cuda.empty_cache()
-    pipe.transformer.to("cuda")
-    pipe.vae.to("cuda")
-    # (Decoded a tile at a time: whole, the last step needed 2 GB more than the card had left.)
+    int8(pipe.transformer)
+    int8(pipe.text_encoder)
+    pipe.to("cuda")
     pipe.vae.enable_tiling()
     print(json.dumps({"ready": round(time.time() - t0, 1)}), file=sys.stderr, flush=True)
-    # Every picture drawn (as latents) with the image model on the card; then it makes way and
-    # the decoder turns them into pictures (both at once ran the card out of memory beside other
-    # work).
-    latents = []
-    for j, emb in zip(job["jobs"], embeds):
+    for j in job["jobs"]:
         t = time.time()
         with torch.inference_mode():
-            lat = pipe(
-                prompt_embeds=emb,
+            img = pipe(
+                prompt=j.get("full_prompt") or j["prompt"],
                 # (They're shown at half a column's width: this is plenty, and lighter to draw.)
                 width=int(j.get("width", job.get("width", 1024))),
                 height=int(j.get("height", job.get("height", 704))),
                 num_inference_steps=9,
                 guidance_scale=0.0,
                 generator=torch.Generator("cuda").manual_seed(int(j.get("seed", 0))),
-                output_type="latent",
-            ).images
-        latents.append((j, lat.to("cpu"), time.time() - t))
-    pipe.transformer.to("cpu")
-    torch.cuda.empty_cache()
-    for j, lat, secs in latents:
-        t = time.time()
-        with torch.inference_mode():
-            lat = lat.to("cuda", dtype=pipe.vae.dtype)
-            lat = (lat / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
-            image = pipe.vae.decode(lat, return_dict=False)[0]
-            img = pipe.image_processor.postprocess(image, output_type="pil")[0]
+            ).images[0]
         os.makedirs(os.path.dirname(j["out"]), exist_ok=True)
         tmp = j["out"] + ".part.png"
         img.save(tmp)
         os.replace(tmp, j["out"])
-        print(json.dumps({"out": j["out"], "seconds": round(secs + time.time() - t, 1)}), flush=True)
+        print(json.dumps({"out": j["out"], "seconds": round(time.time() - t, 1)}), flush=True)
 
 
 def main():
