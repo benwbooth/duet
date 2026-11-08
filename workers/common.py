@@ -218,6 +218,17 @@ def aligner():
     return _aligner
 
 
+_aligner_cpu = None
+
+
+def aligner_cpu():
+    """The forced aligner on the processor (while the graphics card is busy drawing)."""
+    global _aligner_cpu
+    if _aligner_cpu is None:
+        _aligner_cpu = ForcedAligner(device="cpu")
+    return _aligner_cpu
+
+
 def release_gpu_whisper():
     """Lets the card's copy of Whisper (and the aligner) go: they're unloaded when idle."""
     global _gpu_whisper, _aligner

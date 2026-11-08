@@ -422,12 +422,29 @@ def stop_drawing():
         free_gpu()
 
 
+def drawing_now():
+    return drawing is not None and drawing.poll() is None
+
+
+def listen_aligner():
+    """The forced aligner: on the card, or on the processor while pictures are being drawn."""
+    from common import aligner, aligner_cpu
+
+    return aligner_cpu() if drawing_now() else aligner()
+
+
 def listen_model():
     """Whisper for finding where in the book the audio is: on the graphics card when there is
-    one. (Exact word times come from the forced aligner, not from Whisper.)"""
+    one; while pictures are being drawn there, on the processor instead (slower, but the drawing
+    goes on: stopping it every time the recording was lined up meant no picture ever finished
+    while listening). Exact word times come from the forced aligner, not from Whisper."""
     from common import whisper as load_whisper
 
-    stop_drawing()
+    if drawing_now():
+        key = "live-cpu:" + args.listen_model
+        if key not in whisper:
+            whisper[key], _ = load_whisper(args.listen_model, "cpu")
+        return whisper[key]
     key = "live:" + args.listen_model
     if key not in whisper:
         whisper[key], _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda")
@@ -498,7 +515,7 @@ def sync_window(body):
     # (Of a cut-off last sentence, only the words that were actually heard.)
     span_words += [bw[i][0] for key in tail for i in range(first[key], min(last[key], hi) + 1)]
     with listen_lock:
-        times = aligner().align(samples, span_words)
+        times = listen_aligner().align(samples, span_words)
     spans, k = [], 0
     for ch, si in order:
         n = last[(ch, si)] - first[(ch, si)] + 1
@@ -525,7 +542,7 @@ def align_words(body):
     samples = load_audio(body["audio"])
     with listen_lock:
         touch("whisper")
-        times = aligner().align(samples, words)
+        times = listen_aligner().align(samples, words)
     heard = {i: (0, t[0]) for i, t in enumerate(times) if t}
     end = len(samples) / 16000
     return {"words": align.word_times(heard, len(words), 0, 0.0, end)}
@@ -557,7 +574,7 @@ def track_words(body):
             a = max(0.0, seg.start - 0.6)
             b = min(len(samples) / rate, seg.end + 0.6)
             ws = text.split()
-            times = aligner().align(samples[int(a * rate):int(b * rate)], ws)
+            times = listen_aligner().align(samples[int(a * rate):int(b * rate)], ws)
             timed = [[w, round(t[0] + a, 3), round(t[1] + a, 3)] for w, t in zip(ws, times) if t]
             out.append({"start": round(timed[0][1] if timed else seg.start, 3), "end": round(timed[-1][2] if timed else seg.end, 3),
                         "text": text, "words": timed})
