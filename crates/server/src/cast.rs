@@ -913,7 +913,17 @@ fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
 
 /// One sentence, performed: MP3 bytes, from the cache when it's been performed before. Asking
 /// for one also sets the performer working ahead from it.
+/// When the full cast was last asked for a line (any book).
+static LAST_HEARD: LazyLock<std::sync::Mutex<Option<std::time::Instant>>> = LazyLock::new(Default::default);
+
+/// Whether someone's been listening to the full cast in the last few minutes (the performer
+/// has the GPU, and anything else wanting it should wait).
+pub fn performing_recently() -> bool {
+    LAST_HEARD.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(300))
+}
+
 pub async fn sentence(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow::Result<Vec<u8>> {
+    *LAST_HEARD.lock().unwrap() = Some(std::time::Instant::now());
     work_ahead(state, asset, chapter, n);
     perform(state, asset, chapter, n, true).await
 }

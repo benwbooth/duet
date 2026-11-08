@@ -138,3 +138,74 @@ pub fn CastPanel(asset: i64, on_close: impl Fn() + Clone + Send + Sync + 'static
         </div>
     }
 }
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+struct PictureStyle {
+    #[serde(default)]
+    style: String,
+    #[serde(default)]
+    characters: std::collections::BTreeMap<String, String>,
+}
+
+/// The book's pictures: the art style they're all drawn in (yours to change: every picture is
+/// drawn again in the new one) and how each character looks in them.
+#[component]
+pub fn PicturesPanel(asset: i64, on_close: impl Fn() + Clone + Send + Sync + 'static) -> impl IntoView {
+    let toast = toast();
+    let style = RwSignal::new(None::<PictureStyle>);
+    let draft = RwSignal::new(String::new());
+    let saved = RwSignal::new(false);
+    spawn_local(async move {
+        match api::get::<PictureStyle>(&format!("/api/assets/{asset}/illustrations/style")).await {
+            Ok(s) => {
+                draft.set(s.style.clone());
+                style.set(Some(s));
+            }
+            Err(e) => toast.show(e.0),
+        }
+    });
+    let save = move |_| {
+        let text = draft.get_untracked();
+        spawn_local(async move {
+            match api::put::<_, serde_json::Value>(&format!("/api/assets/{asset}/illustrations/style"), &serde_json::json!({ "style": text })).await {
+                Ok(_) => saved.set(true),
+                // (No body comes back: that's fine.)
+                Err(e) if e.0.contains("EOF") || e.0.contains("JSON") => saved.set(true),
+                Err(e) => toast.show(e.0),
+            }
+        });
+    };
+    view! {
+        <div class="editions-panel cast-panel">
+            <div class="cast-head">
+                <h4>"Pictures"</h4>
+                <button class="icon-button" title="Close" on:click={
+                    let on_close = on_close.clone();
+                    move |_| on_close()
+                }>"×"</button>
+            </div>
+            <p class="cast-note">
+                "An illustration director reads each chapter and picks its scenes, about one every few pages, and every picture is drawn in this one style, with each character looking the same throughout. They're drawn on your graphics card a chapter or two ahead of you (not while the full cast is performing, which needs the card), and appear as you reach each chapter."
+            </p>
+            {move || match style.get() {
+                None => view! { <p class="cast-note">"Choosing a style…"</p> }.into_any(),
+                Some(s) => view! {
+                    <div class="cast-member">
+                        <div class="cast-member-head"><strong>"Art style"</strong></div>
+                        <textarea rows="4" prop:value=move || draft.get() on:input=move |ev| { saved.set(false); draft.set(event_target_value(&ev)) }></textarea>
+                        <div class="cast-actions">
+                            {move || saved.get().then(|| view! { <span class="cast-busy">"Saved: the pictures are being drawn again."</span> })}
+                            <button class="button primary" disabled=move || draft.get().trim().is_empty() on:click=save>"Use this style and redraw"</button>
+                        </div>
+                    </div>
+                    {(!s.characters.is_empty()).then(|| view! {
+                        <div class="cast-member">
+                            <div class="cast-member-head"><strong>"How the characters look"</strong></div>
+                            {s.characters.into_iter().map(|(n, l)| view! { <p class="look"><strong>{n}</strong>": "{l}</p> }).collect_view()}
+                        </div>
+                    })}
+                }.into_any(),
+            }}
+        </div>
+    }
+}

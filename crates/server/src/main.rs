@@ -13,6 +13,7 @@ mod dict;
 mod downloads;
 mod error;
 mod free;
+mod illustrate;
 mod images;
 mod jobs;
 mod library;

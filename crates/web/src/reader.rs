@@ -310,6 +310,33 @@ impl SyncIndex {
     }
 }
 
+/// A picture for the book (see the server's illustrate module).
+#[derive(Clone, Debug, serde::Deserialize)]
+struct Picture {
+    sentence: usize,
+    caption: String,
+    ready: bool,
+    url: String,
+}
+
+/// The chapter's text with its drawn pictures in it, each before the paragraph its sentence
+/// starts in.
+fn with_pictures(html: &str, pictures: &[Picture]) -> String {
+    let mut out = html.to_string();
+    // (Last first, so the places found earlier in the text stay put.)
+    for p in pictures.iter().filter(|p| p.ready).rev() {
+        let Some(at) = out.find(&format!("data-s=\"{}\"", p.sentence)) else { continue };
+        let block = ["<p", "<div", "<blockquote", "<h"].iter().filter_map(|t| out[..at].rfind(t)).max().unwrap_or(at);
+        let caption = p.caption.replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;");
+        let figure = format!(
+            r#"<figure class="illus"><img src="{}" alt="{caption}" title="{caption}" width="1216" height="832" loading="eager" decoding="async"></figure>"#,
+            p.url
+        );
+        out.insert_str(block, &figure);
+    }
+    out
+}
+
 #[derive(Clone, PartialEq)]
 struct Message {
     speaker: String,
@@ -368,6 +395,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     let pending_seek = RwSignal::new(None::<(f64, bool)>);
     let toc_open = RwSignal::new(false);
     let cast_open = RwSignal::new(false);
+    let pictures_open = RwSignal::new(false);
     // A click anywhere outside an open panel (or Escape) closes it. (The bar's own buttons
     // toggle their panels themselves.)
     {
@@ -382,7 +410,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 }
                 return;
             }
-            if !(view_open.get_untracked() || editions_open.get_untracked() || toc_open.get_untracked() || cast_open.get_untracked()) {
+            if !(view_open.get_untracked() || editions_open.get_untracked() || toc_open.get_untracked() || cast_open.get_untracked() || pictures_open.get_untracked()) {
                 return;
             }
             if let Some(k) = ev.dyn_ref::<web_sys::KeyboardEvent>() {
@@ -406,6 +434,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             editions_open.set(false);
             toc_open.set(false);
             cast_open.set(false);
+            pictures_open.set(false);
         })
         .into_js_value();
         let _ = document().add_event_listener_with_callback_and_bool("pointerdown", outside.unchecked_ref(), true);
@@ -634,6 +663,17 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             }
         });
     };
+    // Pictures through the book, on or off; remembered in Settings. (The chapter's laid out again
+    // with them in.)
+    let set_pictures = move |on: bool| {
+        prefs.update(|p| p.pictures = on);
+        spawn_local(async move {
+            if let Ok(mut s) = api::get::<Settings>("/api/settings").await {
+                s.reader.pictures = on;
+                let _ = api::put::<_, Settings>("/api/settings", &s).await;
+            }
+        });
+    };
     let set_curl = move |on: bool| {
         prefs.update(|p| p.page_curl = on);
         if let Some(b) = book.get_untracked() {
@@ -711,6 +751,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         let c = chapter.get();
         let Some(e) = ebook.get() else { return };
         let Some(l) = layout.get() else { return };
+        let pictures = prefs.with(|p| p.pictures);
         if !matches!(l.mode, ReadMode::Chapters | ReadMode::Images) || c == usize::MAX {
             return;
         }
@@ -729,7 +770,13 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             );
         }
         spawn_local(async move {
-            let got = api::get::<Chapter>(&format!("/api/assets/{}/chapters/{c}", e.id)).await;
+            let mut got = api::get::<Chapter>(&format!("/api/assets/{}/chapters/{c}", e.id)).await;
+            // The pictures drawn for it so far, each before the paragraph its scene happens in.
+            if pictures && !transcript {
+                if let (Ok(ch), Ok(list)) = (got.as_mut(), api::get::<Vec<Picture>>(&format!("/api/assets/{}/illustrations/{c}", e.id)).await) {
+                    ch.html = with_pictures(&ch.html, &list);
+                }
+            }
             // The reader may have closed while this was loading.
             if done.try_set_value(true).is_some() {
                 return;
@@ -1630,6 +1677,19 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                             <button class:active=move || !paged() on:click=move |ev| if paged() { toggle_layout(ev) }>"Scroll"</button>
                         </div>
                     </div>
+                    <div class="view-row">
+                        <span>"Pictures"</span>
+                        <div class="segmented">
+                            <button class:active=move || prefs.with(|p| p.pictures) on:click=move |_| set_pictures(true)>"On"</button>
+                            <button class:active=move || prefs.with(|p| !p.pictures) on:click=move |_| set_pictures(false)>"Off"</button>
+                        </div>
+                    </div>
+                    <Show when=move || prefs.with(|p| p.pictures)>
+                        <button class="button pictures-open" on:click=move |_| {
+                            view_open.set(false);
+                            pictures_open.set(true);
+                        }>"Picture style: see and change it…"</button>
+                    </Show>
                     <Show when=paged>
                         <div class="view-row">
                             <span>"Page turns"</span>
@@ -1740,6 +1800,9 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 </div>
             </Show>
 
+            {move || (pictures_open.get()).then(|| ebook.get().map(|e| view! {
+                <crate::cast_panel::PicturesPanel asset=e.id on_close=move || pictures_open.set(false)/>
+            })).flatten()}
             {move || (cast_open.get()).then(|| ebook.get().map(|e| view! {
                 <crate::cast_panel::CastPanel asset=e.id on_close=move || cast_open.set(false)/>
             })).flatten()}

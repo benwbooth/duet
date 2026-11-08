@@ -1545,3 +1545,10 @@ button, .transport { -webkit-user-select: none; user-select: none; }
   border: 1px solid var(--line); background: var(--bg); color: var(--text); resize: vertical; }
 .cast-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; }
 .cast-busy { color: var(--muted); font-size: 0.82rem; margin-right: auto; }
+
+/* AI pictures in the text: a whole picture, never split between columns or pages */
+.page figure.illus { margin: 0.6em 0 1em; text-align: center; break-inside: avoid; page-break-inside: avoid; }
+.page figure.illus img { display: block; margin: 0 auto; width: auto; height: auto; max-width: 100%;
+  max-height: calc(var(--col-h, 70vh) * 0.62); border-radius: 3px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18); }
+.pictures-open { width: 100%; }
+.cast-panel .look { margin: 0.2rem 0; font-size: 0.86rem; color: var(--text); }

@@ -54,6 +54,9 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assets/{id}/cast/status", get(cast_status))
         .route("/assets/{id}/cast/recast", post(cast_recast))
         .route("/assets/{id}/cast/members", get(cast_members))
+        .route("/assets/{id}/illustrations/style", get(illus_style).put(put_illus_style))
+        .route("/assets/{id}/illustrations/{chapter}", get(illus_chapter))
+        .route("/assets/{id}/illustrations/{chapter}/{file}", get(illus_image))
         .route("/assets/{id}/cast/voice", post(cast_voice))
         .route("/assets/{id}/cast/clip/{voice}", get(cast_clip))
         .route("/cast/warm", post(cast_warm))
@@ -264,6 +267,33 @@ async fn cast_recast(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<se
         }
     });
     Json(serde_json::json!({ "ok": true }))
+}
+
+/// A chapter's pictures (and which are drawn yet); asking sets the drawing going ahead.
+async fn illus_chapter(AxState(s): AxState<State>, Path((id, chapter)): Path<(i64, usize)>) -> Json<serde_json::Value> {
+    Json(crate::illustrate::chapter(&s, id, chapter).await)
+}
+
+async fn illus_image(AxState(s): AxState<State>, Path((id, chapter, file)): Path<(i64, usize, String)>) -> ApiResult<Response> {
+    let i: usize = file.strip_suffix(".png").and_then(|n| n.parse().ok()).ok_or_else(|| ApiError::not_found("picture"))?;
+    let bytes = tokio::fs::read(crate::illustrate::image_path(&s, id, chapter, i)).await.map_err(|_| ApiError::not_found("picture"))?;
+    Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-cache")], bytes).into_response())
+}
+
+/// The book's art style and its characters' looks.
+async fn illus_style(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Json<crate::illustrate::Style>> {
+    Ok(Json(crate::illustrate::style(&s, id).await?))
+}
+
+#[derive(Deserialize)]
+struct StyleText {
+    style: String,
+}
+
+/// A new style: every picture is drawn again in it.
+async fn put_illus_style(AxState(s): AxState<State>, Path(id): Path<i64>, Json(b): Json<StyleText>) -> ApiResult<StatusCode> {
+    crate::illustrate::set_style(&s, id, &b.style).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The full cast, with what each voice was made from.

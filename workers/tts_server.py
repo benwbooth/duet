@@ -618,6 +618,26 @@ class Handler(BaseHTTPRequestHandler):
                 fish.stop()
                 threading.Thread(target=lambda: os._exit(0), daemon=True).start()
                 return
+            if path in ("/v1/illustrate", "/illustrate"):
+                # A book's pictures (Stable Diffusion XL, in the designer's environment): the
+                # card is cleared for it first, as for designing a voice.
+                with lock:
+                    if args.engine == "fish" and args.fish_dir:
+                        fish.stop()
+                    unload_qwen()
+                    with listen_lock:
+                        whisper.clear()
+                        from common import release_gpu_whisper
+
+                        release_gpu_whisper()
+                    free_ollama()
+                    free_gpu()
+                    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "illustrate.py")
+                    r = subprocess.run([args.design_python, script, json.dumps(body)], stdout=subprocess.PIPE, text=True)
+                if r.returncode != 0:
+                    return self.reply(500, json.dumps({"error": "drawing failed"}).encode(), "application/json")
+                made = [json.loads(l) for l in r.stdout.splitlines() if l.startswith("{")]
+                return self.reply(200, json.dumps({"made": made}).encode(), "application/json")
             if path in ("/v1/voices", "/voices"):
                 # Cast voices ahead of time, so a long recording never switches models midway.
                 with lock:

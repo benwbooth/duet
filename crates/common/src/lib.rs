@@ -484,6 +484,8 @@ pub struct ReaderSettings {
     pub spread: String,
     /// Animate page turns (the page curls over); off, pages change at once.
     pub page_curl: bool,
+    /// AI-drawn pictures through the book, one every few pages.
+    pub pictures: bool,
 }
 
 /// The reader's default typeface: book faces where the system has them.
@@ -501,6 +503,7 @@ impl Default for ReaderSettings {
             layout: "pages".into(),
             spread: "auto".into(),
             page_curl: true,
+            pictures: false,
         }
     }
 }
