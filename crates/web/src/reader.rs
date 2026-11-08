@@ -338,7 +338,7 @@ fn with_pictures(html: &str, pictures: &[Picture]) -> String {
     places.sort_by_key(|(b, _)| *b);
     let mut kept: Vec<(usize, &Picture)> = Vec::new();
     for (b, p) in places {
-        if kept.last().is_none_or(|(lb, _)| b > *lb && b - lb >= 1400) {
+        if kept.last().is_none_or(|(lb, _)| b > *lb && b - lb >= 3500) {
             kept.push((b, p));
         }
     }

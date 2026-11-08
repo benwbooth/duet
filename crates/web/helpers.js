@@ -2654,10 +2654,10 @@ function crowded(container, span) {
   if (!block || block === container) return false;
   let n = 0, prev = block.previousElementSibling;
   let chars = 0;
-  while (prev && n < 3) {
+  while (prev && n < 12) {
     if (prev.matches("figure.illus")) return true;
     chars += prev.textContent.length;
-    if (chars > 600) return false;
+    if (chars > 2000) return false;
     prev = prev.previousElementSibling;
     n++;
   }

@@ -244,8 +244,8 @@ fn listened_recently() -> bool {
     LISTENED.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(90))
 }
 
-/// Sentences per picture (about two a page with the pictures set into the text).
-const PER: usize = 15;
+/// Sentences per picture (about one every page and a half).
+const PER: usize = 45;
 
 /// Which of a chapter's scenes are shown: all, unless it was planned more densely than now
 /// (then evenly fewer of them, so pictures already drawn are kept).
