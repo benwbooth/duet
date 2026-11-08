@@ -169,11 +169,10 @@ async fn plan_with(state: &State, asset: i64, chapter: usize, text: &[String], t
     let style = style(state, asset).await?;
     let numbered: String = text.iter().enumerate().map(|(i, s)| format!("{i}: {s}\n")).collect();
     let looks: String = style.characters.iter().map(|(n, l)| format!("- {n}: {l}\n")).collect();
-    // (About one a page: a page holds ten-odd sentences.)
-    let want = (text.len() / 10).clamp(2, 120);
+    let want = (text.len() / PER).clamp(1, 60);
     let system = format!(
         "You are the illustration director for an illustrated edition of {title} by {author}. Read this chapter \
-         and choose about {want} moments to illustrate, spread evenly through it (roughly one a page, so about every ten sentences). \
+         and choose about {want} moments to illustrate, spread evenly through it (roughly one every {PER} sentences). \
          Picture what the reader would want to see: whenever a character does something (an action, a gesture, \
          a discovery, a fright, a fight, a meeting), show that moment; whenever the story arrives somewhere \
          striking or atmospheric (a house, a street, a room, a landscape, a strange place), show the place itself, \
@@ -245,6 +244,17 @@ fn listened_recently() -> bool {
     LISTENED.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(90))
 }
 
+/// Sentences per picture (about one a page with the pictures set into the text).
+const PER: usize = 30;
+
+/// Which of a chapter's scenes are shown: all, unless it was planned more densely than now
+/// (then every second or third, so pictures already drawn are kept).
+fn shown(scenes: &[Scene]) -> impl Fn(usize) -> bool + use<> {
+    let span = scenes.last().map(|s| s.sentence + 1).unwrap_or(1);
+    let stride = ((scenes.len() * PER + span / 2) / span.max(1)).max(1);
+    move |i| i % stride == 0
+}
+
 /// Where each book's reader is (chapter, sentence): pictures are drawn nearest it first.
 static READER: LazyLock<std::sync::Mutex<std::collections::HashMap<i64, (usize, usize)>>> = LazyLock::new(Default::default);
 
@@ -255,9 +265,11 @@ pub async fn chapter(state: &State, asset: i64, chapter: usize, near: Option<usi
     READER.lock().unwrap().insert(asset, (chapter, near.unwrap_or(0)));
     ahead(state, asset);
     let scenes: Vec<Scene> = read_json(&dir(state, asset).join(format!("plan-{chapter}.json"))).await.unwrap_or_default();
+    let show = shown(&scenes);
     let list: Vec<_> = scenes
         .iter()
         .enumerate()
+        .filter(|(i, _)| show(*i))
         .map(|(i, s)| {
             json!({
                 "sentence": s.sentence,
@@ -304,8 +316,9 @@ fn ahead(state: &State, asset: i64) {
                         break;
                     }
                 };
+                let show = shown(&scenes);
                 for (i, sc) in scenes.into_iter().enumerate() {
-                    if image_path(&state, asset, cc, i).exists() {
+                    if !show(i) || image_path(&state, asset, cc, i).exists() {
                         continue;
                     }
                     let d = if k == 0 {
@@ -323,8 +336,10 @@ fn ahead(state: &State, asset: i64) {
             }
             // (How the reader's chapter is coming along, for the jobs pane.)
             let plan_c: Vec<Scene> = read_json(&dir(&state, asset).join(format!("plan-{c}.json"))).await.unwrap_or_default();
-            let drawn = (0..plan_c.len()).filter(|i| image_path(&state, asset, c, *i).exists()).count() as u32;
-            crate::activity::set(&key, "Pictures", &title, format!("Drawing the pictures round where you're reading (chapter {})", c + 1), drawn, plan_c.len() as u32);
+            let show_c = shown(&plan_c);
+            let wanted: Vec<usize> = (0..plan_c.len()).filter(|i| show_c(*i)).collect();
+            let drawn = wanted.iter().filter(|i| image_path(&state, asset, c, **i).exists()).count() as u32;
+            crate::activity::set(&key, "Pictures", &title, format!("Drawing the pictures round where you're reading (chapter {})", c + 1), drawn, wanted.len() as u32);
             let items: Vec<(usize, usize, Scene)> = todo.into_iter().map(|(_, cc, i, sc)| (cc, i, sc)).collect();
             if let Err(e) = draw(&state, asset, &items).await {
                 tracing::warn!("drawing pictures: {e:#}");
