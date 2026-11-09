@@ -36,7 +36,12 @@ pub async fn save_settings(db: &SqlitePool, s: &Settings) -> anyhow::Result<()> 
 }
 
 pub fn cover_url(id: i64, cover: &Option<String>) -> Option<String> {
-    cover.as_ref().map(|_| format!("/api/works/{id}/cover"))
+    // The file name changes with each new cover, so it doubles as a version:
+    // the address changes and browsers fetch the new picture.
+    cover.as_ref().map(|p| {
+        let v = p.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+        format!("/api/works/{id}/cover?v={v:x}")
+    })
 }
 
 pub async fn list_works(db: &SqlitePool) -> anyhow::Result<Vec<WorkSummary>> {

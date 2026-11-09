@@ -36,6 +36,11 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/folders", get(folders))
         .route("/works/{id}", get(work).patch(edit_work))
         .route("/works/{id}/cover", get(cover))
+        .route("/works/{id}/cover_options", get(cover_options))
+        .route("/works/{id}/cover_image/{idx}", get(cover_image))
+        .route("/works/{id}/cover_pick", post(cover_pick))
+        .route("/works/{id}/cover_search", get(cover_search))
+        .route("/works/{id}/cover_fetch", post(cover_fetch))
         .route("/works/{id}/position", get(get_position).put(put_position))
         .route("/works/{id}/sync", get(sync))
         .route("/works/{id}/sync/live", post(sync_live))
@@ -153,9 +158,11 @@ async fn cover(AxState(s): AxState<State>, Path(id): Path<i64>, req: Request) ->
         sqlx::query_as("SELECT cover_path FROM works WHERE id = ?").bind(id).fetch_optional(&s.db).await?.ok_or_else(|| ApiError::not_found("book"))?;
     let path = path.ok_or_else(|| ApiError::not_found("cover"))?;
     let bytes = tokio::fs::read(&path).await?;
-    let _ = req;
     let mime = sniff_image(&bytes);
-    Ok(([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "max-age=86400")], bytes).into_response())
+    // Addresses from `cover_url` carry a version that changes with the cover,
+    // so those can be cached for good; a bare address must be rechecked.
+    let cache = if req.uri().query().is_some_and(|q| q.contains("v=")) { "public, max-age=31536000, immutable" } else { "no-cache" };
+    Ok(([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, cache)], bytes).into_response())
 }
 
 fn sniff_image(b: &[u8]) -> &'static str {
@@ -165,6 +172,50 @@ fn sniff_image(b: &[u8]) -> &'static str {
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
         _ => "image/jpeg",
     }
+}
+
+/// Every embedded image of the work's EPUB, for the "pick a cover" UI.
+async fn cover_options(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Json<Vec<serde_json::Value>>> {
+    let opts = library::ebook_images(&s, id).await?;
+    Ok(Json(opts.into_iter().enumerate().map(|(i, (_, _, mime))| serde_json::json!({ "index": i, "url": format!("/api/works/{id}/cover_image/{i}"), "mime": mime })).collect()))
+}
+
+/// One embedded EPUB image, by index from `cover_options`.
+async fn cover_image(AxState(s): AxState<State>, Path((id, idx)): Path<(i64, usize)>) -> ApiResult<Response> {
+    let (bytes, mime) = library::ebook_image(&s, id, idx).await?;
+    let ct = header::HeaderValue::from_str(&mime).unwrap_or(header::HeaderValue::from_static("image/jpeg"));
+    Ok(([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, header::HeaderValue::from_static("max-age=86400"))], bytes).into_response())
+}
+
+#[derive(Deserialize)]
+struct CoverPick {
+    index: usize,
+}
+
+/// Replaces the work's cover with one of its embedded images.
+async fn cover_pick(AxState(s): AxState<State>, Path(id): Path<i64>, Json(body): Json<CoverPick>) -> ApiResult<StatusCode> {
+    library::set_cover(&s, id, body.index).await?;
+    Ok(StatusCode::OK)
+}
+
+/// Cover options from Open Library (keyless) for the work's title/author.
+async fn cover_search(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Json<Vec<serde_json::Value>>> {
+    let work = crate::db::work_detail(&s.db, id).await?.ok_or_else(|| ApiError::not_found("book"))?;
+    let site = s.site_client().await;
+    let found = library::search_online_covers(&site, &work.title, work.author.as_deref()).await?;
+    Ok(Json(found.into_iter().map(|c| serde_json::json!({ "url": c.full_url, "thumb": c.thumb_url, "label": c.label })).collect()))
+}
+
+#[derive(Deserialize)]
+struct CoverUrl {
+    url: String,
+}
+
+/// Downloads a cover from a URL (Open Library or anywhere) and sets it.
+async fn cover_fetch(AxState(s): AxState<State>, Path(id): Path<i64>, Json(body): Json<CoverUrl>) -> ApiResult<StatusCode> {
+    let site = s.site_client().await;
+    library::set_cover_from_url(&s, &site, id, body.url.trim()).await?;
+    Ok(StatusCode::OK)
 }
 
 async fn get_position(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Json<Option<Position>>> {

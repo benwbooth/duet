@@ -315,22 +315,174 @@ async fn find_or_create_work(db: &SqlitePool, meta: &Meta) -> anyhow::Result<i64
     Ok(id)
 }
 
+/// All image resources of a work's first EPUB, for the "pick a cover" UI.
+/// Returns (epub path, resource id, mime) in a stable order, cover first.
+pub async fn ebook_images(state: &State, work_id: i64) -> anyhow::Result<Vec<(PathBuf, String, String)>> {
+    let assets = crate::db::work_assets(&state.db, work_id).await?;
+    let path = assets.iter().find(|a| a.kind == AssetKind::Ebook && a.format == "epub").map(|a| PathBuf::from(&a.path)).context("no EPUB edition to pick a cover from")?;
+    tokio::task::spawn_blocking(move || {
+        let mut doc = epub::doc::EpubDoc::new(&path).context("opening EPUB")?;
+        let cover_id: Option<String> = doc.get_cover_id();
+        let mut ids: Vec<(String, String)> = doc
+            .resources
+            .iter()
+            // Pictures a browser can show as a cover (an SVG or TIFF would save as a broken image).
+            .filter(|(_, r)| matches!(r.mime.as_str(), "image/jpeg" | "image/jpg" | "image/png" | "image/gif" | "image/webp"))
+            .map(|(id, r)| (id.clone(), r.mime.clone()))
+            .collect();
+        ids.sort();
+        // The declared cover first; the rest alphabetically.
+        if let Some(cid) = cover_id {
+            if let Some(pos) = ids.iter().position(|(id, _)| id == &cid) {
+                let first = ids.remove(pos);
+                ids.insert(0, first);
+            }
+        }
+        Ok(ids.into_iter().map(|(id, mime)| (path.clone(), id, mime)).collect())
+    })
+    .await?
+}
+
+/// Bytes of one EPUB image resource.
+pub async fn ebook_image(state: &State, work_id: i64, index: usize) -> anyhow::Result<(Vec<u8>, String)> {
+    let options = ebook_images(state, work_id).await?;
+    let (path, id, _) = options.into_iter().nth(index).context("no such image")?;
+    tokio::task::spawn_blocking(move || {
+        let mut doc = epub::doc::EpubDoc::new(&path).context("opening EPUB")?;
+        doc.get_resource(&id).context("reading image")
+    })
+    .await?
+}
+
+/// Replaces a work's cover with one of its EPUB's embedded images.
+pub async fn set_cover(state: &State, work_id: i64, index: usize) -> anyhow::Result<()> {
+    let (bytes, _) = ebook_image(state, work_id, index).await?;
+    anyhow::ensure!(is_picture(&bytes), "that image isn't a JPEG, PNG, GIF or WebP picture");
+    save_cover(state, work_id, &bytes).await
+}
+
+/// One downloadable cover found online.
+pub struct OnlineCover {
+    pub thumb_url: String,
+    pub full_url: String,
+    pub label: String,
+}
+
+/// Searches Open Library (keyless) for the work's title/author and returns
+/// downloadable cover options, best first.
+pub async fn search_online_covers(site: &reqwest::Client, title: &str, author: Option<&str>) -> anyhow::Result<Vec<OnlineCover>> {
+    let mut url = reqwest::Url::parse("https://openlibrary.org/search.json").context("bad Open Library address")?;
+    url.query_pairs_mut()
+        .append_pair("title", title)
+        .append_pair("limit", "8")
+        .append_pair("fields", "key,title,author_name,cover_i");
+    if let Some(a) = author.filter(|a| !a.is_empty()) {
+        url.query_pairs_mut().append_pair("author", a);
+    }
+    let data: serde_json::Value = site
+        .get(url)
+        .header("User-Agent", "duet (https://github.com/benwbooth/duet)")
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .context("reaching Open Library")?
+        .error_for_status()?
+        .json()
+        .await?;
+    let mut out = Vec::new();
+    for doc in data["docs"].as_array().cloned().unwrap_or_default() {
+        let Some(cover_i) = doc["cover_i"].as_i64() else { continue };
+        let label = match (doc["title"].as_str(), doc["author_name"][0].as_str()) {
+            (Some(t), Some(a)) => format!("{t} — {a}"),
+            (Some(t), None) => t.to_string(),
+            _ => continue,
+        };
+        out.push(OnlineCover {
+            thumb_url: format!("https://covers.openlibrary.org/b/id/{cover_i}-M.jpg"),
+            full_url: format!("https://covers.openlibrary.org/b/id/{cover_i}-L.jpg"),
+            label,
+        });
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Downloads a cover image from a URL (Open Library or anywhere) and sets it.
+/// Retried a few times: Open Library's image servers often drop a connection
+/// partway through, especially through a proxy.
+pub async fn set_cover_from_url(state: &State, site: &reqwest::Client, work_id: i64, url: &str) -> anyhow::Result<()> {
+    let mut last_err = None;
+    for attempt in 0..4u32 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1))).await;
+        }
+        let result = async {
+            let resp = site
+                .get(url)
+                .header("User-Agent", "duet (https://github.com/benwbooth/duet)")
+                .timeout(std::time::Duration::from_secs(60))
+                .send()
+                .await?
+                .error_for_status()?;
+            resp.bytes().await
+        }
+        .await;
+        match result {
+            Ok(bytes) => {
+                let bytes = bytes.to_vec();
+                if !is_picture(&bytes) {
+                    anyhow::bail!("that address didn't return a picture (JPEG, PNG, GIF or WebP expected)");
+                }
+                return save_cover(state, work_id, &bytes).await;
+            }
+            // A 404 won't change on a retry.
+            Err(e) if e.status().is_some_and(|s| s.is_client_error()) => return Err(anyhow::Error::new(e).context("downloading cover")),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(anyhow::Error::new(last_err.expect("at least one attempt")).context("downloading cover (tried 4 times)"))
+}
+
+fn is_picture(b: &[u8]) -> bool {
+    matches!(b, [0x89, b'P', b'N', b'G', ..] | [b'G', b'I', b'F', ..] | [0xFF, 0xD8, 0xFF, ..] | [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..])
+}
+
+async fn save_cover(state: &State, work_id: i64, bytes: &[u8]) -> anyhow::Result<()> {
+    // Always (over)writes: this is both the import default and the explicit
+    // "pick a cover" action. Each cover gets a new file name, so its address
+    // (which carries the name as a version) changes and no browser keeps
+    // showing the old picture from its cache.
+    let dir = state.data_dir.join("covers");
+    tokio::fs::create_dir_all(&dir).await?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let path = dir.join(format!("{work_id}-{stamp}.img"));
+    let tmp = dir.join(format!("{work_id}-{stamp}.tmp"));
+    tokio::fs::write(&tmp, bytes).await?;
+    tokio::fs::rename(&tmp, &path).await?;
+    let (old,): (Option<String>,) =
+        sqlx::query_as("SELECT cover_path FROM works WHERE id = ?").bind(work_id).fetch_optional(&state.db).await?.context("no such book")?;
+    sqlx::query("UPDATE works SET cover_path = ? WHERE id = ?").bind(path.to_string_lossy().to_string()).bind(work_id).execute(&state.db).await?;
+    // The previous picture, if it was one of ours and no other book shares it.
+    if let Some(old) = old.filter(|o| std::path::Path::new(o).starts_with(&dir) && *o != path.to_string_lossy()) {
+        let (shared,): (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM works WHERE cover_path = ?)").bind(&old).fetch_one(&state.db).await?;
+        if !shared {
+            let _ = tokio::fs::remove_file(&old).await;
+        }
+    }
+    Ok(())
+}
+
+/// The import-time default: keep the first cover found, never overwrite a
+/// choice the user already made.
 async fn save_cover_if_missing(state: &State, work_id: i64, bytes: &[u8]) -> anyhow::Result<()> {
     let (cover,): (Option<String>,) =
         sqlx::query_as("SELECT cover_path FROM works WHERE id = ?").bind(work_id).fetch_one(&state.db).await?;
     if cover.is_some() {
         return Ok(());
     }
-    let dir = state.data_dir.join("covers");
-    tokio::fs::create_dir_all(&dir).await?;
-    let path = dir.join(format!("{work_id}.img"));
-    tokio::fs::write(&path, bytes).await?;
-    sqlx::query("UPDATE works SET cover_path = ? WHERE id = ?")
-        .bind(path.to_string_lossy().to_string())
-        .bind(work_id)
-        .execute(&state.db)
-        .await?;
-    Ok(())
+    save_cover(state, work_id, bytes).await
 }
 
 /// "Author - Title", "Title - Author" is ambiguous, so only the first form is recognised.

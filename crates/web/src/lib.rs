@@ -9,6 +9,19 @@ mod settings;
 mod setup;
 
 use duet_common::{Asset, AssetKind, Job, JobKind, NewJob, ScanReport, WorkDetail, WorkSummary};
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct CoverOption {
+    index: usize,
+    url: String,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct OnlineCover {
+    url: String,
+    thumb: String,
+    label: String,
+}
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::prelude::*;
@@ -832,6 +845,33 @@ fn WorkPage(id: i64) -> impl IntoView {
     let work = LocalResource::new(move || async move { api::get::<WorkDetail>(&format!("/api/works/{id}")).await });
     let jobs = LocalResource::new(|| api::get::<Vec<Job>>("/api/jobs"));
     let more = RwSignal::new(false);
+    // Cover picker: alternatives from the book's own files and Open Library.
+    let picking = RwSignal::new(false);
+    let cover_opts = RwSignal::new(None::<Vec<CoverOption>>);
+    let online_opts = RwSignal::new(None::<Vec<OnlineCover>>);
+    // What's being saved right now ("Saving cover…"), shown over the picker.
+    let saving = RwSignal::new(None::<&'static str>);
+    let toast = toast();
+    // Sets a cover through `url` and reports how it went. The work's cover address
+    // changes with each new cover, so refetching shows it at once.
+    let save_cover = move |url: String, body: serde_json::Value, what: &'static str| {
+        if saving.get_untracked().is_some() {
+            return;
+        }
+        saving.set(Some(what));
+        spawn_local(async move {
+            let result = api::post::<_, ()>(&url, &body).await;
+            saving.set(None);
+            match result {
+                Ok(()) => {
+                    picking.set(false);
+                    toast.show("Cover saved");
+                    work.refetch();
+                }
+                Err(e) => toast.show(format!("Couldn't change the cover: {}", e.0)),
+            }
+        });
+    };
     view! {
         <Suspense fallback=|| view! { <div class="work-skeleton skeleton"><div class="cover"></div><div class="lines"><div class="line"></div><div class="line short"></div></div></div> }>
             {move || work.get().map(|r| match r {
@@ -846,13 +886,36 @@ fn WorkPage(id: i64) -> impl IntoView {
                     let (has_e, has_a) = (!ebooks.is_empty(), !audio.is_empty());
                     let action = if has_e && has_a { "Read & listen" } else if has_a { "Listen" } else { "Read" };
                     let progress = w.position.as_ref().map(|p| p.fraction).filter(|f| *f > 0.0);
+                    let cover_url = w.cover_url.clone();
                     let backdrop = w.cover_url.clone().map(|u| format!("background-image:url('{u}')"));
                     let long_description = w.description.as_ref().is_some_and(|d| d.len() > 420);
                     view! {
                         <div class="work">
                             <div class="work-backdrop" style=backdrop.unwrap_or_default()></div>
                             <div class="work-hero">
-                                <div class="work-cover">{cover(w.cover_url.clone(), w.title.clone())}</div>
+                                <button class="work-cover-pick" title="Change cover" aria-label="Change cover"
+                                    on:click=move |_| {
+                                        picking.set(true);
+                                        cover_opts.set(None);
+                                        online_opts.set(None);
+                                        // Both lists load side by side; each shows its own wait.
+                                        spawn_local(async move {
+                                            let opts = api::get::<Vec<CoverOption>>(&format!("/api/works/{id}/cover_options")).await;
+                                            cover_opts.set(Some(opts.unwrap_or_default()));
+                                        });
+                                        spawn_local(async move {
+                                            match api::get::<Vec<OnlineCover>>(&format!("/api/works/{id}/cover_search")).await {
+                                                Ok(found) => online_opts.set(Some(found)),
+                                                Err(e) => {
+                                                    online_opts.set(Some(Vec::new()));
+                                                    toast.show(format!("Couldn't search Open Library: {}", e.0));
+                                                }
+                                            }
+                                        });
+                                    }>
+                                    <div class="work-cover">{cover(cover_url.clone(), w.title.clone())}</div>
+                                    <span class="cover-edit">{"Change"}</span>
+                                </button>
                                 <div class="work-info">
                                     {w.series.clone().map(|s| view! {
                                         <p class="series">{s}{w.series_index.map(|i| format!(" · Book {i}")).unwrap_or_default()}</p>
@@ -955,6 +1018,55 @@ fn WorkPage(id: i64) -> impl IntoView {
                                     </div>
                                 </section>
                             })}
+                            <Show when=move || picking.get()>
+                                <div class="check-modal-backdrop" on:click=move |_| if saving.get_untracked().is_none() { picking.set(false) }>
+                                    <div class="check-modal cover-picker" class:saving=move || saving.get().is_some() on:click=|ev| ev.stop_propagation()>
+                                        <h2>"Pick a cover"</h2>
+                                        <p class="muted">"Pictures embedded in this book's ebook, and covers from Open Library. Click one to make it the cover."</p>
+                                        {move || match cover_opts.get() {
+                                            None => view! { <p class="cover-wait"><span class="spinner small"></span>"Looking through the ebook's pictures…"</p> }.into_any(),
+                                            Some(opts) if opts.is_empty() => view! { <p class="muted">"No embedded pictures to choose from in this book's ebook."</p> }.into_any(),
+                                            Some(opts) => view! {
+                                                <h3 class="cover-subhead">"From the ebook"</h3>
+                                                <div class="cover-grid">
+                                                    {opts.into_iter().map(|o| {
+                                                        let idx = o.index;
+                                                        view! {
+                                                            <button class="cover-choice" title=format!("Use image {}", idx + 1) disabled=move || saving.get().is_some()
+                                                                on:click=move |_| save_cover(format!("/api/works/{id}/cover_pick"), serde_json::json!({ "index": idx }), "Saving cover…")>
+                                                                <img src=o.url alt="" loading="lazy" decoding="async"/>
+                                                            </button>
+                                                        }
+                                                    }).collect_view()}
+                                                </div>
+                                            }.into_any(),
+                                        }}
+                                        {move || match online_opts.get() {
+                                            None => view! { <p class="cover-wait"><span class="spinner small"></span>"Searching Open Library…"</p> }.into_any(),
+                                            Some(found) if found.is_empty() => view! { <p class="muted">"Open Library has no covers for this book."</p> }.into_any(),
+                                            Some(found) => view! {
+                                                <h3 class="cover-subhead">"From Open Library"</h3>
+                                                <div class="cover-grid">
+                                                    {found.into_iter().map(|o| {
+                                                        let url = o.url;
+                                                        let label = o.label.clone();
+                                                        view! {
+                                                            <button class="cover-choice" title=label disabled=move || saving.get().is_some()
+                                                                on:click=move |_| save_cover(format!("/api/works/{id}/cover_fetch"), serde_json::json!({ "url": url.clone() }), "Downloading cover…")>
+                                                                <img src=o.thumb alt=o.label loading="lazy" decoding="async"/>
+                                                            </button>
+                                                        }
+                                                    }).collect_view()}
+                                                </div>
+                                            }.into_any(),
+                                        }}
+                                        <button class="ghost" disabled=move || saving.get().is_some() on:click=move |_| picking.set(false)>"Close"</button>
+                                        {move || saving.get().map(|what| view! {
+                                            <div class="cover-saving"><span class="spinner big"></span><p>{what}</p></div>
+                                        })}
+                                    </div>
+                                </div>
+                            </Show>
                         </div>
                     }.into_any()
                 }
