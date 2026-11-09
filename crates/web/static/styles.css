@@ -841,6 +841,20 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .fbadge.ebook { background: var(--accent-soft); color: var(--accent); }
 .fbadge.audio { background: color-mix(in srgb, hsl(210 60% 50%) 16%, transparent); color: hsl(210 55% 45%); }
 @media (prefers-color-scheme: dark) { .fbadge.audio { color: hsl(210 70% 72%); } }
+.fbadge.ai { background: color-mix(in srgb, hsl(275 55% 55%) 15%, transparent); color: hsl(275 45% 45%); }
+@media (prefers-color-scheme: dark) { .fbadge.ai { color: hsl(275 70% 78%); } }
+/* Beside anything performed by AI-generated voices. */
+.ai-tag {
+  display: inline-flex; align-items: center; gap: 0.15rem; vertical-align: 0.1em; margin-inline-start: 0.4rem;
+  padding: 0.05rem 0.4rem 0.05rem 0.3rem; border-radius: 99px; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em;
+  background: color-mix(in srgb, hsl(275 55% 55%) 15%, transparent); color: hsl(275 45% 45%); line-height: 1.4;
+}
+.ai-tag .icon { width: 11px; height: 11px; }
+@media (prefers-color-scheme: dark) { .ai-tag { color: hsl(275 70% 78%); } }
+/* The reader keeps its own light/sepia/dark page: follow its text colour there. */
+.reader .ai-tag { color: inherit; background: color-mix(in srgb, currentColor 13%, transparent); }
+.mode-button .ai-tag svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+.cast-note strong { color: var(--text); font-weight: 600; }
 
 /* Line art drawn black on transparent (Standard Ebooks marks it) would vanish on a dark page. */
 .reader[data-theme="dark"] .page img[class*="black-on-transparent"] { filter: invert(1) brightness(0.9); }

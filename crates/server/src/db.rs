@@ -49,6 +49,8 @@ pub async fn list_works(db: &SqlitePool) -> anyhow::Result<Vec<WorkSummary>> {
         "SELECT w.id, w.title, w.author, w.series, w.series_index, w.year, w.cover_path,
             EXISTS(SELECT 1 FROM assets a WHERE a.work_id = w.id AND a.kind = 'ebook') AS has_ebook,
             EXISTS(SELECT 1 FROM assets a WHERE a.work_id = w.id AND a.kind = 'audiobook') AS has_audiobook,
+            EXISTS(SELECT 1 FROM assets a WHERE a.work_id = w.id AND a.kind = 'audiobook' AND a.origin != 'generated') AS has_narration,
+            EXISTS(SELECT 1 FROM assets a WHERE a.work_id = w.id AND a.kind = 'audiobook' AND a.origin = 'generated') AS has_cast,
             EXISTS(SELECT 1 FROM sync_maps s WHERE s.work_id = w.id) AS has_sync,
             (SELECT data FROM positions p WHERE p.work_id = w.id) AS position
          FROM works w
@@ -72,6 +74,8 @@ pub async fn list_works(db: &SqlitePool) -> anyhow::Result<Vec<WorkSummary>> {
                 year: r.get("year"),
                 has_ebook: r.get("has_ebook"),
                 has_audiobook: r.get("has_audiobook"),
+                has_narration: r.get("has_narration"),
+                has_cast: r.get("has_cast"),
                 has_sync: r.get("has_sync"),
                 cover_url: cover_url(id, &cover),
                 progress: position.and_then(|p| serde_json::from_str::<Position>(&p).ok()).map(|p| p.fraction),

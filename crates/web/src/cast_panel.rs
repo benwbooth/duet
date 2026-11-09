@@ -77,13 +77,14 @@ pub fn CastPanel(asset: i64, on_close: impl Fn() + Clone + Send + Sync + 'static
     view! {
         <div class="editions-panel cast-panel">
             <div class="cast-head">
-                <h4>"Voice cast"</h4>
+                <h4>"Voice cast" {crate::ai_tag()}</h4>
                 <button class="icon-button" title="Close" on:click={
                     let on_close = on_close.clone();
                     move |_| on_close()
                 }>"×"</button>
             </div>
             <p class="cast-note">
+                <strong>"Every voice here is AI-generated."</strong>" None of them is a real narrator or actor. "
                 "Each voice is made from its description, then performs every line in it. Change a description and remake the voice to recast someone; their lines are read again in the new voice."
                 {move || cast.get().filter(|c| !c.accent.is_empty()).map(|c| view! { <br/><span>"Book's accent: " {c.accent}</span> })}
             </p>

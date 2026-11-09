@@ -551,6 +551,11 @@ pub fn cover(url: Option<String>, title: String) -> impl IntoView {
 }
 
 /// The small format marks on a library cover.
+/// The small "AI" tag that sits beside anything performed by AI-generated voices.
+pub fn ai_tag() -> impl IntoView {
+    view! { <span class="ai-tag" title="Performed by AI-generated voices, not a human narrator">{icon(icons::SPARKLE)}"AI"</span> }
+}
+
 fn format_marks(w: &WorkSummary) -> impl IntoView + use<> {
     let w = w.clone();
     view! {
@@ -576,7 +581,8 @@ fn book_card(w: WorkSummary) -> impl IntoView {
                 <div class="author">{byline(&w)}</div>
                 <div class="format-badges">
                     {w.has_ebook.then(|| view! { <span class="fbadge ebook">{icon(icons::BOOK)}"Ebook"</span> })}
-                    {w.has_audiobook.then(|| view! { <span class="fbadge audio">{icon(icons::HEADPHONES)}"Audiobook"</span> })}
+                    {w.has_narration.then(|| view! { <span class="fbadge audio">{icon(icons::HEADPHONES)}"Audiobook"</span> })}
+                    {w.has_cast.then(|| view! { <span class="fbadge ai" title="Performed by AI-generated voices">{icon(icons::SPARKLE)}"AI full cast"</span> })}
                 </div>
             </div>
         </a>
@@ -609,7 +615,8 @@ fn book_row(w: WorkSummary) -> impl IntoView {
                 <div class="author">{byline(&w)}</div>
                 <div class="format-badges">
                     {w.has_ebook.then(|| view! { <span class="fbadge ebook">{icon(icons::BOOK)}"Ebook"</span> })}
-                    {w.has_audiobook.then(|| view! { <span class="fbadge audio">{icon(icons::HEADPHONES)}"Audiobook"</span> })}
+                    {w.has_narration.then(|| view! { <span class="fbadge audio">{icon(icons::HEADPHONES)}"Audiobook"</span> })}
+                    {w.has_cast.then(|| view! { <span class="fbadge ai" title="Performed by AI-generated voices">{icon(icons::SPARKLE)}"AI full cast"</span> })}
                 </div>
             </div>
             {w.progress.filter(|p| *p > 0.0).map(|_| view! {
@@ -971,7 +978,7 @@ fn WorkPage(id: i64) -> impl IntoView {
                                         <a class="mode-card" href=format!("#/read/{id}/{}", m.key())>
                                             <span class="mode-icon" aria-hidden="true">{m.icons().iter().map(|i| crate::icon(i)).collect_view()}</span>
                                             <span class="mode-text">
-                                                <strong>{m.label()}</strong>
+                                                <strong>{m.label()}{m.cast().then(ai_tag)}</strong>
                                                 <small>{m.detail()}</small>
                                             </span>
                                         </a>
@@ -1001,8 +1008,8 @@ fn WorkPage(id: i64) -> impl IntoView {
 
                             {(!w.cast.is_empty()).then(|| view! {
                                 <section class="work-section">
-                                    <h2>"Cast"</h2>
-                                    <p class="hint">"Talk to any of them from the reader's Ask button."</p>
+                                    <h2>"Cast" {ai_tag()}</h2>
+                                    <p class="hint">"Their voices in the full cast are AI-generated, made from these descriptions. Talk to any of them from the reader's Ask button."</p>
                                     <div class="cast-cards">
                                         {w.cast.iter().map(|c| view! {
                                             <div class="cast-card">

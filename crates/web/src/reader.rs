@@ -88,9 +88,9 @@ impl Mode {
         match self {
             Mode::Read => "Just the book, no audio.",
             Mode::ReadAudiobook => "The recording plays and the sentence being read is highlighted.",
-            Mode::ReadCast => "AI voices perform the book, a voice for every character, as you read.",
+            Mode::ReadCast => "AI-generated voices perform the book, one for every character, as you read.",
             Mode::ListenAudiobook => "Just the recording.",
-            Mode::ListenCast => "AI voices perform the book, a voice for every character.",
+            Mode::ListenCast => "AI-generated voices perform the book, one for every character.",
         }
     }
 
@@ -1744,6 +1744,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 <Show when=move || work.get().is_some_and(|w| Mode::available(&w.assets).len() > 1 || w.assets.len() > 1)>
                     <button class="icon-button mode-button" title="Read or listen" on:click=move |_| editions_open.update(|o| *o = !*o)>
                         {move || mode.get().short()}
+                        {move || mode.get().cast().then(crate::ai_tag)}
                         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5"/></svg>
                     </button>
                 </Show>
@@ -1851,7 +1852,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                                             on:click=move |_| set_mode(m)>
                                             <span class="mode-icon" aria-hidden="true">{m.icons().iter().map(|i| crate::icon(i)).collect_view()}</span>
                                             <span class="mode-text">
-                                                <strong>{m.label()}</strong>
+                                                <strong>{m.label()}{m.cast().then(crate::ai_tag)}</strong>
                                                 <small>{if ok { m.detail() } else { why }}</small>
                                             </span>
                                         </button>
@@ -2021,7 +2022,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 <Show when=move || cast_wait.get() && mode.get().cast()>
                     <div class="cast-wait" role="status">
                         <span class="spinner small"></span>
-                        <span>{move || cast_status.get().unwrap_or_else(|| "Getting the full cast ready…".into())}</span>
+                        <span>{move || cast_status.get().unwrap_or_else(|| "Getting the AI voices ready…".into())}</span>
                         <Show when=move || cast_progress.get().is_some()>
                             <div class="cast-progress"><div style=move || format!("width:{:.1}%", cast_progress.get().unwrap_or(0.0) * 100.0)></div></div>
                         </Show>
@@ -2120,7 +2121,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                                     if cast_wait.get() {
                                         return format!("{name} · {}", cast_status.get().unwrap_or_else(|| "getting the voices ready…".into()));
                                     }
-                                    return format!("{name} · full cast");
+                                    return format!("{name} · AI full cast");
                                 }
                                 let left = (duration.get() - time.get()).max(0.0);
                                 let listening = if live_busy.get() { " · matching to the text" } else { "" };

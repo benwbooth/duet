@@ -17,6 +17,12 @@ pub struct WorkSummary {
     pub year: Option<i32>,
     pub has_ebook: bool,
     pub has_audiobook: bool,
+    /// A recorded (not AI-generated) audiobook edition exists.
+    #[serde(default)]
+    pub has_narration: bool,
+    /// An AI full-cast audiobook edition exists.
+    #[serde(default)]
+    pub has_cast: bool,
     pub has_sync: bool,
     pub cover_url: Option<String>,
     /// 0.0..=1.0, from the saved reading position.
