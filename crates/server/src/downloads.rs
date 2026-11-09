@@ -162,9 +162,8 @@ async fn fetch_one(state: &State, id: &str, url: &str, filename: &str, kind: Ass
     } else {
         dest
     };
-    for work in import_found(state, &target, "download").await? {
-        library::adopt(&state.db, work, title, author).await?;
-    }
+    // Into the book it was fetched for ("Find another edition"), or a book of its own.
+    crate::editions::after_direct(state, &target, kind, title, author).await?;
     Ok(target)
 }
 
@@ -358,7 +357,7 @@ async fn import_finished(state: &State) -> anyhow::Result<()> {
             if done.is_some() {
                 continue;
             }
-            let n = import_found(state, &to_host_path(&settings.qbittorrent, &t.content_path), "download").await?.len();
+            let n = crate::editions::after_torrent(state, &t.hash, &to_host_path(&settings.qbittorrent, &t.content_path)).await?;
             tracing::info!("imported {n} item(s) from torrent {}", t.name);
             sqlx::query("INSERT INTO imported_torrents (hash) VALUES (?)").bind(&t.hash).execute(&state.db).await?;
         }

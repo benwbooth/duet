@@ -12,6 +12,7 @@ mod db;
 mod dev;
 mod dict;
 mod downloads;
+mod editions;
 mod error;
 mod free;
 mod illustrate;

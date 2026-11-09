@@ -4,6 +4,7 @@
 mod api;
 mod cast_panel;
 mod discover;
+mod editions;
 mod reader;
 mod settings;
 mod setup;
@@ -968,6 +969,8 @@ fn WorkPage(id: i64) -> impl IntoView {
                                             </div>
                                         }
                                     }).collect_view()}
+                                    <editions::FindEdition id title=w.title.clone() author=w.author.clone() has_ebook=has_e has_audiobook=has_a
+                                        arrived=move || work.refetch()/>
                                 </div>
                             </section>
 
@@ -1026,6 +1029,9 @@ fn WorkPage(id: i64) -> impl IntoView {
                                 </section>
                             })}
                             <Show when=move || picking.get()>
+                                // In <body>, like the edition finder: the transformed page would
+                                // otherwise pin this panel to the page instead of the screen.
+                                <leptos::portal::Portal>
                                 <div class="check-modal-backdrop" on:click=move |_| if saving.get_untracked().is_none() { picking.set(false) }>
                                     <div class="check-modal cover-picker" class:saving=move || saving.get().is_some() on:click=|ev| ev.stop_propagation()>
                                         <h2>"Pick a cover"</h2>
@@ -1073,6 +1079,7 @@ fn WorkPage(id: i64) -> impl IntoView {
                                         })}
                                     </div>
                                 </div>
+                                </leptos::portal::Portal>
                             </Show>
                         </div>
                     }.into_any()

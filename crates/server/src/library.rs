@@ -192,7 +192,8 @@ pub async fn import_path(state: &State, path: &Path, kind: AssetKind, origin: &s
     let path_str = path.to_string_lossy().to_string();
     let exists: Option<(i64,)> =
         sqlx::query_as("SELECT id FROM assets WHERE path = ?").bind(&path_str).fetch_optional(&state.db).await?;
-    if exists.is_some() {
+    // An edition replaced by another ("Find another edition") stays out.
+    if exists.is_some() || crate::editions::is_hidden(&state.db, &path_str).await? {
         return Ok(None);
     }
     let p = path.to_path_buf();
