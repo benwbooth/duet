@@ -969,8 +969,7 @@ fn WorkPage(id: i64) -> impl IntoView {
                                             </div>
                                         }
                                     }).collect_view()}
-                                    <editions::FindEdition id title=w.title.clone() author=w.author.clone() has_ebook=has_e has_audiobook=has_a
-                                        arrived=move || work.refetch()/>
+                                    <editions::FindEdition title=w.title.clone()/>
                                 </div>
                             </section>
 

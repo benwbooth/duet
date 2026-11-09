@@ -237,6 +237,22 @@ pub fn Discover() -> impl IntoView {
         });
     };
 
+    // Opened as #/discover/<query> (a book's "Find another edition"): search for it straight away.
+    {
+        let hash = web_sys::window().and_then(|w| w.location().hash().ok()).unwrap_or_default();
+        let wanted = hash.trim_start_matches('#').trim_start_matches('/').strip_prefix("discover/").map(|q| {
+            js_sys::decode_uri_component(q).ok().and_then(|s| s.as_string()).unwrap_or_else(|| q.to_string())
+        });
+        if let Some(q) = wanted.filter(|q| !q.trim().is_empty()) {
+            // From partway down a book's page: start at the top.
+            if let Some(w) = web_sys::window() {
+                w.scroll_to_with_x_and_y(0.0, 0.0);
+            }
+            query.set(q);
+            search();
+        }
+    }
+
     view! {
         <header class="page-head">
             <div class="titles">
