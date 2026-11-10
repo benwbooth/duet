@@ -37,7 +37,6 @@ import io
 import json
 import os
 import re
-import signal
 import subprocess
 import threading
 import errno
@@ -422,8 +421,6 @@ def stop_drawing():
     if p is not None and p.poll() is None:
         print("pictures: drawing stopped (the card's wanted)", flush=True)
         p.terminate()
-        # (A drawing paused for listening only takes the signal once it's let go again.)
-        resume(p)
         try:
             p.wait(20)
         except subprocess.TimeoutExpired:
@@ -435,42 +432,30 @@ def drawing_now():
     return drawing is not None and drawing.poll() is None
 
 
-# Listening (lining the recording up with the book) under way: while it is, the pictures being
-# drawn are paused where they are, the model kept loaded, so the reader's audio gets the card
-# to itself and the drawing carries on afterwards from the same step.
+# The card, taken in turns: the reader's audio (lining the recording up with the book) and the
+# pictures never run on it at the same moment. Running both at once on ROCm gave garbage (a
+# picture of blue blocks on black; the aligner's scores out of range), and so did freezing the
+# drawing mid-picture. Pictures are drawn one at a time; listening waits for the picture being
+# drawn (a few seconds) and none starts while anyone's listening.
+card = threading.Condition()
 listening = 0
-listening_guard = threading.Lock()
-
-
-def pause(p):
-    try:
-        os.kill(p.pid, signal.SIGSTOP)
-    except OSError:
-        pass
-
-
-def resume(p):
-    try:
-        os.kill(p.pid, signal.SIGCONT)
-    except OSError:
-        pass
+drawing_one = False
 
 
 @contextlib.contextmanager
 def audio_first():
-    """The reader's audio comes before the pictures: the drawing waits while this runs."""
+    """The reader's audio comes before the pictures: no new picture starts while this runs."""
     global listening
-    with listening_guard:
+    with card:
         listening += 1
-        if listening == 1 and drawing_now():
-            pause(drawing)
+        while drawing_one:
+            card.wait()
     try:
         yield
     finally:
-        with listening_guard:
+        with card:
             listening -= 1
-            if listening == 0 and drawing_now():
-                resume(drawing)
+            card.notify_all()
 
 
 def draw(body):
@@ -485,34 +470,44 @@ def draw(body):
     if not drawing_now():
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "illustrate.py")
         drawing = subprocess.Popen([args.design_python, script, "--serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
-        with listening_guard:
-            if listening:
-                pause(drawing)
         line = drawing.stdout.readline()
         if not line:
             drawing = None
             return None
+    global drawing_one
     proc = drawing
-    try:
-        proc.stdin.write(json.dumps(body) + "\n")
-        proc.stdin.flush()
-        made = []
-        for line in proc.stdout:
-            if not line.startswith("{"):
-                continue
-            msg = json.loads(line)
-            if msg.get("done"):
-                touch("drawing")
-                return made
-            if "out" in msg:
-                made.append(msg)
-        return None
-    except (BrokenPipeError, OSError, ValueError):
-        return None
+    made = []
+    for job in body.get("jobs", []):
+        # (Each picture in its turn: after anyone listening.)
+        with card:
+            while listening:
+                card.wait()
+            drawing_one = True
+        try:
+            proc.stdin.write(json.dumps({**body, "jobs": [job]}) + "\n")
+            proc.stdin.flush()
+            for line in proc.stdout:
+                if not line.startswith("{"):
+                    continue
+                msg = json.loads(line)
+                if msg.get("done"):
+                    touch("drawing")
+                    break
+                if "out" in msg:
+                    made.append(msg)
+            else:
+                return None
+        except (BrokenPipeError, OSError, ValueError):
+            return None
+        finally:
+            with card:
+                drawing_one = False
+                card.notify_all()
+    return made
 
 
 def listen_aligner():
-    """The forced aligner, on the card (beside the pictures, which pause while it runs)."""
+    """The forced aligner, on the card (taking turns with the pictures)."""
     from common import aligner
 
     return aligner()
@@ -520,7 +515,7 @@ def listen_aligner():
 
 def listen_model():
     """Whisper for finding where in the book the audio is: on the graphics card when there is
-    one. Pictures being drawn there pause while it listens (see audio_first), rather than the
+    one. Pictures being drawn there wait their turn while it listens (see audio_first), rather than the
     listening moving to the processor, which left the reader waiting on the audio while the
     pictures had the card. (It's small: it fits beside the drawing.) Exact word times come from
     the forced aligner, not from Whisper."""
@@ -847,8 +842,7 @@ def main():
     threading.Thread(target=reaper, daemon=True).start()
 
     # Take the Fish server down too, however this one is stopped, rather than leave it holding the GPU.
-    import signal
-
+    
     def stop(signum, frame):
         fish.stop()
         os._exit(0)

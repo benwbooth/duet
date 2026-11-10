@@ -78,20 +78,62 @@ def zimage_pipe():
     return pipe
 
 
+def garbled(img):
+    """A picture that came out broken (a bad run on the card): flat grey or black blocks and
+    horizontal streaks of noise. In a real picture hardly any two neighbouring pixels are
+    exactly alike (2-3%), and it changes about as much going down as going across; the broken
+    ones were 56-100% flat, or changed 6-8 times as much going down."""
+    import numpy as np
+
+    a = np.asarray(img.convert("RGB")).astype(np.int16)
+    across = np.abs(np.diff(a, axis=1))
+    down = np.abs(np.diff(a, axis=0)).mean()
+    flat = (across.sum(axis=2) == 0).mean()
+    return flat > 0.3 or down > 3 * across.mean() + 5
+
+
+checked = set()
+
+
+def sweep(folder):
+    """Broken pictures drawn before they were caught (see garbled): put aside, once per book
+    folder, so they're drawn again."""
+    if folder in checked or not os.path.isdir(folder):
+        return
+    checked.add(folder)
+    from PIL import Image
+
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+        if not name.endswith(".png") or name.endswith(".part.png"):
+            continue
+        try:
+            if garbled(Image.open(path)):
+                os.replace(path, path + ".garbled")
+                print(f"pictures: put aside a broken picture ({path})", file=sys.stderr, flush=True)
+        except Exception:
+            pass
+
+
 def zimage(job, pipe=None):
     pipe = pipe or zimage_pipe()
     for j in job["jobs"]:
+        sweep(os.path.dirname(j["out"]))
         t = time.time()
-        with torch.inference_mode():
-            img = pipe(
-                prompt=j.get("full_prompt") or j["prompt"],
-                # (They're shown at half a column's width: this is plenty, and lighter to draw.)
-                width=int(j.get("width", job.get("width", 1024))),
-                height=int(j.get("height", job.get("height", 704))),
-                num_inference_steps=9,
-                guidance_scale=0.0,
-                generator=torch.Generator("cuda").manual_seed(int(j.get("seed", 0))),
-            ).images[0]
+        for attempt in range(3):
+            with torch.inference_mode():
+                img = pipe(
+                    prompt=j.get("full_prompt") or j["prompt"],
+                    # (They're shown at half a column's width: this is plenty, and lighter to draw.)
+                    width=int(j.get("width", job.get("width", 1024))),
+                    height=int(j.get("height", job.get("height", 704))),
+                    num_inference_steps=9,
+                    guidance_scale=0.0,
+                    generator=torch.Generator("cuda").manual_seed(int(j.get("seed", 0)) + attempt * 7919),
+                ).images[0]
+            if not garbled(img):
+                break
+            print(f"pictures: garbled picture, drawing it again ({j['out']})", file=sys.stderr, flush=True)
         os.makedirs(os.path.dirname(j["out"]), exist_ok=True)
         tmp = j["out"] + ".part.png"
         img.save(tmp)

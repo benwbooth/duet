@@ -28,6 +28,9 @@ pub struct Scene {
     /// The characters in it, by name (their look comes from the look-book).
     #[serde(default)]
     pub characters: Vec<String>,
+    /// The book's places in it, by name (their look comes from the look-book too).
+    #[serde(default)]
+    pub places: Vec<String>,
     pub seed: u64,
 }
 
@@ -37,6 +40,10 @@ pub struct Style {
     pub style: String,
     #[serde(default)]
     pub characters: BTreeMap<String, String>,
+    /// The book's places that come back or that the artist would get wrong (a hobbit-hole: a
+    /// perfectly round door), so they're drawn as the book has them every time.
+    #[serde(default)]
+    pub places: BTreeMap<String, String>,
 }
 
 fn dir(state: &State, asset: i64) -> PathBuf {
@@ -102,7 +109,8 @@ pub async fn style(state: &State, asset: i64) -> anyhow::Result<Style> {
     let reply = crate::llm::chat(state, system, &[("user".into(), format!("Book: {title} by {author}\n\nOpening:\n{opening}"))]).await?;
     let style = json_in(&reply)?["style"].as_str().unwrap_or("").trim().to_string();
     anyhow::ensure!(!style.is_empty(), "no style from the director");
-    let s = Style { style, characters: read_json::<Style>(&path).await.map(|s| s.characters).unwrap_or_default() };
+    let old = read_json::<Style>(&path).await.unwrap_or_default();
+    let s = Style { style, characters: old.characters, places: old.places };
     write_json(&path, &s).await?;
     Ok(s)
 }
@@ -190,27 +198,26 @@ async fn plan_with(state: &State, asset: i64, chapter: usize, text: &[String], t
          illustrated edition ('Dan drops the bottle into the trash outside the Burger King.'); and the scene for the artist in at most 40 words, the most \
          important first: who is there, described by how they look (the artist doesn't know their names: write \
          the look-book's description in, e.g. 'a fair-haired girl of seven in a pale blue dress and white \
-         pinafore'), what they are doing, their expressions, then the setting, light and framing. No art \
-         style and no text in the picture. Keep every \
+         pinafore'), what they are doing, their expressions, then the setting, light and framing. Draw \
+         the places as the book describes them, above all whatever is unusual about them that an artist \
+         wouldn't guess (a hobbit-hole: a perfectly round door like a porthole, round windows, a tunnel \
+         hall): say it plainly in the scene. No art style and no text in the picture. Keep every \
          character looking the same through the whole book: use the look-book, and for anyone pictured who \
          isn't in it, add a look of at most 20 words (age, build, hair, clothes, colours; for creatures, what \
-         they are and wear), true to how the book describes them. Reply with JSON only: {{\"scenes\": \
-         [{{\"sentence\": <n>, \"caption\": \"<caption>\", \"scene\": \"<scene>\", \"characters\": [\"<name, the most prominent first>\"]}}], \
-         \"new_looks\": {{\"<name>\": \"<look>\"}}}}."
+         they are and wear), true to how the book describes them. Likewise the places: use the \
+         places look-book, and for a place that comes back or looks unlike what an artist would guess, \
+         add a look of at most 25 words with its unusual features first. Reply with JSON only: {{\"scenes\": \
+         [{{\"sentence\": <n>, \"caption\": \"<caption>\", \"scene\": \"<scene>\", \"characters\": [\"<name, the most prominent first>\"], \"places\": [\"<place name>\"]}}], \
+         \"new_looks\": {{\"<name>\": \"<look>\"}}, \"new_places\": {{\"<place>\": \"<look>\"}}}}."
     );
-    let user = format!("Look-book:\n{}\nChapter:\n{numbered}", if looks.is_empty() { "(empty)\n".to_string() } else { looks });
+    let places: String = style.places.iter().map(|(n, l)| format!("- {n}: {l}\n")).collect();
+    let user = format!(
+        "Look-book:\n{}\nPlaces look-book:\n{}\nChapter:\n{numbered}",
+        if looks.is_empty() { "(empty)\n".to_string() } else { looks },
+        if places.is_empty() { "(empty)\n".to_string() } else { places }
+    );
     let reply = json_in(&crate::llm::chat(state, &system, &[("user".into(), user)]).await?)?;
-    // Anyone new in the look-book.
-    if let Some(new) = reply["new_looks"].as_object().filter(|n| !n.is_empty()) {
-        let spath = dir(state, asset).join("style.json");
-        let mut s: Style = read_json(&spath).await.unwrap_or(style.clone());
-        for (n, l) in new {
-            if let Some(l) = l.as_str().filter(|l| !l.trim().is_empty()) {
-                s.characters.entry(n.clone()).or_insert_with(|| l.trim().to_string());
-            }
-        }
-        write_json(&spath, &s).await?;
-    }
+    add_looks(state, asset, &style, &reply).await?;
     let mut scenes: Vec<Scene> = reply["scenes"]
         .as_array()
         .map(|a| {
@@ -222,7 +229,8 @@ async fn plan_with(state: &State, asset: i64, chapter: usize, text: &[String], t
                         sentence,
                         caption: v["caption"].as_str().unwrap_or("").trim().to_string(),
                         scene,
-                        characters: v["characters"].as_array().map(|c| c.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+                        characters: names(&v["characters"]),
+                        places: names(&v["places"]),
                         // (Fixed per scene, so a picture drawn again comes out the same.)
                         seed: (asset as u64) * 1_000_003 + (chapter as u64) * 1009 + sentence as u64,
                     })
@@ -234,6 +242,29 @@ async fn plan_with(state: &State, asset: i64, chapter: usize, text: &[String], t
     scenes.dedup_by_key(|s| s.sentence);
     write_json(path, &scenes).await?;
     Ok(scenes)
+}
+
+fn names(v: &serde_json::Value) -> Vec<String> {
+    v.as_array().map(|c| c.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default()
+}
+
+/// Anyone (and anywhere) new the director described, added to the look-books.
+async fn add_looks(state: &State, asset: i64, style: &Style, reply: &serde_json::Value) -> anyhow::Result<()> {
+    let new_people = reply["new_looks"].as_object().filter(|n| !n.is_empty());
+    let new_places = reply["new_places"].as_object().filter(|n| !n.is_empty());
+    if new_people.is_none() && new_places.is_none() {
+        return Ok(());
+    }
+    let spath = dir(state, asset).join("style.json");
+    let mut s: Style = read_json(&spath).await.unwrap_or(style.clone());
+    for (book, new) in [(&mut s.characters, new_people), (&mut s.places, new_places)] {
+        for (n, l) in new.into_iter().flatten() {
+            if let Some(l) = l.as_str().filter(|l| !l.trim().is_empty()) {
+                book.entry(n.clone()).or_insert_with(|| l.trim().to_string());
+            }
+        }
+    }
+    write_json(&spath, &s).await
 }
 
 static LOCKS: LazyLock<std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<tokio::sync::Mutex<()>>>>> =
@@ -289,7 +320,17 @@ pub async fn chapter(state: &State, asset: i64, chapter: usize, near: Option<usi
 pub async fn redraw(state: &State, asset: i64, chapter: usize, i: usize) -> anyhow::Result<()> {
     let path = dir(state, asset).join(format!("plan-{chapter}.json"));
     let mut scenes: Vec<Scene> = read_json(&path).await.context("no pictures planned for this chapter")?;
-    let scene = scenes.get_mut(i).context("no such picture")?;
+    let old = scenes.get(i).context("no such picture")?.clone();
+    // The director looks at the moment again: a new take on it (another viewpoint or framing,
+    // the places as the book has them). The image model alone hardly changes a picture with a
+    // new seed. (If the director can't be reached, the new seed it is.)
+    let fresh = rethink(state, asset, chapter, &old).await.map_err(|e| tracing::warn!("redrawing a picture: {e:#}")).ok();
+    let scene = &mut scenes[i];
+    if let Some(f) = fresh {
+        scene.scene = f.scene;
+        scene.characters = f.characters;
+        scene.places = f.places;
+    }
     scene.seed = scene.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 1;
     let sentence = scene.sentence;
     write_json(&path, &scenes).await?;
@@ -298,6 +339,40 @@ pub async fn redraw(state: &State, asset: i64, chapter: usize, i: usize) -> anyh
     READER.lock().unwrap().insert(asset, (chapter, sentence));
     ahead(state, asset);
     Ok(())
+}
+
+/// A new take on one scene, from the director: the passage round it, the look-books, and what
+/// was drawn last time (to do differently).
+async fn rethink(state: &State, asset: i64, chapter: usize, old: &Scene) -> anyhow::Result<Scene> {
+    let text = sentences(state, asset, chapter).await?;
+    let (title, author) = title_author(state, asset).await?;
+    let style = style(state, asset).await?;
+    let from = old.sentence.saturating_sub(12);
+    let passage: String = text.iter().enumerate().skip(from).take(25).map(|(i, s)| format!("{i}: {s}\n")).collect();
+    let looks: String = style.characters.iter().map(|(n, l)| format!("- {n}: {l}\n")).collect();
+    let places: String = style.places.iter().map(|(n, l)| format!("- {n}: {l}\n")).collect();
+    let system = format!(
+        "You are the illustration director for an illustrated edition of {title} by {author}. The reader \
+         wants this picture drawn again: describe the same moment afresh for the artist, in at most 40 \
+         words, the most important first, with a different viewpoint or framing from last time. Describe \
+         the people by how they look (the artist doesn't know their names: write the look-book's \
+         description in), what they do, their expressions, then the setting, light and framing. Draw the \
+         places as the book describes them, above all whatever is unusual about them that an artist \
+         wouldn't guess (a hobbit-hole: a perfectly round door like a porthole, round windows): say it \
+         plainly. No art style and no text in the picture. For a place that comes back or looks unlike \
+         what an artist would guess and isn't in the places look-book, add a look of at most 25 words, \
+         its unusual features first. Reply with JSON only: {{\"scene\": \"<scene>\", \"characters\": \
+         [\"<name>\"], \"places\": [\"<place>\"], \"new_looks\": {{}}, \"new_places\": {{\"<place>\": \"<look>\"}}}}."
+    );
+    let user = format!(
+        "Look-book:\n{looks}\nPlaces look-book:\n{places}\nThe moment: sentence {}, \"{}\"\nLast time's scene: {}\n\nPassage:\n{passage}",
+        old.sentence, old.caption, old.scene
+    );
+    let reply = json_in(&crate::llm::chat(state, &system, &[("user".into(), user)]).await?)?;
+    add_looks(state, asset, &style, &reply).await?;
+    let scene = reply["scene"].as_str().unwrap_or("").trim().to_string();
+    anyhow::ensure!(!scene.is_empty(), "no scene from the director");
+    Ok(Scene { scene, characters: names(&reply["characters"]), places: names(&reply["places"]), ..old.clone() })
 }
 
 /// Pictures drawn at a time: few enough that the drawing turns to wherever the reader has got
@@ -407,8 +482,18 @@ async fn draw(state: &State, asset: i64, items: &[(usize, usize, Scene)]) -> any
     for (chapter, i, s) in items {
         let looks: Vec<String> = s.characters.iter().filter_map(|c| style.characters.get(c).map(|l| format!("{c}: {l}"))).collect();
         let who = if looks.is_empty() { String::new() } else { format!(" The people in it look like this. {}", looks.join(" ")) };
+        // The places in it: named by the director, or (in scenes planned before places were kept)
+        // named in the scene.
+        let lower = s.scene.to_lowercase();
+        let wheres: Vec<String> = style
+            .places
+            .iter()
+            .filter(|(n, _)| s.places.iter().any(|p| p == *n) || lower.contains(&n.to_lowercase()))
+            .map(|(n, l)| format!("{n}: {l}"))
+            .collect();
+        let place = if wheres.is_empty() { String::new() } else { format!(" The place looks like this. {}", wheres.join(" ")) };
         jobs.push(json!({
-            "full_prompt": format!("{}{who} Art style: {}. No text or lettering.", s.scene, style.style),
+            "full_prompt": format!("{}{place}{who} Art style: {}. No text or lettering.", s.scene, style.style),
             "prompt": s.scene,
             "seed": s.seed,
             "out": image_path(state, asset, *chapter, *i),
