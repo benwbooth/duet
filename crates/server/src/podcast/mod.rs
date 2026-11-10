@@ -201,6 +201,18 @@ async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> a
         tokio::spawn(async move { cast_voices(&st, &hosts, false).await })
     };
 
+    // Fish takes minutes to load and compile: start it now, while the feeds are read and the
+    // script written, so the first line doesn't wait for it. (Not while a new host's voice is
+    // being made: that needs the whole card.)
+    crate::cast::cast_open();
+    let voices_dir = state.data_dir.join("voices");
+    if s.hosts.iter().all(|h| voices_dir.join(format!("{}.wav", voice_name(&h.name))).exists()) {
+        let st = state.clone();
+        tokio::spawn(async move {
+            let tts = st.settings.read().await.ai.tts_url.clone();
+            let _ = st.http.post(format!("{}/warm", tts.trim_end_matches('/'))).json(&json!({})).timeout(Duration::from_secs(5)).send().await;
+        });
+    }
     let (mut items, problems) = feeds::gather(state, s).await;
     let used: HashSet<String> = read_json(&base(state).join("used.json")).await.unwrap_or_default();
     items.retain(|i| !used.contains(&feeds::normal_url(&i.url)));
@@ -516,6 +528,9 @@ async fn cast_voices(state: &State, hosts: &[duet_common::podcast::PodcastHost],
 
 /// One line, performed in its host's voice.
 async fn perform(state: &State, text: &str, host: &duet_common::podcast::PodcastHost) -> anyhow::Result<Vec<u8>> {
+    // Fish has the card: the picture drawing waits rather than unloading it mid-episode (each
+    // reload recompiles for minutes).
+    crate::cast::cast_open();
     let ai = state.settings.read().await.ai.clone();
     let body = json!({ "model": ai.tts_model, "input": text, "voice": voice_name(&host.name), "instructions": host.voice, "response_format": "mp3" });
     let mut last = None;
@@ -957,6 +972,7 @@ async fn browser_check(AxState(s): AxState<State>, Json(site): Json<Site>) -> Ap
 
 /// The player is open: have the performer loaded and kept loaded.
 async fn warm(AxState(s): AxState<State>) -> Json<serde_json::Value> {
+    crate::cast::cast_open();
     let tts = s.settings.read().await.ai.tts_url.clone();
     let _ = s.http.post(format!("{}/warm", tts.trim_end_matches('/'))).json(&json!({})).timeout(Duration::from_secs(5)).send().await;
     Json(json!({ "ok": true }))
