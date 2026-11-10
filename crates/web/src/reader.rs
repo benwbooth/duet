@@ -1558,6 +1558,76 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         });
     }
 
+    // Where in the recording a sentence (and word) is read: where the sync has it, else where it
+    // most likely is (from the sentences around it that are synced, or failing that the same
+    // point through the book).
+    let guess = move |c: usize, s: usize, w: usize| -> Option<(usize, f64)> {
+        sync.with_untracked(|x| {
+            x.of(c, s).map(|sp| (sp.track, sp.words.get(w).copied().unwrap_or(sp.start))).or_else(|| {
+                let asset = audio_asset.get_untracked()?;
+                let lens: Vec<f64> = asset.tracks.iter().map(|t| t.duration_secs).collect();
+                let n = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1);
+                x.estimate(c, s, n, &lens)
+            })
+        })
+        .or_else(|| {
+            let asset = audio_asset.get_untracked()?;
+            let chapters = layout.get_untracked()?.chapters.max(1);
+            let n = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1).max(1);
+            let f = (c as f64 + s as f64 / n as f64) / chapters as f64;
+            let mut left = asset.duration_secs.unwrap_or(0.0) * f;
+            for (i, t) in asset.tracks.iter().enumerate() {
+                if left <= t.duration_secs {
+                    return Some((i, left));
+                }
+                left -= t.duration_secs;
+            }
+            None
+        })
+    };
+
+    // Reading along with the audiobook, before you press play: the page you're on is found in
+    // the recording straight away (and again after you turn to a part not synced yet), so Play
+    // starts at the right words and the highlight is ready, instead of the syncing only
+    // beginning once the recording plays.
+    let presync_run = StoredValue::new(0u32);
+    Effect::new(move |_| {
+        page_info.track();
+        let m = mode.get();
+        let (Some(e), Some(a)) = (ebook.get(), audio_asset.get()) else { return };
+        let c = chapter.get();
+        if m != Mode::ReadAudiobook || c == usize::MAX || !READABLE.contains(&e.format.as_str()) || e.format == "transcript" {
+            return;
+        }
+        let run = presync_run.get_value() + 1;
+        presync_run.set_value(run);
+        spawn_local(async move {
+            // (Once the page has settled: not for every page flicked past.)
+            gloo_timers::future::TimeoutFuture::new(1200).await;
+            if presync_run.try_get_value() != Some(run) || playing.try_get_untracked() != Some(false) || locating.try_get_untracked().flatten().is_some() {
+                return;
+            }
+            let Some(el) = page.try_get_untracked().flatten() else { return };
+            let v = crate::first_word_on_page(&el);
+            let s = v.first().copied().unwrap_or(0) as usize;
+            if sync.try_with_untracked(|x| x.of(c, s).is_some()).unwrap_or(true) {
+                return;
+            }
+            let Some((tr, secs)) = guess(c, s, 0) else { return };
+            // (Half a minute at a time round the guess, nearest first, until it turns up.)
+            for back in [20.0, 50.0, -10.0, 80.0, 110.0, -40.0] {
+                let body = serde_json::json!({ "ebook": e.id, "audio": a.id, "track": tr, "start": (secs - back).max(0.0), "near": null });
+                let Ok(v) = api::post::<_, serde_json::Value>(&format!("/api/works/{id}/sync/live"), &body).await else { return };
+                let spans: Vec<SyncSpan> = serde_json::from_value(v["spans"].clone()).unwrap_or_default();
+                let _ = sync.try_update(|x| x.merge(spans));
+                let _ = pairs.try_update(|p| if !p.contains(&(e.id, a.id)) { p.push((e.id, a.id)) });
+                if presync_run.try_get_value() != Some(run) || sync.try_with_untracked(|x| x.of(c, s).is_some()).unwrap_or(true) {
+                    return;
+                }
+            }
+        });
+    });
+
     // Play starts from what you're reading: if the page on screen isn't where the recording is
     // (you've turned pages, or jumped), the recording moves there first.
     let toggle = move |_| {
@@ -1588,31 +1658,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     let v = crate::first_word_on_page(el);
                     (v.first().copied().unwrap_or(0) as usize, v.get(1).copied().unwrap_or(0) as usize)
                 }).unwrap_or((0, 0));
-                let target = sync.with_untracked(|x| {
-                    x.of(c, s).map(|sp| (sp.track, sp.words.get(w).copied().unwrap_or(sp.start))).or_else(|| {
-                        // Not synced yet: from the sentences around it that are (matching as it
-                        // plays settles it on the right one).
-                        let asset = audio_asset.get_untracked()?;
-                        let lens: Vec<f64> = asset.tracks.iter().map(|t| t.duration_secs).collect();
-                        let n = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1);
-                        x.estimate(c, s, n, &lens)
-                    })
-                }).or_else(|| {
-                    // Not matched yet: the same point through the book, roughly; matching as it
-                    // plays settles it on the right sentence.
-                    let asset = audio_asset.get_untracked()?;
-                    let chapters = layout.get_untracked()?.chapters.max(1);
-                    let n = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1).max(1);
-                    let f = (c as f64 + s as f64 / n as f64) / chapters as f64;
-                    let mut left = asset.duration_secs.unwrap_or(0.0) * f;
-                    for (i, t) in asset.tracks.iter().enumerate() {
-                        if left <= t.duration_secs {
-                            return Some((i, left));
-                        }
-                        left -= t.duration_secs;
-                    }
-                    None
-                });
+                let target = guess(c, s, w);
                 if let Some((tr, secs)) = target {
                     book_pos.set((tr, secs));
                     // (Where the sync last was is no guide to where this is.)
@@ -2235,11 +2281,6 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                                 pending_seek.set(None);
                                 a.set_current_time(secs);
                                 if play { let _ = a.play(); }
-                            }
-                            // Reading along with the audiobook: start lining up where you are
-                            // straight away, before you press play, so the highlight's ready.
-                            if mode.get_untracked() == Mode::ReadAudiobook {
-                                live_sync(a.current_time());
                             }
                             // The full cast's line: follow it word by word (its words timed once
                             // it's been performed).
