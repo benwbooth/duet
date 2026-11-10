@@ -43,6 +43,9 @@ async fn failover<'a>(
 ) -> Option<anyhow::Result<Vec<SearchResult>>> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
     let mut last_err: Option<anyhow::Error> = None;
+    // A bot-check answer is the most actionable failure: it tells the UI to
+    // pop the browser. Never let a duller mirror error mask it.
+    let mut need_check: Option<anyhow::Error> = None;
     for mirror in &mirrors {
         if std::time::Instant::now() > deadline {
             break;
@@ -50,10 +53,35 @@ async fn failover<'a>(
         match attempt(mirror.clone()).await {
             Ok(v) if !v.is_empty() => return Some(Ok(v)),
             Ok(_) => last_err = Some(anyhow::anyhow!("{name} answered but had nothing")),
+            Err(e) if e.to_string().contains("BOT_CHECK") => need_check = Some(e),
             Err(e) => last_err = Some(e),
         }
     }
-    Some(Err(last_err.unwrap_or_else(|| anyhow::anyhow!("{name}: no mirrors"))))
+    Some(Err(need_check.or(last_err).unwrap_or_else(|| anyhow::anyhow!("{name}: no mirrors"))))
+}
+
+/// Effective Anna's Archive session cookies: harvested from the remote
+/// Firefox profile first (fresh after each manual solve), else the pasted
+/// `browser_cookies` fallback, else empty.
+async fn aa_cookies(aa: &AnnasArchiveSettings) -> String {
+    if let Some(h) = crate::annas_archive::harvest_browser_cookies(&aa.browser_profile_dir).await {
+        if !h.trim().is_empty() {
+            return h;
+        }
+    }
+    aa.browser_cookies.trim().to_string()
+}
+
+/// Drops OR-match noise from free-source results: every significant query
+/// word must appear (whole word, plural-tolerant) in the title or author.
+/// Queries with no significant words match nothing (instead of everything).
+/// Indexer releases are left alone (the indexer did its own matching).
+fn relevant(results: Vec<SearchResult>, q: &str) -> Vec<SearchResult> {
+    use duet_common::text::{matches_query, significant_words};
+    if significant_words(q).is_empty() {
+        return Vec::new();
+    }
+    results.into_iter().filter(|r| matches_query(&r.title, &r.author, q)).collect()
 }
 
 /// Searches one built-in source by its id ("gutenberg", "standard_ebooks", "internet_archive",
@@ -79,9 +107,19 @@ pub async fn search_one(
                 None
             } else {
                 let known = crate::mirrors::annas_archive_list();
-                failover("Anna's Archive", crate::mirrors::ordered(&aa.mirror, &known), |m| Box::pin(async move {
-                    annas.search(http, m.as_str(), &aa.secret_key, q).await
-                })).await
+                let key = aa.secret_key.clone();
+                let cookies = aa_cookies(aa).await;
+                let wd = aa.webdriver_url.clone();
+                let q = q.to_string();
+                failover("Anna's Archive", crate::mirrors::ordered(&aa.mirror, &known), move |m| {
+                    let key = key.clone();
+                    let cookies = cookies.clone();
+                    let wd = wd.clone();
+                    let q = q.clone();
+                    Box::pin(async move {
+                        annas.search(http, m.as_str(), &wd, &key, &cookies, &q).await
+                    })
+                }).await
             }
         }
         "libgen" => {
@@ -105,6 +143,7 @@ pub async fn search_one(
         }
         _ => None,
     }
+    .map(|r| r.map(|v| relevant(v, q)))
 }
 
 pub async fn search(
@@ -124,8 +163,10 @@ pub async fn search(
             let libgen_known = crate::mirrors::libgen_list();
             let annas_search = failover("Anna's Archive", crate::mirrors::ordered(&aa.mirror, &annas_known), move |m| Box::pin(async move {
                 let key = aa.secret_key.clone();
+                let cookies = aa_cookies(aa).await;
+                let wd = aa.webdriver_url.clone();
                 let q = q.to_string();
-                annas.search(http, m.as_str(), &key, &q).await
+                annas.search(http, m.as_str(), &wd, &key, &cookies, &q).await
             }));
             let libgen_search = failover("LibGen", crate::mirrors::ordered(&libgen.base_url, &libgen_known), |m| Box::pin(async move {
                 LibGen::search(http, m.as_str(), q).await
@@ -137,7 +178,7 @@ pub async fn search(
                 async { if enabled.annas_archive { annas_search.await } else { None } },
                 async { if enabled.libgen { libgen_search.await } else { None } },
             );
-            [s, g, ia, annas, lg].into_iter().flatten().collect()
+            [s, g, ia, annas, lg].into_iter().flatten().map(|r| r.map(|v| relevant(v, q))).collect()
         }
         AssetKind::Audiobook => {
             let abb_search = failover("Audiobook Bay", crate::mirrors::ordered(&abb.base_url, crate::mirrors::AUDIOBOOK_BAY), |m| Box::pin(async move {
@@ -147,7 +188,7 @@ pub async fn search(
                 source("LibriVox", enabled.librivox, librivox(http, q)),
                 async { if enabled.audiobookbay { abb_search.await } else { None } },
             );
-            [lv, ab].into_iter().flatten().collect()
+            [lv, ab].into_iter().flatten().map(|r| r.map(|v| relevant(v, q))).collect()
         }
     }
 }
@@ -221,6 +262,8 @@ async fn gutenberg(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec<Search
                                 },
                                 info_url: Some(format!("https://www.gutenberg.org/ebooks/{num}")),
                                 format: Some("epub".into()),
+                                aacid: None,
+                                torrent_url: None,
                             });
                         }
                     }
@@ -247,8 +290,16 @@ async fn standard_ebooks(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec<
         .await?;
     let doc = kuchikiki::parse_html().one(html).document_node;
     let mut out: Vec<SearchResult> = Vec::new();
-    for book in doc.select("li[typeof='schema:Book']").into_iter().flatten() {
+    for book in doc.select("li[typeof='schema:Book'], article[typeof='schema:Book']").into_iter().flatten() {
         let node = book.as_node();
+        // Placeholders are upcoming books with no files yet — skip them,
+        // or every download 404s.
+        if let Some(el) = node.as_element() {
+            let cls = el.attributes.borrow().get("class").unwrap_or("").to_string();
+            if cls.split_whitespace().any(|c| c == "ebook-placeholder") {
+                continue;
+            }
+        }
         let Some(link) = node.select_first("a[href^='/ebooks/']").ok() else { continue };
         let href = link.attributes.borrow().get("href").unwrap_or("").to_string();
         let title = node.select_first("[property='schema:name']").map(|n| n.text_contents()).unwrap_or_else(|_| link.text_contents());
@@ -270,6 +321,8 @@ async fn standard_ebooks(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec<
             download: DownloadTarget::Direct { url, filename },
             info_url: Some(format!("https://standardebooks.org{href}")),
             format: Some("epub".into()),
+            aacid: None,
+            torrent_url: None,
         });
     }
     Ok(out)
@@ -328,6 +381,8 @@ async fn internet_archive(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec
                 },
                 info_url: Some(format!("https://archive.org/details/{}", d.identifier)),
                 format: None,
+                aacid: None,
+                torrent_url: None,
             }
         })
         .collect())
@@ -397,6 +452,8 @@ async fn librivox(http: &reqwest::Client, q: &str) -> anyhow::Result<Vec<SearchR
                 download: DownloadTarget::Direct { url, filename },
                 info_url: b.url_librivox,
                 format: Some("mp3".into()),
+                aacid: None,
+                torrent_url: None,
             })
         })
         .collect())

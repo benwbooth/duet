@@ -145,10 +145,12 @@ pub fn SettingsPage() -> impl IntoView {
                     |x| x.import_dir.clone(), |x, v| x.import_dir = v)}
                 {text(s, "Proxy for site searches", "HTTP proxy every Discover search and file download goes through — e.g. your VPN's forward proxy (http://localhost:8888). Empty: connect directly. LAN addresses (qBittorrent, indexers) always bypass it.",
                     |x| x.proxy_url.clone(), |x, v| x.proxy_url = v)}
-                {text(s, "Browser inbox folder", "Drop ebooks/audiobooks here (e.g. the remote Firefox's downloads) and duet imports them automatically. Empty: disabled.",
+                {text(s, "Browser inbox folder", "Drop ebooks/audiobooks here and duet imports them automatically. Empty: disabled.",
                     |x| x.inbox_dir.clone(), |x, v| x.inbox_dir = v)}
-                {text(s, "Remote browser address", "Web UI of the Firefox-on-VPN container, shown inside duet's Browser page. Empty: built from this page's own address (port 3001).",
+                {text(s, "Remote browser address", "Web UI of the Firefox-on-VPN container, shown when duet needs you to solve a bot check. Empty: built from this page's own address (port 3001).",
                     |x| x.browser_url.clone(), |x, v| x.browser_url = v)}
+                {text(s, "Browser profile folder", "Host folder the remote Firefox's /config is mounted at, so duet harvests its solved Anna's Archive session automatically. Empty: harvest disabled.",
+                    |x| x.annas_archive.browser_profile_dir.clone(), |x, v| x.annas_archive.browser_profile_dir = v)}
             </section>
 
             <section>
@@ -163,8 +165,14 @@ pub fn SettingsPage() -> impl IntoView {
                 {text(s, "LibGen mirror", "e.g. https://libgen.li or https://libgen.bz", |x| x.libgen.base_url.clone(), |x, v| x.libgen.base_url = v)}
                 {toggle(s, "Audiobook Bay audiobooks", |x| x.free_sources.audiobookbay, |x, v| x.free_sources.audiobookbay = v)}
                 {text(s, "Anna's Archive mirror", "Current mirrors are listed on the Anna's Archive Wikipedia page.", |x| x.annas_archive.mirror.clone(), |x, v| x.annas_archive.mirror = v)}
-                {secret(s, "Anna's Archive secret key", |x| x.annas_archive.secret_key.clone(), |x, v| x.annas_archive.secret_key = v)}
-                <p class="hint">"The key from your Anna's Archive account page (the same key the fast-download API uses). It is sent to the mirror above when you search or download. If a mirror dies, duet automatically tries the other known mirrors (Open SLUM list)."</p>
+                {secret(s, "Anna's Archive browser cookies (fallback)", |x| x.annas_archive.browser_cookies.clone(), |x, v| x.annas_archive.browser_cookies = v)}
+                <p class="hint">"Only needed if neither automatic method below is set up. These expire fast."</p>
+                {text(s, "WebDriver address", "Remote-controlled Firefox on the VPN: duet drives Anna's Archive searches through it when challenged. Empty: disabled.",
+                    |x| x.annas_archive.webdriver_url.clone(), |x, v| x.annas_archive.webdriver_url = v)}
+                {text(s, "Browser screen address", "The Firefox screen, shown to you only when a manual check needs a click. Empty: built from this page's own host (port 7900).",
+                    |x| x.annas_archive.viewer_url.clone(), |x, v| x.annas_archive.viewer_url = v)}
+                {secret(s, "Anna's Archive secret key (optional)", |x| x.annas_archive.secret_key.clone(), |x, v| x.annas_archive.secret_key = v)}
+                <p class="hint">"Only for the fast-download API. The shard torrent works without it, so you can leave this empty. If set, it is sent to the mirror above when you search."</p>
                 {text(s, "Audiobook Bay site", "e.g. https://audiobookbay.lu", |x| x.audiobookbay.base_url.clone(), |x, v| x.audiobookbay.base_url = v)}
             </section>
 
@@ -263,7 +271,32 @@ pub fn SettingsPage() -> impl IntoView {
                 {toggle(s, "Animate page turns (the page curls over)", |x| x.reader.page_curl, |x, v| x.reader.page_curl = v)}
                 {toggle(s, "Follow the audio (scroll and turn chapters)", |x| x.reader.follow_audio, |x, v| x.reader.follow_audio = v)}
             </section>
+            <AppVersion/>
         </div>
+    }
+}
+
+/// The running UI + server build, so "are we looking at the latest" is answerable.
+#[component]
+fn AppVersion() -> impl IntoView {
+    let ver = RwSignal::new(None::<String>);
+    spawn_local(async move {
+        #[derive(serde::Deserialize)]
+        struct V {
+            ui: String,
+        }
+        if let Ok(v) = crate::api::get::<V>("/api/version").await {
+            ver.set(Some(v.ui));
+        }
+    });
+    view! {
+        <section>
+            <h2>"About this build"</h2>
+            <p class="muted">
+                "UI build: "
+                {move || ver.get().unwrap_or_else(|| "unknown (offline?)".to_string())}
+            </p>
+        </section>
     }
 }
 

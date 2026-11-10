@@ -17,6 +17,67 @@ fn category(state_settings: &duet_common::Settings, kind: AssetKind) -> String {
     }
 }
 
+/// True when the same download is already on its way (a Direct row still
+/// marked downloading, or the torrent already in qBittorrent): callers can
+/// treat a re-click as success.
+async fn dedupe_active(state: &State, req: &NewDownload) -> anyhow::Result<bool> {
+    match &req.target {
+        DownloadTarget::Direct { .. } => {
+            let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads WHERE name = ? AND kind = ? AND state = 'downloading'")
+                .bind(&req.title)
+                .bind(req.kind.as_str())
+                .fetch_one(&state.db)
+                .await?;
+            Ok(n > 0)
+        }
+        DownloadTarget::Torrent { url } => {
+            // Magnets carry their hash; skip when qBittorrent already has it.
+            if let Some(hash) = magnet_hash(url) {
+                let settings = state.settings.read().await.clone();
+                if settings.qbittorrent.enabled {
+                    let cat = category(&settings, req.kind);
+                    if let Ok(list) = state.qbit.list(&settings.qbittorrent, &cat).await {
+                        if list.iter().any(|t| t.hash.eq_ignore_ascii_case(&hash)) {
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
+            Ok(false)
+        }
+        DownloadTarget::TorrentFile { url, .. } => {
+            // Shard torrents are named by the shard file itself.
+            let shard = url.rsplit('/').next().unwrap_or("").to_string();
+            if shard.is_empty() {
+                return Ok(false);
+            }
+            let settings = state.settings.read().await.clone();
+            if settings.qbittorrent.enabled {
+                let cat = category(&settings, req.kind);
+                if let Ok(list) = state.qbit.list(&settings.qbittorrent, &cat).await {
+                    if list.iter().any(|t| t.name.contains(&shard)) {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+/// Extracts the info hash from a magnet link, if present.
+fn magnet_hash(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    let pos = lower.find("btih:")?;
+    let rest = &url[pos + 5..];
+    let hash: String = rest.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+    if hash.len() == 40 {
+        Some(hash)
+    } else {
+        None
+    }
+}
+
 pub async fn import_dir(state: &State, kind: AssetKind) -> PathBuf {
     let configured = state.settings.read().await.import_dir.clone();
     let base = if configured.is_empty() { state.data_dir.join("library") } else { PathBuf::from(configured) };
@@ -27,36 +88,107 @@ pub async fn import_dir(state: &State, kind: AssetKind) -> PathBuf {
 }
 
 pub async fn start(state: &State, req: NewDownload) -> anyhow::Result<()> {
+    // Idempotent: a second click while the same thing is already on its way
+    // is a no-op instead of a duplicate download.
+    if dedupe_active(state, &req).await? {
+        tracing::info!("download {} already active, skipping duplicate", req.title);
+        return Ok(());
+    }
+    // Anna's Archive with a known AACID: the file lives inside its shard
+    // torrent (collection+timestamp from the AACID names the shard). Prefer
+    // the selective torrent download when qBittorrent is on — no member
+    // key needed. Otherwise fall through to the direct (fast-download) path.
+    let is_aa_record = matches!(&req.target, DownloadTarget::Direct { url, .. } if url.contains("/md5/"));
+    let settings = state.settings.read().await.clone();
+    let mut aacid = req.aacid.clone();
+    // Search cards sometimes carry no AACID. If qBittorrent is on and this
+    // is an AA record without one, fetch the record page once (user-initiated,
+    // one request) to get it — still no database.
+    if is_aa_record && aacid.is_none() && settings.qbittorrent.enabled {
+        if let DownloadTarget::Direct { url, .. } = &req.target {
+            let md5 = url.rsplit('/').next().unwrap_or("").split('?').next().unwrap_or("").to_string();
+            let site = state.site_client().await;
+            let mirror = settings.annas_archive.mirror.clone();
+            let cookies = crate::annas_archive::harvest_browser_cookies(&settings.annas_archive.browser_profile_dir).await
+                .filter(|h| !h.trim().is_empty())
+                .unwrap_or_else(|| settings.annas_archive.browser_cookies.clone());
+            let wd = settings.annas_archive.webdriver_url.clone();
+            if let Ok(found) = state.annas.fetch_record_aacid(&site, &mirror, &md5, &cookies, &wd).await {
+                aacid = found;
+            }
+        }
+    }
+    if is_aa_record && aacid.is_some() && settings.qbittorrent.enabled {
+        let aacid_ref = aacid.as_deref().unwrap();
+        let mirror = settings.annas_archive.mirror.clone();
+        // Prefer the card's own shard link when it names a per-file shard;
+        // tar dumps have nothing to select, so never touch those.
+        let card_shard = req.torrent_url.as_deref().filter(|u| u.contains("annas_archive_data__aacid__"));
+        let shard_url = card_shard.map(str::to_string).or_else(|| crate::annas_archive::shard_torrent_url(&mirror, aacid_ref));
+        if let Some(shard_url) = shard_url {
+            let cat = category(&settings, req.kind);
+            // Fall back to direct if the shard won't start (no seeders, etc.).
+            match state.qbit.add_and_select(&settings.qbittorrent, &shard_url, aacid_ref, &cat).await {
+                Ok(()) => return Ok(()),
+                Err(e) => tracing::warn!("shard torrent for {aacid_ref} failed, falling back to direct: {e:#}"),
+            }
+        }
+    }
     match &req.target {
         DownloadTarget::Torrent { url } => {
-            let settings = state.settings.read().await.clone();
             state.qbit.add(&settings.qbittorrent, url, &category(&settings, req.kind)).await
+        }
+        DownloadTarget::TorrentFile { url, file_name } => {
+            let cat = category(&settings, req.kind);
+            state.qbit.add_and_select(&settings.qbittorrent, url, file_name, &cat).await
         }
         DownloadTarget::Direct { url, filename } => {
             let id = format!("d{}", chrono::Utc::now().timestamp_micros());
             let source = reqwest::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
-            sqlx::query("INSERT INTO downloads (id, name, kind, source, state) VALUES (?, ?, ?, ?, 'downloading')")
+            // Atomic: concurrent double-clicks race here, and only one may win.
+            // (Backed by a partial unique index; the loser gets a constraint
+            // error, treated the same as "already on its way".)
+            let inserted = sqlx::query("INSERT INTO downloads (id, name, kind, source, state) SELECT ?, ?, ?, ?, 'downloading' WHERE NOT EXISTS (SELECT 1 FROM downloads WHERE name = ? AND kind = ? AND state = 'downloading')")
                 .bind(&id)
                 .bind(&req.title)
                 .bind(req.kind.as_str())
                 .bind(&source)
+                .bind(&req.title)
+                .bind(req.kind.as_str())
                 .execute(&state.db)
-                .await?;
+                .await;
+            let won = match inserted {
+                Ok(r) => r.rows_affected() == 1,
+                Err(e) if e.to_string().contains("UNIQUE constraint failed") => false,
+                Err(e) => return Err(e.into()),
+            };
+            if !won {
+                tracing::info!("download {} already active, skipping duplicate", req.title);
+                return Ok(());
+            }
             let (state, url, filename, kind) = (state.clone(), url.clone(), filename.clone(), req.kind);
             let (title, author) = (req.title.clone(), req.author.clone());
             tokio::spawn(async move {
                 let result = direct(&state, &id, &url, &filename, kind, &title, author.as_deref()).await;
-                let (st, path) = match &result {
-                    Ok(p) => ("imported", Some(p.to_string_lossy().to_string())),
+                let (st, path, error) = match &result {
+                    Ok(p) => ("imported", Some(p.to_string_lossy().to_string()), None),
                     Err(e) => {
                         tracing::warn!("download {url}: {e:#}");
-                        ("failed", None)
+                        // Short, user-facing reason (full chain stays in the log).
+                        let msg = e.to_string();
+                        let friendly = if url.contains("/md5/") && msg.contains("401") {
+                            "Anna's Archive needs a member key for this file and LibGen doesn't mirror it. Solve the bot check in Discover so duet can fetch the free torrent instead."
+                        } else {
+                            msg.rsplit(": ").next().unwrap_or("download failed")
+                        };
+                        ("failed", None, Some(friendly.chars().take(200).collect::<String>()))
                     }
                 };
-                let _ = sqlx::query("UPDATE downloads SET state = ?, path = ?, progress = CASE WHEN ? = 'imported' THEN 1 ELSE progress END WHERE id = ?")
+                let _ = sqlx::query("UPDATE downloads SET state = ?, path = ?, progress = CASE WHEN ? = 'imported' THEN 1 ELSE progress END, error = ? WHERE id = ?")
                     .bind(st)
                     .bind(path)
                     .bind(st)
+                    .bind(error)
                     .bind(&id)
                     .execute(&state.db)
                     .await;
@@ -91,6 +223,40 @@ async fn direct(
     // Resolve the real file URL. LibGen's get.php keys are single-use-ish
     // and its CDN nodes flake (500s), so resolve fresh on every attempt.
     let mut last_err: Option<anyhow::Error> = None;
+    // Anna's Archive records are keyed by MD5 — the same key LibGen uses.
+    // Try LibGen's mirrors first (no session, key, or browser needed), one
+    // immediate fetch each: CDN nodes die often, mirrors rarely all at once.
+    {
+        let settings = state.settings.read().await.clone();
+        let mirror = settings.annas_archive.mirror.trim_end_matches('/').to_string();
+        let is_aa = url.starts_with(&format!("{mirror}/md5/")) || (mirror.contains("annas-archive") && url.contains("/md5/"));
+        if is_aa {
+            let md5 = url.rsplit('/').next().unwrap_or("").split('?').next().unwrap_or("").to_string();
+            let site = state.site_client().await;
+            let mut bases = vec![settings.libgen.base_url.clone()];
+            for m in crate::mirrors::ordered(&settings.libgen.base_url, &crate::mirrors::libgen_list()) {
+                if !bases.contains(&m) {
+                    bases.push(m);
+                }
+            }
+            for base in bases.into_iter().take(4) {
+                let ads = format!("{}/ads.php?md5={md5}", base.trim_end_matches('/'));
+                match crate::libgen::resolve_download(&site, &ads).await {
+                    Ok(dl) => match fetch_one(state, id, &dl, filename, kind, title, author).await {
+                        Ok(p) => return Ok(p),
+                        Err(e) => {
+                            tracing::debug!("libgen mirror {base} failed for {md5}: {e:#}");
+                            last_err = Some(e);
+                        }
+                    },
+                    Err(e) => {
+                        tracing::debug!("libgen mirror {base} has no {md5}: {e:#}");
+                        last_err = Some(e);
+                    }
+                }
+            }
+        }
+    }
     for attempt in 1..=3 {
         let attempt_url = if url.starts_with("https://archive.org/metadata/") && attempt == 1 {
             let site = state.site_client().await;
@@ -104,8 +270,17 @@ async fn direct(
             let site = state.site_client().await;
             if url.starts_with(&format!("{mirror}/md5/")) || (mirror.contains("annas-archive") && url.contains("/md5/")) {
                 let md5 = url.rsplit('/').next().unwrap_or("").split('?').next().unwrap_or("").to_string();
-                let download_url = state.annas.resolve_download(&site, &mirror, &key, &md5).await?;
-                (download_url, filename.to_string())
+                // Same MD5, LibGen's mirror: the identical file with no
+                // session, key, or browser needed. Tried first every attempt.
+                let libgen_base = settings.libgen.base_url.trim_end_matches('/').to_string();
+                if let Ok(download_url) =
+                    crate::libgen::resolve_download(&site, &format!("{libgen_base}/ads.php?md5={md5}")).await
+                {
+                    (download_url, filename.to_string())
+                } else {
+                    let download_url = state.annas.resolve_download(&site, &mirror, &key, &md5).await?;
+                    (download_url, filename.to_string())
+                }
             } else if url.contains("/ads.php?md5=") {
                 let download_url = crate::libgen::resolve_download(&site, url).await?;
                 (download_url, filename.to_string())
@@ -131,7 +306,12 @@ async fn fetch_one(state: &State, id: &str, url: &str, filename: &str, kind: Ass
     tokio::fs::create_dir_all(&dir).await?;
     let dest = dir.join(&filename);
     let site = state.site_client().await;
-    let resp = site.get(&url).send().await?.error_for_status()?;
+    // Bound the connect+headers phase; the body itself streams unbounded.
+    let resp = tokio::time::timeout(std::time::Duration::from_secs(30), site.get(&url).send())
+        .await
+        .context("download connect timed out")?
+        .context("reaching download")?
+        .error_for_status()?;
     let total = resp.content_length();
     sqlx::query("UPDATE downloads SET size = ? WHERE id = ?").bind(total.map(|t| t as i64)).bind(id).execute(&state.db).await?;
     let tmp = dest.with_extension("part");
@@ -244,14 +424,14 @@ pub fn sniff_extensionless(path: &Path) {
 }
 
 pub async fn list(state: &State) -> anyhow::Result<Vec<Download>> {
-    let rows: Vec<(String, String, String, String, String, f64, Option<i64>, String)> = sqlx::query_as(
-        "SELECT id, name, kind, source, state, progress, size, created_at FROM downloads ORDER BY created_at DESC LIMIT 100",
+    let rows: Vec<(String, String, String, String, String, f64, Option<i64>, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, name, kind, source, state, progress, size, created_at, error FROM downloads ORDER BY created_at DESC LIMIT 100",
     )
     .fetch_all(&state.db)
     .await?;
     let mut out: Vec<Download> = rows
         .into_iter()
-        .map(|(id, name, kind, source, st, progress, size, created_at)| Download {
+        .map(|(id, name, kind, source, st, progress, size, created_at, error)| Download {
             id,
             name,
             kind: AssetKind::parse(&kind).unwrap_or(AssetKind::Ebook),
@@ -263,6 +443,7 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<Download>> {
                 .parse::<chrono::DateTime<chrono::Utc>>()
                 .ok()
                 .map(|t| t.timestamp()),
+            error,
         })
         .collect();
     let settings = state.settings.read().await.clone();
@@ -278,6 +459,7 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<Download>> {
                     size: Some(t.size),
                     source: "qBittorrent".into(),
                     started_at: (t.added_on > 0).then_some(t.added_on),
+                    error: None,
                 });
             }
         }

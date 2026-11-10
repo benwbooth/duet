@@ -88,6 +88,35 @@ pub fn title_key(title: &str) -> String {
     n.replace(" unabridged", "").replace(" a novel", "").trim().to_string()
 }
 
+/// Query words that matter for matching ("the", "of", … don't).
+pub fn significant_words(q: &str) -> Vec<String> {
+    const SMALL: [&str; 13] = ["the", "a", "an", "of", "in", "and", "to", "on", "at", "for", "de", "la", "le"];
+    q.split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| !w.is_empty() && !SMALL.contains(&w.as_str()))
+        .collect()
+}
+
+/// Whether a result is really about the query: every significant query word
+/// must appear as a whole word (plural-tolerant) in the title or author.
+/// This kills OR-match noise like author "Kingsley" matching query "king".
+pub fn matches_query(title: &str, author: &Option<String>, q: &str) -> bool {
+    let words = significant_words(q);
+    if words.is_empty() {
+        return true;
+    }
+    let ntitle = normalize(title);
+    let mut hay: Vec<&str> = ntitle.split(' ').collect();
+    let an = author.as_deref().map(normalize).unwrap_or_default();
+    let awords: Vec<&str> = an.split(' ').collect();
+    hay.extend(awords);
+    words.iter().all(|qw| {
+        hay.iter().any(|w| {
+            *w == qw.as_str() || *w == format!("{qw}s") || qw.strip_suffix('s').is_some_and(|s| *w == s)
+        })
+    })
+}
+
 /// A readable name for an audiobook track whose tag is missing or is just the file name
 /// ("wonderland_ch_01_64kb" → "Chapter 1"). Real titles pass through unchanged.
 pub fn track_title(raw: &str, index: usize) -> String {
@@ -145,5 +174,19 @@ mod tests {
     fn keys() {
         assert_eq!(title_key("The Hobbit: or There and Back Again"), "hobbit");
         assert_eq!(title_key("Hobbit (Unabridged)"), "hobbit");
+    }
+
+    #[test]
+    fn query_matching() {
+        let hill = Some("Joe Hill".to_string());
+        assert!(matches_query("King Sorrow", &hill, "king sorrow"));
+        // "Kingsley" must not match query word "king".
+        let kingsley = Some("Charles Kingsley".to_string());
+        assert!(!matches_query("Out of the deep: Words for the sorrowful", &kingsley, "king sorrow"));
+        // Plural-tolerant: "sorrows" matches "sorrow".
+        assert!(matches_query("The Sorrows of Han", &None, "sorrow"));
+        // One word missing: out.
+        assert!(!matches_query("Pilgrim Sorrow", &None, "king sorrow"));
+        assert!(!matches_query("The Merry Adventures of Robin Hood", &None, "king sorrow"));
     }
 }

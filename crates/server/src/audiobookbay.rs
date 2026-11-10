@@ -175,6 +175,8 @@ async fn fetch_one(http: reqwest::Client, base: String, entry: ListingEntry) -> 
         download: DownloadTarget::Torrent { url: build_magnet(&hash, &entry.title, &trackers) },
         info_url: Some(detail_url),
         format: entry.format,
+        aacid: None,
+        torrent_url: None,
     })
 }
     pub async fn search(http: &reqwest::Client, base_url: &str, q: &str) -> anyhow::Result<Vec<SearchResult>> {

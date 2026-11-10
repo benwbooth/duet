@@ -109,6 +109,8 @@ pub fn parse(xml: &str, source: &str, kind: AssetKind) -> anyhow::Result<Vec<Sea
                                 download: DownloadTarget::Torrent { url },
                                 info_url: it.comments,
                                 format: None,
+                                aacid: None,
+                                torrent_url: None,
                             });
                         }
                     }

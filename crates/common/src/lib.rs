@@ -257,8 +257,9 @@ pub struct Settings {
     /// (e.g. the remote Firefox's downloads). Empty: disabled.
     #[serde(default)]
     pub inbox_dir: String,
-    /// Remote browser (Firefox on the VPN) web UI address, shown inside
-    /// duet's Browser page. Empty: built from the page's own host (:3001).
+    /// Remote browser (Firefox on the VPN) web UI address, shown when duet
+    /// needs you to solve a bot check. Empty: built from the page's own
+    /// host (:3001).
     #[serde(default)]
     pub browser_url: String,
     pub qbittorrent: QbitSettings,
@@ -368,11 +369,12 @@ impl Default for FreeSources {
     }
 }
 
-/// Anna's Archive: search is scraped from the mirror's /search pages, and
-/// downloads go through the member fast-download API. Anna's Archive now
-/// challenges anonymous requests, so `secret_key` (the account secret shown
-/// on your account page, the same key the fast-download API uses) is
-/// required; the server trades it for a session cookie and never logs it.
+/// Anna's Archive: search is scraped from the mirror's /search pages.
+/// Downloads go through the shard torrent (keyless) or the member
+/// fast-download API. The site challenges anonymous requests, so search
+/// needs a solved session: duet harvests one automatically from the remote
+/// Firefox's profile (see `browser_profile_dir`), falling back to
+/// `browser_cookies` / `secret_key` when set.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AnnasArchiveSettings {
@@ -380,11 +382,26 @@ pub struct AnnasArchiveSettings {
     /// Anna's Archive Wikipedia page before changing it).
     pub mirror: String,
     pub secret_key: String,
+    /// Solved bot-check session, harvested automatically from the remote
+    /// Firefox profile when `browser_profile_dir` is mounted. Paste here
+    /// only if that isn't set up. (These cookies expire fast.)
+    pub browser_cookies: String,
+    /// Host folder the remote Firefox's `/config` is mounted at, so duet
+    /// reads its solved session automatically after one manual solve.
+    /// Empty: automatic harvest disabled.
+    pub browser_profile_dir: String,
+    /// WebDriver base (aa-browser Firefox, driven by duet).
+    /// duet drives Anna's Archive searches through it when the direct
+    /// request is challenged. Empty: disabled.
+    pub webdriver_url: String,
+    /// Screen address of that same Firefox, shown to the human when a
+    /// manual check appears. Empty: derived from this page's host (:7900).
+    pub viewer_url: String,
 }
 
 impl Default for AnnasArchiveSettings {
     fn default() -> Self {
-        AnnasArchiveSettings { mirror: "https://annas-archive.gl".into(), secret_key: String::new() }
+        AnnasArchiveSettings { mirror: "https://annas-archive.gl".into(), secret_key: String::new(), browser_cookies: String::new(), browser_profile_dir: "/mnt/stuff/browser-profile".into(), webdriver_url: "http://127.0.0.1:4444".into(), viewer_url: String::new() }
     }
 }
 
@@ -561,6 +578,16 @@ pub struct SearchResult {
     pub download: DownloadTarget,
     pub info_url: Option<String>,
     pub format: Option<String>,
+    /// Anna's Archive content id (aacid__...) when the source exposes one.
+    /// This is the name the book is stored under in the bulk torrents;
+    /// shown for identification and external torrents.
+    #[serde(default)]
+    pub aacid: Option<String>,
+    /// A torrent link from the result card, when the source exposes one.
+    /// Prefer per-file shard torrents; single-file tar dumps can't serve
+    /// one book (verified: pilimi-zlib2 range torrents are one 400GB tar).
+    #[serde(default)]
+    pub torrent_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -568,6 +595,9 @@ pub struct SearchResult {
 pub enum DownloadTarget {
     /// A magnet link or .torrent URL for qBittorrent.
     Torrent { url: String },
+    /// One file inside a torrent — qBittorrent downloads only that file.
+    /// `file_name` is the exact in-torrent name (for Anna's Archive: the AACID).
+    TorrentFile { url: String, file_name: String },
     /// A direct HTTP download of one file, or a zip of audio files.
     Direct { url: String, filename: String },
 }
@@ -577,10 +607,17 @@ pub struct NewDownload {
     pub kind: AssetKind,
     pub title: String,
     pub target: DownloadTarget,
+    /// Torrent link from the search card, if any (shard preferred, tar skipped).
+    #[serde(default)]
+    pub torrent_url: Option<String>,
     /// The book this belongs to, so an ebook and audiobook fetched together land in one book
     /// even when their files are titled differently.
     #[serde(default)]
     pub author: Option<String>,
+    /// Anna's Archive content id when the source exposed one; lets the server
+    /// resolve the shard torrent without re-fetching the record page.
+    #[serde(default)]
+    pub aacid: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -597,6 +634,9 @@ pub struct Download {
     /// torrents: qBittorrent's added_on). Newest first in the pane.
     #[serde(default)]
     pub started_at: Option<i64>,
+    /// Why a failed download failed, if known.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// A question to the assistant, typed or transcribed from the microphone.

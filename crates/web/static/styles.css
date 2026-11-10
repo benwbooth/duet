@@ -84,6 +84,7 @@ button.primary, .button.primary {
 button.primary:hover:not(:disabled), .button.primary:hover { filter: brightness(1.06); }
 .button.big, button.big { min-height: 44px; padding: 0.6rem 1.4rem; font-size: 1rem; border-radius: 12px; }
 button.ghost { background: transparent; box-shadow: none; }
+button.ghost.selected { background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--accent); }
 button.danger { color: var(--danger); }
 button.link { background: none; border: 0; box-shadow: none; color: var(--accent); padding: 0; min-height: 0; }
 input, select, textarea { padding: 0.5rem 0.7rem; min-width: 0; min-height: 38px; }
@@ -745,6 +746,9 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .source-chip.searching { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 .source-chip.found { background: var(--good-soft); color: var(--good); border-color: transparent; animation: pop 0.4s var(--ease-spring); }
 .source-chip.failed { color: var(--danger); }
+.source-chip.attention { color: #b98a12; border-color: #b98a12; cursor: pointer; animation: chip-blink 1.2s ease-in-out infinite; }
+@keyframes chip-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .source-chip.attention { animation: none; } }
 .search-wait { display: grid; justify-items: center; gap: 0.6rem; padding: 3rem 1rem; color: var(--muted); }
 
 /* Discover: search as you type, ebooks and audiobooks side by side */
@@ -772,10 +776,10 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .result-column h3 .icon { color: var(--accent); width: 18px; height: 18px; }
 .result-column .count { font-size: 0.72rem; background: var(--surface); color: var(--muted); border-radius: 99px; padding: 0.05rem 0.45rem; }
 .result-column .muted { margin: 0; font-size: 0.88rem; }
-.result-column .options { margin: 0; }
-.result-column .options li { justify-content: space-between; border-top: 1px solid var(--line); }
+.result-column .options { margin: 0; min-width: 0; }
+.result-column .options li { justify-content: space-between; border-top: 1px solid var(--line); min-width: 0; overflow: hidden; }
 .result-column .options li:first-child { border-top: 0; }
-.result-column .options .meta { flex: 1; min-width: 0; }
+.result-column .options .meta { flex: 1; min-width: 0; overflow: hidden; }
 
 .result-column .option { cursor: pointer; gap: 0.6rem; padding: 0.5rem 0.4rem; border-radius: 8px; justify-content: flex-start !important; transition: background 0.15s; }
 .result-column .option:hover { background: var(--surface); }
@@ -798,7 +802,7 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .downloads-pane header .spinner { color: var(--accent); }
 .downloads-pane header .icon-button { min-height: 28px; padding: 0.15rem 0.45rem; box-shadow: none; border: 0; background: none; color: var(--muted); }
 .downloads-pane ul { list-style: none; margin: 0; padding: 0.3rem; max-height: min(50vh, 420px); overflow: auto; scrollbar-gutter: stable; }
-.downloads-pane li { display: flex; align-items: center; gap: 0.7rem; padding: 0.6rem; border-radius: 10px; animation: rise 0.35s var(--ease-out) both; min-height: 3.2rem; box-sizing: border-box; }
+.downloads-pane li { display: flex; align-items: center; gap: 0.7rem; padding: 0.6rem; border-radius: 10px; min-height: 3.2rem; box-sizing: border-box; }
 .downloads-pane li + li { border-top: 1px solid var(--line); }
 .dl-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); flex: none; }
 .dl-icon .icon { width: 18px; height: 18px; }
@@ -807,20 +811,22 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .dl-body { flex: 1; min-width: 0; display: grid; gap: 0.3rem; }
 .dl-name { font-weight: 500; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dl-meta { display: flex; gap: 0.7rem; color: var(--muted); font-size: 0.76rem; min-height: 1.1rem; align-items: center; white-space: nowrap; overflow: hidden; }
+.dl-meta > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dl-meta > span:first-child { flex: none; font-variant-numeric: tabular-nums; }
+.dl-meta .dl-source { flex: 1 1 auto; }
 .downloads-pane li.done .progress > div { background: var(--good); }
 .downloads-pane li.failed .dl-meta span:first-child { color: var(--danger); }
 .dl-open { font-size: 0.85rem; font-weight: 600; min-width: 2.4rem; text-align: right; flex: none; }
 .clear-finished { font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
 .dl-dismiss { flex: none; }
-/* Embedded remote browser page. */
-.browser-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 1rem; align-items: start; }
-.browser-frame-wrap { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #000; }
-.browser-frame { width: 100%; height: min(78vh, 900px); border: 0; display: block; }
-.browser-side { display: grid; gap: 0.6rem; align-content: start; }
-.browser-side h2 { margin: 0; font-size: 1.05rem; }
-.inbox-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.3rem; font-size: 0.85rem; }
-.inbox-list li { padding: 0.35rem 0.55rem; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 900px) { .browser-layout { grid-template-columns: 1fr; } }
+/* Sidebar downloads button with active-count badge. */
+.dl-tab { position: relative; display: flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.55rem 0.7rem; margin-top: auto; border-radius: 10px; color: inherit; background: transparent; border: 1px solid transparent; cursor: pointer; font: inherit; }
+.dl-tab:hover { background: var(--surface); }
+.dl-badge { min-width: 1.3rem; height: 1.3rem; padding: 0 0.3rem; border-radius: 99px; background: var(--accent); color: #fff; font-size: 0.72rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.dl-empty { margin: 0.2rem 0.4rem 0.5rem !important; font-size: 0.85rem; }
+.update-banner { position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%); z-index: 120; display: flex; align-items: center; gap: 0.8rem; padding: 0.6rem 0.6rem 0.6rem 1rem; border-radius: 12px; background: var(--text); color: var(--bg); font-size: 0.88rem; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
+.update-banner .ghost { color: inherit; border-color: currentColor; }
+.dl-error { margin: 0.25rem 0 0.1rem; font-size: 0.76rem; color: var(--danger); line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
 /* Bot-check modal: the remote browser pops up inside Discover when needed. */
 .check-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 100; display: flex; align-items: center; justify-content: center; padding: 1.5rem; box-sizing: border-box; }
 .check-modal { background: var(--bg, #fff); border: 1px solid var(--line); border-radius: 14px; padding: 1.2rem; max-width: 1000px; width: 100%; max-height: 92vh; overflow: auto; display: grid; gap: 0.7rem; }

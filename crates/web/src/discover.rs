@@ -11,6 +11,8 @@ use crate::{api, size_label, toast};
 struct SearchResponse {
     results: Vec<SearchResult>,
     errors: Vec<String>,
+    #[serde(default)]
+    need_check: bool,
 }
 
 /// Re-runs `f` every few seconds while the page is open.
@@ -29,15 +31,45 @@ struct BookGroup {
     options: Vec<SearchResult>,
 }
 
+/// Surname for grouping: "Hill, Joe", "Hill, Joe(Author)" and "Joe Hill"
+/// must all meet at "hill" — check the comma on the raw string, because
+/// normalization itself strips commas.
+fn surname_of(author: &Option<String>) -> String {
+    use duet_common::text::normalize;
+    author.as_deref().map(|n| {
+        let base = n.split(',').next().unwrap_or(n);
+        let norm = normalize(base);
+        if n.contains(',') { norm.trim().to_string() } else { norm.rsplit(' ').next().unwrap_or("").to_string() }
+    }).unwrap_or_default()
+}
+
+/// Ebook formats that are real books rather than comics.
+fn is_prose(o: &SearchResult) -> bool {
+    matches!(o.format.as_deref(), Some("epub" | "pdf" | "mobi" | "azw" | "azw3" | "fb2" | "djvu" | "txt"))
+}
+
+/// Ebook formats, best first: real book files before scans, comics last.
+fn format_rank(o: &SearchResult) -> u8 {
+    match o.format.as_deref() {
+        Some("epub") => 0,
+        Some("azw3" | "mobi" | "azw") => 1,
+        Some("fb2" | "djvu" | "txt") => 2,
+        Some("pdf") => 3,
+        Some("cbz" | "cbr" | "cbt" | "cb7") => 5,
+        _ => 4,
+    }
+}
+
 /// Groups hits by book. Free sources give a title and author; indexer releases only have a
 /// release name, so they join the book whose title appears in it.
-fn group(results: Vec<SearchResult>) -> Vec<BookGroup> {
+/// Exact title matches for the query sort first; comics sort after prose.
+fn group(results: Vec<SearchResult>, query: &str) -> Vec<BookGroup> {
     use duet_common::text::{normalize, title_key};
-    let surname = |a: &Option<String>| a.as_deref().map(normalize).and_then(|n| n.rsplit(' ').next().map(str::to_string)).unwrap_or_default();
+    let qkey = title_key(query);
     let mut groups: Vec<BookGroup> = Vec::new();
     let (named, releases): (Vec<_>, Vec<_>) = results.into_iter().partition(|r| r.author.is_some());
     for r in named {
-        let key = format!("{}|{}", title_key(&r.title), surname(&r.author));
+        let key = format!("{}|{}", title_key(&r.title), surname_of(&r.author));
         match groups.iter_mut().find(|g| g.key == key) {
             Some(g) => g.options.push(r),
             None => groups.push(BookGroup { key, title: r.title.clone(), author: r.author.clone(), options: vec![r] }),
@@ -45,9 +77,12 @@ fn group(results: Vec<SearchResult>) -> Vec<BookGroup> {
     }
     for r in releases {
         let name = normalize(&r.title);
+        // Join the book whose title this release starts with (word boundary),
+        // so a 2-letter key like "it" can't substring-match "city" or "with".
+        // Longer keys keep the old contains behavior for mid-string matches.
         let home = groups.iter_mut().find(|g| {
             let t = g.key.split('|').next().unwrap_or("");
-            !t.is_empty() && name.contains(t)
+            !t.is_empty() && (name == t || name.starts_with(&format!("{t} ")) || (t.len() >= 4 && name.contains(t)))
         });
         match home {
             Some(g) => g.options.push(r),
@@ -61,20 +96,27 @@ fn group(results: Vec<SearchResult>) -> Vec<BookGroup> {
         }
     }
     for g in &mut groups {
-        // Ebooks first, then the best-seeded.
-        g.options.sort_by_key(|o| (o.kind == AssetKind::Audiobook, std::cmp::Reverse(o.seeders.unwrap_or(0))));
+        // Ebooks first in the best format, then the best-seeded.
+        g.options.sort_by_key(|o| (o.kind == AssetKind::Audiobook, format_rank(o), std::cmp::Reverse(o.seeders.unwrap_or(0))));
     }
-    // Books available both ways first, then those with the most options.
+    // Exact title match first (preferring attributed books over bare
+    // filenames), then title-starts-with-query, then prose before comics,
+    // then books available both ways, then option count.
     groups.sort_by_key(|g| {
+        let t = title_key(&g.title);
+        let exact = t == qkey;
+        let named = g.author.as_ref().is_some_and(|a| !a.is_empty());
+        let prefix = t.starts_with(&qkey) || qkey.starts_with(&t);
+        let prose = g.options.iter().any(is_prose);
         let both = g.options.iter().any(|o| o.kind == AssetKind::Ebook) && g.options.iter().any(|o| o.kind == AssetKind::Audiobook);
-        (!both, std::cmp::Reverse(g.options.len()))
+        (!exact, !named, !prefix, !prose, !both, std::cmp::Reverse(g.options.len()))
     });
     groups
 }
 
 /// One book in the results: pick an ebook, an audiobook or both, then get them together.
 #[component]
-fn FoundBook(g: BookGroup, download: impl Fn(SearchResult) + Copy + Send + Sync + 'static) -> impl IntoView {
+fn FoundBook(g: BookGroup, on_need_check: impl Fn() + Copy + Send + Sync + 'static) -> impl IntoView {
     let of = |k: AssetKind| g.options.iter().filter(|o| o.kind == k).cloned().collect::<Vec<_>>();
     let (ebooks, audio) = (of(AssetKind::Ebook), of(AssetKind::Audiobook));
     // The best of each is picked to start with, so one click gets both.
@@ -90,19 +132,126 @@ fn FoundBook(g: BookGroup, download: impl Fn(SearchResult) + Copy + Send + Sync 
         }
         r
     };
-    let get = move |_| {
-        if let Some(i) = pick_e.get_untracked() {
-            download(as_this_book(e2[i].clone()));
-        }
-        if let Some(i) = pick_a.get_untracked() {
-            download(as_this_book(a2[i].clone()));
-        }
+    let sending = RwSignal::new(false);
+    let panel = crate::downloads_panel();
+    // Books with a download on its way stay greyed out until the job
+    // completes (imported into the library), fails, or 30 minutes pass.
+    // Keyed by normalized title + kind.
+    let pending = RwSignal::new(std::collections::HashMap::<(String, String), f64>::new());
+    // Keys already announced, so one failed download pops the browser once.
+    let announced = RwSignal::new(std::collections::HashSet::<(String, String)>::new());
+    // Re-check pending jobs every few seconds, but only while any exist.
+    if let Ok(h) = set_interval_with_handle(
+        move || {
+            if pending.with(|p| p.is_empty()) {
+                return;
+            }
+            let mut ask_human = false;
+            spawn_local(async move {
+                let lib = api::get::<Vec<duet_common::WorkSummary>>("/api/library").await.unwrap_or_default();
+                let dls = api::get::<Vec<duet_common::Download>>("/api/downloads").await.unwrap_or_default();
+                let now = js_sys::Date::now() / 1000.0;
+                pending.update(|p| {
+                    p.retain(|(t, k), started| {
+                        if now - *started > 1800.0 {
+                            return false;
+                        }
+                        use duet_common::text::title_key;
+                        let done = lib.iter().any(|w| {
+                            title_key(&w.title) == title_key(t)
+                                && ((k == "ebook" && w.has_ebook) || (k == "audiobook" && w.has_audiobook))
+                        });
+                        if done {
+                            return false;
+                        }
+                        let failed = dls.iter().find(|d| {
+                            title_key(&d.name) == title_key(t) && d.kind.as_str() == k && d.state == "failed"
+                        });
+                        if let Some(f) = failed {
+                            // A check-walled failure needs hands: click into the
+                            // record in the browser, solve, then Get again.
+                            if f.error.as_deref().is_some_and(|e| e.to_lowercase().contains("bot check"))
+                                && announced.with(|a| !a.contains(&(t.clone(), k.clone())))
+                            {
+                                announced.update(|a| {
+                                    a.insert((t.clone(), k.clone()));
+                                });
+                                ask_human = true;
+                            }
+                            return false;
+                        }
+                        true
+                    });
+                });
+                if ask_human {
+                    toast().show("That download needs the bot check solved — click the blinking Anna's Archive badge to open the browser, solve it, then Get again.".to_string());
+                    on_need_check();
+                }
+            });
+        },
+        std::time::Duration::from_secs(5),
+    ) {
+        on_cleanup(move || h.clear());
+    }
+    let busy_key = duet_common::text::title_key(&g.title);
+    let busy_key2 = busy_key.clone();
+    // Book stays greyed out while a download for it is on its way.
+    // (One closure per use site: closures can't be shared by two owners.)
+    let is_busy = move || {
+        pending.with(|p| {
+            p.keys().any(|(t, k)| {
+                duet_common::text::title_key(t) == busy_key
+                    && ((k == "ebook" && pick_e.get().is_some()) || (k == "audiobook" && pick_a.get().is_some()))
+            })
+        })
     };
-    let label = move || match (pick_e.get().is_some(), pick_a.get().is_some()) {
-        (true, true) => "Get ebook and audiobook",
-        (true, false) => "Get ebook",
-        (false, true) => "Get audiobook",
-        (false, false) => "Pick an ebook or audiobook",
+    let is_busy2 = move || {
+        pending.with(|p| {
+            p.keys().any(|(t, k)| {
+                duet_common::text::title_key(t) == busy_key2
+                    && ((k == "ebook" && pick_e.get().is_some()) || (k == "audiobook" && pick_a.get().is_some()))
+            })
+        })
+    };
+    let get = move |_| {
+        if sending.get_untracked() {
+            return;
+        }
+        sending.set(true);
+        let reqs: Vec<NewDownload> = [pick_e.get_untracked().map(|i| e2[i].clone()), pick_a.get_untracked().map(|i| a2[i].clone())]
+            .into_iter()
+            .flatten()
+            .map(|opt| {
+                let r = as_this_book(opt);
+                NewDownload { kind: r.kind, title: r.title.clone(), target: r.download.clone(), author: r.author.clone(), aacid: r.aacid.clone(), torrent_url: r.torrent_url.clone() }
+            })
+            .collect();
+        spawn_local(async move {
+            let now = js_sys::Date::now() / 1000.0;
+            for req in reqs {
+                match api::post::<_, ()>("/api/downloads", &req).await {
+                    Ok(()) => {
+                        panel.opened();
+                        pending.update(|p| {
+                            p.insert((req.title.clone(), req.kind.as_str().to_string()), now);
+                        });
+                    }
+                    Err(e) => crate::toast().show(e.0),
+                }
+            }
+            sending.set(false);
+        });
+    };
+    let label = move || {
+        if sending.get() || is_busy() {
+            return if is_busy() && !sending.get() { "Getting…" } else { "Adding…" };
+        }
+        match (pick_e.get().is_some(), pick_a.get().is_some()) {
+            (true, true) => "Get ebook and audiobook",
+            (true, false) => "Get ebook",
+            (false, true) => "Get audiobook",
+            (false, false) => "Pick an ebook or audiobook",
+        }
     };
     view! {
         <article class="found-book">
@@ -111,7 +260,7 @@ fn FoundBook(g: BookGroup, download: impl Fn(SearchResult) + Copy + Send + Sync 
                     <h2>{g.title.clone()}</h2>
                     {g.author.clone().map(|a| view! { <p class="author">{a}</p> })}
                 </div>
-                <button class="primary" disabled=move || pick_e.get().is_none() && pick_a.get().is_none() on:click=get>
+                <button class="primary" disabled=move || sending.get() || is_busy2() || pick_e.get().is_none() && pick_a.get().is_none() on:click=get>
                     {crate::icon(crate::icons::DOWNLOAD)}{label}
                 </button>
             </header>
@@ -152,6 +301,7 @@ fn result_column(heading: &'static str, path: &'static str, options: Vec<SearchR
                                 {res.size.map(|s| view! { <span>{size_label(s)}</span> })}
                                 {res.seeders.map(|s| view! { <span>{format!("{s} seeders")}</span> })}
                                 {label.map(|l| view! { <span class="release">{l}</span> })}
+                                {res.aacid.clone().map(|a| view! { <code class="aacid" title="Anna's Archive content id — the file name in its bulk torrent">{a}</code> })}
                                 {res.info_url.clone().map(|u| view! {
                                     <a href=u target="_blank" rel="noopener" on:click=|ev| ev.stop_propagation()>"Details"</a>
                                 })}
@@ -186,10 +336,114 @@ pub fn Discover() -> impl IntoView {
     let searching = move || status.with(|s| s.iter().any(|(_, st)| st.is_none()));
     // Which search the arriving answers belong to, so a slow source can't add to a newer search.
     let generation = RwSignal::new(0u32);
-    let panel = crate::downloads_panel();
-    let toast = toast();
+    // Anna's Archive bot check: the badge blinks yellow instead of popping
+    // the browser immediately — the user opens it by clicking the badge.
+    let aa_attention = RwSignal::new(false);
+    let show_check = RwSignal::new(false);
+    let frame_url = RwSignal::new(String::new());
+    let ensure_frame_url = move || {
+        if frame_url.get_untracked().is_empty() {
+            spawn_local(async move {
+                let s = api::get::<duet_common::Settings>("/api/settings").await.ok();
+                let configured = s.as_ref().map(|s| if s.annas_archive.viewer_url.trim().is_empty() { s.browser_url.clone() } else { s.annas_archive.viewer_url.clone() }).unwrap_or_default();
+                let url = if configured.trim().is_empty() {
+                    // Same host as duet, viewer port of the aa-browser sidecar.
+                    let loc = web_sys::window().and_then(|w| w.location().href().ok()).unwrap_or_default();
+                    let (proto, host) = match loc.split_once("://") {
+                        Some((p, rest)) => (p, rest.split('/').next().unwrap_or("localhost").split(':').next().unwrap_or("localhost")),
+                        None => ("http", "localhost"),
+                    };
+                    format!("{proto}://{host}:3001/")
+                } else {
+                    configured
+                };
+                frame_url.set(url);
+            });
+        }
+    };
+
+    // Merges one source's answer into the results; shared by first pass,
+    // retry, and the second-pass audiobook lookup.
+    let handle_answer = move |i: usize, answer: crate::api::ApiResult<SearchResponse>, this: u32| {
+        if generation.get_untracked() != this {
+            return;
+        }
+        let outcome = match answer {
+            Ok(r) => {
+                let n = r.results.len();
+                let err = r.errors.first().cloned();
+                if r.need_check {
+                    aa_attention.set(true);
+                    ensure_frame_url();
+                }
+                results.update(|all| {
+                    if let Some(all) = all {
+                        all.results.extend(r.results);
+                    }
+                });
+                match err {
+                    Some(e) if n == 0 => Err(e),
+                    _ => Ok(n),
+                }
+            }
+            Err(e) => Err(e.0),
+        };
+        status.update(|s| {
+            if s.len() == SOURCES.len() {
+                s[i].1 = Some(outcome);
+            }
+        });
+    };
 
     // Every source is asked separately, so results show up as each one answers.
+    // Second pass: after everything settles, if the top exact ebook match
+    // still lacks an audiobook, Audiobook Bay gets ONE extra query with
+    // "title author" — its engine needs the author for short titles like "It".
+    let audio_tried = RwSignal::new(0u32);
+    let fetch_source = move |i: usize, id: &'static str, q: String, this: u32| {        let url = format!("/api/search?q={}&source={id}", js_sys::encode_uri_component(&q));
+        spawn_local(async move {
+            let answer = api::get::<SearchResponse>(&url).await;
+            handle_answer(i, answer, this);
+            // Maybe fire the one second-pass audiobook lookup.
+            if audio_tried.get_untracked() != this
+                && status.with(|s| s.len() == SOURCES.len() && s.iter().all(|(_, st)| st.is_some()))
+            {
+                let lookup = results.with(|all| {
+                    use duet_common::text::title_key;
+                    let all = all.as_ref()?;
+                    let qk = title_key(&q);
+                    let ebook = all.results.iter().find(|r| {
+                        r.kind == AssetKind::Ebook && r.author.as_ref().is_some_and(|a| !a.is_empty()) && title_key(&r.title) == qk
+                    })?;
+                    let author = ebook.author.clone()?;
+                    if all.results.iter().any(|r| {
+                        r.kind == AssetKind::Audiobook
+                            && title_key(&r.title) == title_key(&ebook.title)
+                            && surname_of(&r.author) == surname_of(&ebook.author)
+                    }) {
+                        return None;
+                    }
+                    Some(format!("{} {}", ebook.title, author))
+                });
+                if let Some(aq) = lookup {
+                    audio_tried.set(this);
+                    if let Some(j) = SOURCES.iter().position(|(id, _)| *id == "audiobookbay") {
+                        status.update(|s| {
+                            if s.len() == SOURCES.len() {
+                                s[j].1 = None;
+                            }
+                        });
+                        let url = format!("/api/search?q={}&source=audiobookbay", js_sys::encode_uri_component(&aq));
+                        spawn_local(async move {
+                            let answer = api::get::<SearchResponse>(&url).await;
+                            handle_answer(j, answer, this);
+                        });
+                    }
+                }
+            }
+        });
+    };
+
     let search = move || {
         let q = query.get_untracked();
         if q.trim().is_empty() {
@@ -197,44 +451,32 @@ pub fn Discover() -> impl IntoView {
         }
         let this = generation.get_untracked() + 1;
         generation.set(this);
+        aa_attention.set(false);
+        show_check.set(false);
         results.set(Some(SearchResponse::default()));
         status.set(SOURCES.iter().map(|(_, label)| (*label, None)).collect());
         for (i, (id, _)) in SOURCES.iter().enumerate() {
-            let url = format!("/api/search?q={}&source={id}", js_sys::encode_uri_component(&q));
-            spawn_local(async move {
-                let answer = api::get::<SearchResponse>(&url).await;
-                if generation.get_untracked() != this {
-                    return;
-                }
-                let outcome = match answer {
-                    Ok(r) => {
-                        let n = r.results.len();
-                        let err = r.errors.first().cloned();
-                        results.update(|all| {
-                            if let Some(all) = all {
-                                all.results.extend(r.results);
-                            }
-                        });
-                        match err {
-                            Some(e) if n == 0 => Err(e),
-                            _ => Ok(n),
-                        }
-                    }
-                    Err(e) => Err(e.0),
-                };
-                status.update(|s| s[i].1 = Some(outcome));
-            });
+            fetch_source(i, id, q.clone(), this);
         }
     };
 
-    let download = move |r: SearchResult| {
-        let req = NewDownload { kind: r.kind, title: r.title.clone(), target: r.download.clone(), author: r.author.clone() };
-        spawn_local(async move {
-            match api::post::<_, ()>("/api/downloads", &req).await {
-                Ok(()) => panel.opened(),
-                Err(e) => toast.show(e.0),
+    // Retry Anna's Archive alone (after the user solves its check):
+    // other sources already answered and must not be re-hammered.
+    // The AA answer merges into the current results; its chip updates.
+    let retry_aa = move || {
+        let q = query.get_untracked();
+        if q.trim().is_empty() {
+            return;
+        }
+        show_check.set(false);
+        let this = generation.get_untracked();
+        let Some(i) = SOURCES.iter().position(|(id, _)| *id == "annas_archive") else { return };
+        status.update(|s| {
+            if s.len() == SOURCES.len() {
+                s[i].1 = None;
             }
         });
+        fetch_source(i, "annas_archive", q, this);
     };
 
     // Opened as #/discover/<query> (a book's "Find another edition"): search for it straight away.
@@ -271,7 +513,7 @@ pub fn Discover() -> impl IntoView {
                     typed.set(n);
                     spawn_local(async move {
                         gloo_timers::future::TimeoutFuture::new(450).await;
-                        if typed.get_untracked() == n && query.get_untracked().trim().chars().count() >= 3 {
+                        if typed.get_untracked() == n && query.get_untracked().trim().chars().count() >= 2 {
                             search();
                         }
                     });
@@ -280,20 +522,27 @@ pub fn Discover() -> impl IntoView {
                 <span class="spinner"></span>
             </Show>
         </form>
-        <p class="hint">"Free sources plus Anna's Archive and Audiobook Bay. Anna's Archive needs your member secret key, set in "<a href="#/settings">"Settings"</a>"."</p>
+        <p class="hint">"Free sources plus Anna's Archive and Audiobook Bay. If Anna's Archive shows its bot check, its badge blinks yellow — click it to open the remote browser, solve the check, then retry."</p>
 
         <Show when=move || !status.with(Vec::is_empty)>
             <div class="source-status">
                 {move || status.get().into_iter().map(|(label, st)| {
+                    // The bot check gets a blinking "needs attention" badge
+                    // instead of a popup or an "unavailable" chip; clicking
+                    // it opens the remote browser.
+                    let attention = label == "Anna's Archive" && aa_attention.get();
                     let (class, text) = match &st {
+                        _ if attention => ("attention", format!("{label}: needs attention")),
                         None => ("searching", format!("{label}")),
                         Some(Ok(0)) => ("none", format!("{label}: nothing")),
                         Some(Ok(n)) => ("found", format!("{label}: {n}")),
                         Some(Err(_)) => ("failed", format!("{label}: unavailable")),
                     };
+                    let cls = if attention { "source-chip attention".to_string() } else { format!("source-chip {class}") };
                     let title = match st { Some(Err(e)) => e, _ => String::new() };
                     view! {
-                        <span class=format!("source-chip {class}") title=title>
+                        <span class=cls title=title role=if attention { "button" } else { "" } aria-label=if attention { Some("Anna's Archive needs a human — open the remote browser") } else { None }
+                            on:click=move |_| { if attention { show_check.set(true); } }>
                             {(class == "searching").then(|| view! { <span class="spinner small"></span> })}
                             {text}
                         </span>
@@ -307,9 +556,28 @@ pub fn Discover() -> impl IntoView {
                 <div class="search-wait"><span class="spinner big"></span><p>"Searching the libraries…"</p></div>
             })}
             <div class="found-books">
-                {group(r.results).into_iter().map(|g| view! { <FoundBook g download/> }).collect_view()}
+                {group(r.results, &query.get()).into_iter().map(|g| view! { <FoundBook g on_need_check=move || { aa_attention.set(true); ensure_frame_url(); }/> }).collect_view()}
             </div>
         })}
+        <Show when=move || show_check.get()>
+            <div class="check-modal-backdrop" on:click=move |_| show_check.set(false)>
+                <div class="check-modal" on:click=|ev| ev.stop_propagation()>
+                    <h2>"Anna's Archive wants a human"</h2>
+                    <p class="muted">"The browser below opens straight at Anna's Archive. Pass the check there, then press Retry. duet picks up the solved session itself and searches again."</p>
+                    <p class="muted">"Tip: if you get the drag-the-segments puzzle and dragging misbehaves, turn on the viewer's game / locked-window mode — it sends raw mouse motion with no screen edges to hit — do the drag, then turn it back off. Or hit the puzzle's ↻ until you get the click-the-checkbox variant."</p>
+                    {move || (!frame_url.get().is_empty()).then(|| view! {
+                        <iframe class="check-frame" src=frame_url.get() title="Remote Firefox" allow="clipboard-read; clipboard-write; pointer-lock; fullscreen" allowfullscreen></iframe>
+                    })}
+                    <div class="row">
+                        <button class="primary" on:click=move |_| retry_aa()>"I've solved it — retry Anna's Archive"</button>
+                        <button class="ghost" on:click=move |_| show_check.set(false)>"Close"</button>
+                        {move || (!frame_url.get().is_empty()).then(|| view! {
+                            <a class="ghost" href=frame_url.get() target="_blank" rel="noopener">"Open in new tab"</a>
+                        })}
+                    </div>
+                </div>
+            </div>
+        </Show>
     }
 }
 
@@ -335,98 +603,6 @@ fn ActivityNow() -> impl IntoView {
     }
 }
 
-/// Remote Firefox on the VPN, embedded in duet: browse bot-walled sites by
-/// hand; downloads land in the inbox and import into the library.
-#[component]
-pub fn BrowserPage() -> impl IntoView {
-    use duet_common::Settings;
-    #[derive(Deserialize, Clone, Default)]
-    struct InboxStatus {
-        #[serde(default)]
-        pending: Vec<String>,
-    }
-    let frame_url = RwSignal::new(String::new());
-    spawn_local(async move {
-        let configured = api::get::<Settings>("/api/settings").await.ok().map(|s| s.browser_url).unwrap_or_default();
-        let url = if configured.trim().is_empty() {
-            // Same host as duet, KasmVNC port of the aa-browser container.
-            let loc = web_sys::window().and_then(|w| w.location().href().ok()).unwrap_or_default();
-            let (proto, host) = match loc.split_once("://") {
-                Some((p, rest)) => (p, rest.split('/').next().unwrap_or("localhost").split(':').next().unwrap_or("localhost")),
-                None => ("http", "localhost"),
-            };
-            format!("{proto}://{host}:3001/")
-        } else {
-            configured
-        };
-        frame_url.set(url);
-    });
-    let pending = RwSignal::new(Vec::<String>::new());
-    let importing = RwSignal::new(false);
-    let toast = toast();
-    let refresh = move || {
-        spawn_local(async move {
-            if let Ok(st) = api::get::<InboxStatus>("/api/inbox").await {
-                pending.set(st.pending);
-            }
-        });
-    };
-    refresh();
-    if let Ok(h) = set_interval_with_handle(refresh, std::time::Duration::from_secs(10)) {
-        on_cleanup(move || h.clear());
-    }
-    let import_now = move |_| {
-        importing.set(true);
-        spawn_local(async move {
-            match api::post::<_, serde_json::Value>("/api/inbox", &()).await {
-                Ok(v) => {
-                    let n = v["imported"].as_u64().unwrap_or(0);
-                    toast.show(if n > 0 { format!("Imported {n} book{} from the browser", if n == 1 { "" } else { "s" }) } else { "Nothing new in the inbox".to_string() });
-                    refresh();
-                }
-                Err(e) => toast.show(e.0),
-            }
-            importing.set(false);
-        });
-    };
-
-    view! {
-        <header class="page-head">
-            <div class="titles">
-                <h1>"Browser"</h1>
-                <p class="subtitle">"The remote Firefox, on the VPN — for sites duet can't search itself"</p>
-            </div>
-        </header>
-        <div class="browser-layout">
-            <div class="browser-frame-wrap">
-                {move || (!frame_url.get().is_empty()).then(|| view! {
-                    <iframe class="browser-frame" src=frame_url.get() title="Remote Firefox" allow="clipboard-read; clipboard-write"></iframe>
-                })}
-            </div>
-            <aside class="browser-side">
-                <h2>"Inbox"</h2>
-                <p class="hint">"Files you download in the browser land here, then join your library."</p>
-                <div class="row">
-                    <button class="primary" disabled=move || importing.get() on:click=import_now>
-                        {move || if importing.get() { "Importing…" } else { "Import now" }}
-                    </button>
-                </div>
-                {move || {
-                    let files = pending.get();
-                    if files.is_empty() {
-                        view! { <p class="muted">"Inbox is empty."</p> }.into_any()
-                    } else {
-                        view! {
-                            <ul class="inbox-list">
-                                {files.into_iter().map(|f| view! { <li>{f}</li> }).collect_view()}
-                            </ul>
-                        }.into_any()
-                    }
-                }}
-            </aside>
-        </div>
-    }
-}
 
 #[component]
 pub fn Jobs() -> impl IntoView {

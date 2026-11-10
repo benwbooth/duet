@@ -80,10 +80,12 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/setup/voices/stop", post(voices_stop))
         .route("/setup/voices/log", get(voices_log))
         .route("/search", get(search))
+        .route("/version", get(version))
         .route("/mirrors", get(mirrors_status))
         .route("/downloads", get(list_downloads).post(new_download))
         .route("/downloads/{id}", delete(clear_download))
         .route("/inbox", get(inbox_status).post(inbox_import))
+        .route("/annas_archive/test_cookies", post(aa_test_cookies))
         .route("/ai/models", post(ai_models))
         .route("/ai/v1/chat/completions", post(chat_proxy))
         .route("/ai/setup", get(ai_detect))
@@ -531,6 +533,26 @@ struct SearchQuery {
 struct SearchResponse {
     results: Vec<SearchResult>,
     errors: Vec<String>,
+    /// True when Anna's Archive served its bot check: the UI should pop the
+    /// remote browser so the user can solve it, then retry.
+    need_check: bool,
+}
+
+/// Strips the BOT_CHECK marker, reporting whether a human solve is needed.
+fn split_errors(errors: Vec<String>) -> (Vec<String>, bool) {
+    let mut need_check = false;
+    let clean = errors
+        .into_iter()
+        .map(|e| {
+            if let Some(rest) = e.strip_prefix("BOT_CHECK ") {
+                need_check = true;
+                rest.to_string()
+            } else {
+                e
+            }
+        })
+        .collect();
+    (clean, need_check)
 }
 
 /// Searches every source for both ebooks and audiobooks at once; the UI groups the hits by book.
@@ -547,7 +569,8 @@ async fn search(AxState(s): AxState<State>, Query(q): Query<SearchQuery>) -> Api
             Some(Err(e)) => errors.push(format!("{e:#}")),
             None => {}
         }
-        return Ok(Json(SearchResponse { results, errors }));
+        let (errors, need_check) = split_errors(errors);
+        return Ok(Json(SearchResponse { results, errors, need_check }));
     }
     let only_indexers = q.source.as_deref() == Some("indexers");
     let kinds = [AssetKind::Ebook, AssetKind::Audiobook];
@@ -579,7 +602,13 @@ async fn search(AxState(s): AxState<State>, Query(q): Query<SearchQuery>) -> Api
             }
         }
     }
-    Ok(Json(SearchResponse { results, errors }))
+    let (errors, need_check) = split_errors(errors);
+    Ok(Json(SearchResponse { results, errors, need_check }))
+}
+
+/// UI build fingerprint: the client reloads when a new build lands.
+async fn version(AxState(s): AxState<State>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ui": s.ui_build }))
 }
 
 /// The mirror lists duet is trying right now (Open SLUM, refreshed live).
@@ -626,6 +655,23 @@ async fn inbox_status(AxState(s): AxState<State>) -> ApiResult<Json<serde_json::
 async fn inbox_import(AxState(s): AxState<State>) -> ApiResult<Json<serde_json::Value>> {
     let n = library::import_inbox_once(&s).await?;
     Ok(Json(serde_json::json!({ "imported": n })))
+}
+
+#[derive(Deserialize)]
+struct AaCookieTest {
+    cookies: String,
+}
+
+/// Tests browser cookies with a live search. Returns how many results
+/// came back; the message is plain-language either way.
+async fn aa_test_cookies(AxState(s): AxState<State>, Json(body): Json<AaCookieTest>) -> ApiResult<Json<serde_json::Value>> {
+    let settings = s.settings.read().await.clone();
+    let mirror = settings.annas_archive.mirror.clone();
+    let site = s.site_client().await;
+    match s.annas.search(&site, &mirror, "", "", body.cookies.trim(), "Dune").await {
+        Ok(results) => Ok(Json(serde_json::json!({ "ok": true, "count": results.len() }))),
+        Err(e) => Ok(Json(serde_json::json!({ "ok": false, "error": format!("{e:#}") }))),
+    }
 }
 
 async fn clear_download(AxState(s): AxState<State>, Path(id): Path<String>) -> ApiResult<StatusCode> {

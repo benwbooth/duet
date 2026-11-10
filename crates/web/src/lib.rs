@@ -146,7 +146,6 @@ enum Route {
     Read(i64, Option<reader::Mode>),
     Discover,
     Briefing,
-    Browser,
     Jobs,
     Settings,
     Setup,
@@ -161,7 +160,6 @@ impl Route {
             Some("read") => id().map(|i| Route::Read(i, parts.get(2).and_then(|m| reader::Mode::parse(m)))).unwrap_or(Route::Library),
             Some("discover") => Route::Discover,
             Some("briefing") => Route::Briefing,
-            Some("browser") => Route::Browser,
             Some("jobs") => Route::Jobs,
             Some("settings") => Route::Settings,
             Some("setup") => Route::Setup,
@@ -174,7 +172,6 @@ impl Route {
             Route::Library | Route::Work(_) | Route::Read(..) => "library",
             Route::Discover => "discover",
             Route::Briefing => "briefing",
-            Route::Browser => "browser",
             Route::Jobs => "jobs",
             Route::Settings | Route::Setup => "settings",
         }
@@ -231,7 +228,21 @@ impl DownloadsPanel {
         let list = self.list;
         spawn_local(async move {
             if let Ok(v) = api::get::<Vec<duet_common::Download>>("/api/downloads").await {
-                list.set(v);
+                // Don't touch the DOM when nothing material changed:
+                // re-setting an identical list still re-renders every row.
+                let same = list.with(|old| {
+                    old.len() == v.len()
+                        && old.iter().zip(v.iter()).all(|(a, b)| {
+                            a.id == b.id
+                                && a.state == b.state
+                                && (a.progress * 100.0) as i64 == (b.progress * 100.0) as i64
+                                && a.size == b.size
+                                && a.error == b.error
+                        })
+                });
+                if !same {
+                    list.set(v);
+                }
             }
         });
     }
@@ -336,23 +347,38 @@ fn ActivityPane() -> impl IntoView {
 fn DownloadsPane() -> impl IntoView {
     let panel = downloads_panel();
     let toast = toast();
-    // Follow progress while the panel is open; look in now and then for torrents started elsewhere.
+    // Follow progress ONLY while something is actually moving. When idle the
+    // pane goes completely quiet — no periodic repaints, no flicker. A
+    // manual refresh button covers torrents started elsewhere.
     let tick = RwSignal::new(0u32);
     if let Ok(h) = set_interval_with_handle(
         move || {
             tick.update(|t| *t += 1);
-            if panel.open.get_untracked() || tick.get_untracked() % 15 == 0 {
+            if web_sys::window().and_then(|w| w.document()).map(|d| d.hidden()).unwrap_or(false) {
+                return;
+            }
+            let watching = panel.open.get_untracked() && panel.list.with(|l| l.iter().any(active));
+            if watching || tick.get_untracked() % 24 == 0 {
                 panel.refresh();
             }
         },
-        std::time::Duration::from_secs(2),
+        std::time::Duration::from_secs(5),
     ) {
         on_cleanup(move || h.clear());
     }
     panel.refresh();
-    // Open by itself when something is downloading.
+    // Open by itself when NEW work starts. (Not merely while work is
+    // active: that fight re-opens the pane right after the user closes it.)
+    let seen_active = RwSignal::new(std::collections::HashSet::<String>::new());
     Effect::new(move |_| {
-        if panel.list.with(|l| l.iter().any(active)) {
+        let fresh = panel.list.with(|l| {
+            l.iter()
+                .filter(|d| active(d) && !seen_active.with(|s| s.contains(&d.id)))
+                .map(|d| d.id.clone())
+                .collect::<Vec<_>>()
+        });
+        if !fresh.is_empty() {
+            seen_active.update(|s| s.extend(fresh));
             panel.open.set(true);
         }
     });
@@ -379,7 +405,7 @@ fn DownloadsPane() -> impl IntoView {
         });
     };
     view! {
-        <Show when=move || panel.open.get() && !panel.list.with(Vec::is_empty)>
+        <Show when=move || panel.open.get()>
             <aside class="downloads-pane" class:collapsed=move || panel.collapsed.get()>
                 <header on:click=move |_| panel.collapsed.update(|c| *c = !*c)>
                     <span class="dl-head-icon">{move || if busy() > 0 { view! { <span class="spinner small"></span> }.into_any() } else { view! { {icon(icons::CHECK)} }.into_any() }}</span>
@@ -394,6 +420,7 @@ fn DownloadsPane() -> impl IntoView {
                         }
                     }}</strong>
                     <button class="icon-button" aria-label="Collapse">{move || if panel.collapsed.get() { "▴" } else { "▾" }}</button>
+                    <button class="icon-button" title="Refresh" aria-label="Refresh" on:click=move |ev| { ev.stop_propagation(); panel.refresh(); }>"⟳"</button>
                     <Show when=move || any_finished()>
                         <button class="icon-button clear-finished" title="Clear finished downloads" aria-label="Clear finished downloads"
                             on:click=move |ev| { ev.stop_propagation(); clear_finished(()); }>"Clear"</button>
@@ -401,6 +428,7 @@ fn DownloadsPane() -> impl IntoView {
                     <button class="icon-button" aria-label="Close" on:click=move |ev| { ev.stop_propagation(); panel.open.set(false) }>"×"</button>
                 </header>
                 <Show when=move || !panel.collapsed.get()>
+                    {move || (!panel.list.with(Vec::is_empty)).then(|| view! {
                     <ul>
                         <For each=shown key=|d| d.id.clone() let:d>
                             {
@@ -418,6 +446,9 @@ fn DownloadsPane() -> impl IntoView {
                                                 {d.size.map(|s| view! { <span>{size_label(s)}</span> })}
                                                 <span>{d.source.clone()}</span>
                                             </div>
+                                            {(failed && d.error.is_some()).then(|| view! {
+                                                <p class="dl-error">{d.error.clone().unwrap_or_default()}</p>
+                                            })}
                                         </div>
                                         {done.then(|| view! { <a class="dl-open" href="#/">"Open"</a> })}
                                         {(done || failed).then(|| view! {
@@ -432,6 +463,10 @@ fn DownloadsPane() -> impl IntoView {
                             }
                         </For>
                     </ul>
+                    }).into_any()}
+                    {move || panel.list.with(Vec::is_empty).then(|| view! {
+                        <p class="muted dl-empty">"All done — new downloads appear here."</p>
+                    })}
                 </Show>
             </aside>
         </Show>
@@ -460,14 +495,12 @@ pub mod icons {
     pub const PERSON: &str = "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM5 20a7 7 0 0 1 14 0";
     pub const COMIC: &str = "M4 4h16v16H4zM4 11h9M13 4v16";
     pub const RADIO: &str = "M4 9h16v11H4zM8 9l9-5M8 14.5h.01M15 13a2 2 0 1 0 0 4 2 2 0 0 0 0-4z";
-    pub const MONITOR: &str = "M4 5h16v10H4zM9 19h6M12 15v4";
 }
 
-const TABS: [(&str, &str, &str); 6] = [
+const TABS: [(&str, &str, &str); 5] = [
     ("library", "Library", icons::LIBRARY),
     ("discover", "Discover", icons::DISCOVER),
     ("briefing", "Briefing", icons::RADIO),
-    ("browser", "Browser", icons::MONITOR),
     ("jobs", "Jobs", icons::JOBS),
     ("settings", "Settings", icons::SETTINGS),
 ];
@@ -519,6 +552,32 @@ fn App() -> impl IntoView {
     let sidebar_hidden = RwSignal::new(sidebar_hidden());
     provide_context(SidebarHidden(sidebar_hidden));
     provide_context(Eink(RwSignal::new(eink_on())));
+    // Long-lived tabs run stale builds forever; offer a reload when the
+    // server reports a different UI fingerprint.
+    let update_ready = RwSignal::new(false);
+    if let Ok(h) = set_interval_with_handle(
+        move || {
+            spawn_local(async move {
+                #[derive(serde::Deserialize)]
+                struct Ver {
+                    ui: String,
+                }
+                static SEEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+                if let Ok(v) = api::get::<Ver>("/api/version").await {
+                    if let Some(first) = SEEN.get() {
+                        if *first != v.ui {
+                            update_ready.set(true);
+                        }
+                    } else {
+                        let _ = SEEN.set(v.ui);
+                    }
+                }
+            });
+        },
+        std::time::Duration::from_secs(60),
+    ) {
+        on_cleanup(move || h.clear());
+    }
 
     view! {
         <div class="app" class:immersive=immersive class:no-sidebar=move || immersive() && sidebar_hidden.get()>
@@ -530,6 +589,18 @@ fn App() -> impl IntoView {
                         {icon(path)}<span>{label}</span>
                     </a>
                 })}
+                {{
+                    let panel = downloads_panel();
+                    view! {
+                        <button class="dl-tab" title="Downloads" aria-label="Downloads" on:click=move |_| panel.opened()>
+                            {icon(icons::DOWNLOAD)}
+                            {move || {
+                                let n = panel.list.with(|l| l.iter().filter(|d| active(d)).count());
+                                (n > 0).then(|| view! { <span class="dl-badge">{n}</span> })
+                            }}
+                        </button>
+                    }
+                }}
                 <Show when=immersive>
                     <button class="tabs-hide" title="Hide the sidebar" on:click=move |_| {
                         sidebar_hidden.set(true);
@@ -559,7 +630,6 @@ fn App() -> impl IntoView {
                     },
                     Route::Discover => view! { <discover::Discover/> }.into_any(),
                     Route::Briefing => view! { <podcast::Briefing/> }.into_any(),
-                    Route::Browser => view! { <discover::BrowserPage/> }.into_any(),
                     Route::Jobs => view! { <discover::Jobs/> }.into_any(),
                     Route::Settings => view! { <settings::SettingsPage/> }.into_any(),
                     Route::Setup => view! { <setup::SetupPage/> }.into_any(),
@@ -569,6 +639,14 @@ fn App() -> impl IntoView {
             <ActivityPane/>
             <Show when=move || toast_sig.get().is_some()>
                 <div class="toast" role="status" on:click=move |_| toast_sig.set(None)>{move || toast_sig.get()}</div>
+            </Show>
+            <Show when=move || update_ready.get()>
+                <div class="update-banner" role="status">
+                    <span>"A new duet is ready."</span>
+                    <button class="ghost" on:click=move |_| {
+                        let _ = web_sys::window().and_then(|w| w.location().reload().ok());
+                    }>"Reload"</button>
+                </div>
             </Show>
         </div>
     }

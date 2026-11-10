@@ -60,8 +60,9 @@ pub fn parse_search(html: &str, base: &str, max: usize) -> Vec<SearchResult> {
         if cells.len() < 9 {
             continue;
         }
-        // Title: first cell (<b> or the edition link).
-        let title = cells[0].clone();
+        // Title: first cell (<b> or the edition link), minus LibGen's
+        // trailing catalogue metadata (ISBNs, flags, ids).
+        let title = clean_title(&cells[0]);
         if title.is_empty() {
             continue;
         }
@@ -105,6 +106,8 @@ pub fn parse_search(html: &str, base: &str, max: usize) -> Vec<SearchResult> {
             download: DownloadTarget::Direct { url: format!("{base}/ads.php?md5={md5}"), filename },
             info_url: Some(format!("{base}/file.php?md5={md5}")),
             format,
+            aacid: None,
+            torrent_url: None,
         });
         if out.len() >= max {
             break;
@@ -117,6 +120,38 @@ fn safe_filename(s: &str) -> String {
     s.chars().map(|c| if c.is_alphanumeric() || " -_.,'()".contains(c) { c } else { '_' }).collect::<String>().trim().to_string()
 }
 
+/// LibGen appends catalogue metadata to titles ("King Sorrow b f 7770763",
+/// "Title 0062200607; 9780062200600 b f 10115181"): ISBN/ID runs and
+/// trailing flag+id tails. Strip them so editions of one book group together.
+pub fn clean_title(t: &str) -> String {
+    let mut ws: Vec<&str> = t.split_whitespace().collect();
+    // Strip catalogue metadata tails until stable. LibGen appends badge
+    // groups like "b", "l 2992546", "f 2652387" (and ISBN runs): each pass
+    // removes one trailing flag+id group or ISBN-ish token. Bare numbers
+    // ("1984", "Room 101") have no flag letters, so they stay.
+    loop {
+        let n = ws.len();
+        if n >= 2
+            && ws[n - 1].chars().all(|c| c.is_ascii_digit())
+            && !ws[n - 1].is_empty()
+            && ws[n - 2].len() == 1
+            && ws[n - 2].chars().all(|c| c.is_ascii_lowercase())
+        {
+            ws.pop();
+            while ws.last().is_some_and(|w| w.len() == 1 && w.chars().all(|c| c.is_ascii_lowercase())) {
+                ws.pop();
+            }
+            continue;
+        }
+        if ws.last().is_some_and(|w| w.chars().filter(|c| c.is_ascii_digit()).count() >= 7) {
+            ws.pop();
+            continue;
+        }
+        break;
+    }
+    ws.join(" ")
+}
+
 /// Resolves `/ads.php?md5=…` into the actual `/get.php?md5=…&key=…` URL.
 pub async fn resolve_download(http: &reqwest::Client, url: &str) -> anyhow::Result<String> {
     let origin = reqwest::Url::parse(url).context("bad LibGen download URL")?;
@@ -124,6 +159,7 @@ pub async fn resolve_download(http: &reqwest::Client, url: &str) -> anyhow::Resu
     let html = http
         .get(url)
         .header("User-Agent", USER_AGENT)
+        .timeout(std::time::Duration::from_secs(20))
         .send()
         .await
         .context("reaching LibGen")?
@@ -147,25 +183,53 @@ pub async fn resolve_download(http: &reqwest::Client, url: &str) -> anyhow::Resu
 
 impl LibGen {
     pub async fn search(http: &reqwest::Client, base_url: &str, q: &str) -> anyhow::Result<Vec<SearchResult>> {
-        if q.trim().len() < 3 {
-            anyhow::bail!("LibGen needs at least 3 characters");
+        if q.trim().chars().count() < 2 {
+            anyhow::bail!("LibGen needs at least 2 characters");
         }
         let base = base_url.trim_end_matches('/').to_string();
-        let mut url = reqwest::Url::parse(&format!("{base}/index.php")).context("bad LibGen address")?;
-        url.query_pairs_mut()
-            .append_pair("req", q)
-            .append_pair("columns[]", "t")
-            .append_pair("columns[]", "a")
-            .append_pair("objects[]", "f")
-            .append_pair("topics[]", "l")
-            .append_pair("res", "25")
-            .append_pair("filesuns", "all");
-        let html = http.get(url).header("User-Agent", USER_AGENT).send().await.context("reaching LibGen")?.error_for_status()?.text().await?;
-        let results: Vec<SearchResult> = parse_search(&html, &base, 25);
-        if results.is_empty() {
+        // Two slices of the same index: topics[]=l first (prose editions;
+        // catches the plain novels the default slice buries, e.g. "The
+        // Hobbit"), then the unfiltered slice (catches books the topics
+        // slice omits, e.g. "King Sorrow"). Merged and deduped by MD5.
+        // One at a time.
+        let mut merged: Vec<SearchResult> = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+        for topics in [Some("l"), None] {
+            let mut url = reqwest::Url::parse(&format!("{base}/index.php")).context("bad LibGen address")?;
+            {
+                let mut qp = url.query_pairs_mut();
+                qp.append_pair("req", q);
+                qp.append_pair("columns[]", "t");
+                qp.append_pair("columns[]", "a");
+                qp.append_pair("objects[]", "f");
+                if let Some(t) = topics {
+                    qp.append_pair("topics[]", t);
+                }
+                qp.append_pair("res", "50").append_pair("filesuns", "all");
+            }
+            let html = http.get(url).header("User-Agent", USER_AGENT).send().await.context("reaching LibGen")?.error_for_status()?.text().await?;
+            for r in parse_search(&html, &base, 50) {
+                let md5 = match &r.download {
+                    DownloadTarget::Direct { url, .. } => url.rsplit("md5=").next().unwrap_or("").to_string(),
+                    _ => String::new(),
+                };
+                if !md5.is_empty() && seen.contains(&md5) {
+                    continue;
+                }
+                seen.push(md5);
+                merged.push(r);
+                if merged.len() >= 25 {
+                    break;
+                }
+            }
+            if merged.len() >= 25 {
+                break;
+            }
+        }
+        if merged.is_empty() {
             anyhow::bail!("LibGen returned no results");
         }
-        Ok(results)
+        Ok(merged)
     }
 }
 
@@ -177,6 +241,18 @@ mod tests {
     fn parses_sizes() {
         assert_eq!(parse_size("630 kB"), Some(630_000));
         assert_eq!(parse_size("5 MB"), Some(5_000_000));
+    }
+
+    #[test]
+    fn strips_catalogue_metadata() {
+        assert_eq!(clean_title("King Sorrow b f 7770763"), "King Sorrow");
+        assert_eq!(clean_title("King Sorrow 0062200607; 0062200623; 9780062200600; 9780062200624 b f 10115181"), "King Sorrow");
+        assert_eq!(clean_title("The Sorrow King 0982628161; 9780982628164 b l 740943 f 472265"), "The Sorrow King");
+        assert_eq!(clean_title("Pride & Prejudice"), "Pride & Prejudice");
+        assert_eq!(clean_title("1984"), "1984");
+        assert_eq!(clean_title("Room 101"), "Room 101");
+        assert_eq!(clean_title("It b l 2992546"), "It");
+        assert_eq!(clean_title("It b l 2992546 f 2652387"), "It");
     }
 
     #[test]

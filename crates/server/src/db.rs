@@ -16,6 +16,11 @@ pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
         .foreign_keys(true);
     let pool = SqlitePoolOptions::new().max_connections(8).connect_with(opts).await?;
     sqlx::migrate!("./migrations").run(&pool).await.context("migrating database")?;
+    // Downloads stuck 'downloading' across a restart will never finish —
+    // the worker died with the old process. Fail them loudly.
+    let _ = sqlx::query("UPDATE downloads SET state = 'failed', error = 'interrupted by server restart — feel free to retry' WHERE state = 'downloading'")
+        .execute(&pool)
+        .await;
     Ok(pool)
 }
 

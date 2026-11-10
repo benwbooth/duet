@@ -27,6 +27,7 @@ mod llm;
 mod podcast;
 mod qbit;
 mod routes;
+mod selenium;
 mod setup;
 mod torznab;
 
@@ -71,6 +72,10 @@ pub struct AppState {
     pub pull: ai_setup::Pull,
     /// How the workers reach this server (for the chat proxy).
     pub self_url: String,
+    /// Fingerprint of the served web UI (wasm mtime + size): the client
+    /// polls it and offers a reload when a new build lands, so nobody
+    /// runs a stale bundle for days in a long-lived tab.
+    pub ui_build: String,
 }
 
 pub type State = Arc<AppState>;
@@ -127,6 +132,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let args = Args::parse();
     std::fs::create_dir_all(&args.data_dir)?;
+    let ui_build = std::fs::metadata(args.web_dir.join("duet_web_bg.wasm"))
+        .map(|m| format!("{}-{}", m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0), m.len()))
+        .unwrap_or_else(|_| "unknown".to_string());
     let db = db::open(&args.data_dir.join("duet.db")).await?;
     let settings = db::load_settings(&db).await?;
     let http = reqwest::Client::builder()
@@ -145,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
         voices: setup::Voices::default(),
         pull: ai_setup::Pull::default(),
         self_url: format!("http://127.0.0.1:{}", args.listen.port()),
+        ui_build,
     });
 
     tokio::spawn(jobs::run(state.clone()));
