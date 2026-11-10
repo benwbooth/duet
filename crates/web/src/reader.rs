@@ -220,6 +220,11 @@ struct SyncIndex {
 }
 
 impl SyncIndex {
+    /// Whether any of a chapter's sentences are synced.
+    fn has_chapter(&self, chapter: usize) -> bool {
+        self.by_time.iter().any(|sp| sp.chapter == chapter)
+    }
+
     fn new(mut spans: Vec<SyncSpan>) -> Self {
         spans.sort_by(|a, b| (a.track, a.start).partial_cmp(&(b.track, b.start)).unwrap());
         SyncIndex { by_time: spans }
@@ -322,6 +327,30 @@ impl SyncIndex {
         let track = usize::try_from(chapter as i64 + offset).ok().filter(|t| *t < tracks.len())?;
         Some((track, tracks[track] * sentence as f64 / n.max(1) as f64))
     }
+}
+
+/// The words of a chapter or track title that say which one it is: "CHAPTER I: AN UNEXPECTED
+/// PARTY" and "Chapter 01 - An Unexpected Party" both come to {unexpected, party}.
+fn title_words(title: &str) -> std::collections::HashSet<String> {
+    const SKIP: &[&str] = &["chapter", "part", "book", "track", "the", "a", "an", "of", "and", "in", "to", "on", "at", "disc", "cd"];
+    title
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| !w.is_empty() && !SKIP.contains(&w.as_str()) && !w.chars().all(|c| c.is_ascii_digit()))
+        .filter(|w| !w.chars().all(|c| "ivxlc".contains(c)))
+        .collect()
+}
+
+/// The track a chapter is read on, when the recording's tracks are named after the chapters
+/// (most are): the one whose title shares the most words with the chapter's, if just one does.
+fn track_for_chapter(chapter_title: &str, tracks: &[duet_common::Track]) -> Option<usize> {
+    let want = title_words(chapter_title);
+    if want.is_empty() {
+        return None;
+    }
+    let scores: Vec<usize> = tracks.iter().map(|t| title_words(&t.title).intersection(&want).count()).collect();
+    let best = *scores.iter().max()?;
+    (best > 0 && (best * 2 >= want.len()) && scores.iter().filter(|s| **s == best).count() == 1).then(|| scores.iter().position(|s| *s == best)).flatten()
 }
 
 /// A picture for the book (see the server's illustrate module).
@@ -1294,6 +1323,53 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         }
     };
 
+    // Where in the recording a sentence (and word) is read: where the sync has it, else where it
+    // most likely is (from the sentences around it that are synced, or failing that the same
+    // point through the book).
+    let guess = move |c: usize, s: usize, w: usize| -> Option<(usize, f64)> {
+        // A chapter with nothing synced yet, in a recording whose tracks are named after the
+        // chapters: its track, the same way through. (Guessing from how far through the whole
+        // book it is put chapter 1 in chapter 5's track, past the front matter.)
+        let by_title = || {
+            if sync.with_untracked(|x| x.has_chapter(c)) {
+                return None;
+            }
+            let asset = audio_asset.get_untracked()?;
+            let title = layout.with_untracked(|l| l.as_ref().and_then(|l| l.toc.iter().find(|t| t.chapter == c).map(|t| t.title.clone())))?;
+            let tr = track_for_chapter(&title, &asset.tracks)?;
+            let n = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1).max(1);
+            Some((tr, asset.tracks[tr].duration_secs * s as f64 / n as f64))
+        };
+        if let Some(at) = sync.with_untracked(|x| x.of(c, s).map(|sp| (sp.track, sp.words.get(w).copied().unwrap_or(sp.start)))) {
+            return Some(at);
+        }
+        if let Some(at) = by_title() {
+            return Some(at);
+        }
+        sync.with_untracked(|x| {
+            x.of(c, s).map(|sp| (sp.track, sp.words.get(w).copied().unwrap_or(sp.start))).or_else(|| {
+                let asset = audio_asset.get_untracked()?;
+                let lens: Vec<f64> = asset.tracks.iter().map(|t| t.duration_secs).collect();
+                let n = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1);
+                x.estimate(c, s, n, &lens)
+            })
+        })
+        .or_else(|| {
+            let asset = audio_asset.get_untracked()?;
+            let chapters = layout.get_untracked()?.chapters.max(1);
+            let n = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1).max(1);
+            let f = (c as f64 + s as f64 / n as f64) / chapters as f64;
+            let mut left = asset.duration_secs.unwrap_or(0.0) * f;
+            for (i, t) in asset.tracks.iter().enumerate() {
+                if left <= t.duration_secs {
+                    return Some((i, left));
+                }
+                left -= t.duration_secs;
+            }
+            None
+        })
+    };
+
     let tap_seq = RwSignal::new(0u32);
     // Finds an untimed sentence in the recording: the stretch round the guess (`tr`, `secs`) is
     // heard and lined up with the book, and if the sentence turns up, playing moves to it.
@@ -1406,14 +1482,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     // likely is from the sentences around it), and the page follows the recording
                     // again from it.
                     let c = chapter.get_untracked();
-                    let target = sync.with_untracked(|x| {
-                        x.of(c, n).map(|sp| (sp.track, sp.words.get(word).copied().unwrap_or(sp.start))).or_else(|| {
-                            let asset = audio_asset.get_untracked()?;
-                            let lens: Vec<f64> = asset.tracks.iter().map(|t| t.duration_secs).collect();
-                            let count = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1);
-                            x.estimate(c, n, count, &lens)
-                        })
-                    });
+                    let target = guess(c, n, word);
                     if let Some((tr, secs)) = target.filter(|_| mode.get_untracked().audiobook()) {
                         crate::stop_browsing(book.get_untracked().map(|b| (*b).clone().into()));
                         live_near.set(None);
@@ -1557,34 +1626,6 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             save();
         });
     }
-
-    // Where in the recording a sentence (and word) is read: where the sync has it, else where it
-    // most likely is (from the sentences around it that are synced, or failing that the same
-    // point through the book).
-    let guess = move |c: usize, s: usize, w: usize| -> Option<(usize, f64)> {
-        sync.with_untracked(|x| {
-            x.of(c, s).map(|sp| (sp.track, sp.words.get(w).copied().unwrap_or(sp.start))).or_else(|| {
-                let asset = audio_asset.get_untracked()?;
-                let lens: Vec<f64> = asset.tracks.iter().map(|t| t.duration_secs).collect();
-                let n = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1);
-                x.estimate(c, s, n, &lens)
-            })
-        })
-        .or_else(|| {
-            let asset = audio_asset.get_untracked()?;
-            let chapters = layout.get_untracked()?.chapters.max(1);
-            let n = counts.with_untracked(|m| m.get(&c).copied()).unwrap_or(1).max(1);
-            let f = (c as f64 + s as f64 / n as f64) / chapters as f64;
-            let mut left = asset.duration_secs.unwrap_or(0.0) * f;
-            for (i, t) in asset.tracks.iter().enumerate() {
-                if left <= t.duration_secs {
-                    return Some((i, left));
-                }
-                left -= t.duration_secs;
-            }
-            None
-        })
-    };
 
     // Reading along with the audiobook, before you press play: the page you're on is found in
     // the recording straight away (and again after you turn to a part not synced yet), so Play
