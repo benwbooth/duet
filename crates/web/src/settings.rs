@@ -424,6 +424,8 @@ fn AiSection(s: RwSignal<Settings>) -> impl IntoView {
                 <small>"The voice is created from this description the first time it speaks. Characters get their own voices from the book."</small>
             </label>
 
+            <ComicsSetup s/>
+
             <details class="advanced">
                 <summary>"Advanced"</summary>
                 {text(s, "Chat model server address", "Filled in when you pick a server above.", |x| x.ai.llm_url.clone(), |x, v| x.ai.llm_url = v)}
@@ -437,6 +439,54 @@ fn AiSection(s: RwSignal<Settings>) -> impl IntoView {
                 {text(s, "Device for jobs", "auto, cuda or cpu", |x| x.ai.device.clone(), |x, v| x.ai.device = v)}
             </details>
         </section>
+    }
+}
+
+/// How comics are read: the vision model that finds the balloons, captions and panels (and
+/// translates them), and the language they're translated into.
+#[component]
+fn ComicsSetup(s: RwSignal<Settings>) -> impl IntoView {
+    let toast = crate::toast();
+    let local = move || s.with(|x| x.ai.vision_provider != "chat");
+    let download = move |_| {
+        let (url, model) = s.with_untracked(|x| (x.ai.vision_url.clone(), x.ai.vision_model.clone()));
+        spawn_local(async move {
+            match api::post::<_, serde_json::Value>("/api/ai/pull", &serde_json::json!({ "url": url, "model": model })).await {
+                Ok(_) => toast.show(format!("Downloading {model} (its progress shows under Chat model)")),
+                Err(e) => toast.show(e.0),
+            }
+        });
+    };
+    view! {
+        <h3>"Comics"<span class="ai-tag" title="Read and translated by AI">"AI"</span></h3>
+        <p class="hint">"To read speech balloons and captions aloud with the full cast, and to translate comics and manga, each page is looked at by a vision model: Qwen3-VL on this computer's graphics card (through Ollama, AMD or NVIDIA), or your chat model when it can see pictures (Claude, OpenAI, Claude Code or Codex). Pages are read as you get to them, a few ahead, and kept."</p>
+        <div class="segmented">
+            <button class:active=local on:click=move |_| s.update(|x| x.ai.vision_provider = "local".into())>"On this computer"</button>
+            <button class:active=move || !local() on:click=move |_| s.update(|x| x.ai.vision_provider = "chat".into())>"Use the chat model"</button>
+        </div>
+        <Show when=local>
+            <label class="field">
+                <span>"Vision model"</span>
+                <select on:change=move |ev| s.update(|x| x.ai.vision_model = event_target_value(&ev))>
+                    {[("qwen3-vl:8b", "Qwen3-VL 8B (recommended: about 6 GB, fits beside the voices)"),
+                      ("qwen3-vl:4b", "Qwen3-VL 4B (faster, smaller)"),
+                      ("qwen3-vl:30b", "Qwen3-VL 30B-A3B (best, about 20 GB: the voices pause while it reads)"),
+                      ("qwen2.5vl:7b", "Qwen2.5-VL 7B")]
+                        .map(|(value, label)| view! { <option value=value selected=move || s.with(|x| x.ai.vision_model == value)>{label}</option> })}
+                    <option value="" disabled=true selected=move || s.with(|x| !["qwen3-vl:8b", "qwen3-vl:4b", "qwen3-vl:30b", "qwen2.5vl:7b"].contains(&x.ai.vision_model.as_str()))>
+                        {move || s.with(|x| format!("Other: {}", x.ai.vision_model))}
+                    </option>
+                </select>
+                <small>"Any model Ollama (or another OpenAI-compatible server) can run that sees pictures. Its name and address are under Advanced."</small>
+            </label>
+            <button class="button" on:click=download>{move || s.with(|x| format!("Download {}", x.ai.vision_model))}</button>
+        </Show>
+        {text(s, "Translate comics into", "Comics and manga in other languages are translated into this one, over the balloons and for the full cast.", |x| x.ai.translate_to.clone(), |x, v| x.ai.translate_to = v)}
+        <details class="advanced">
+            <summary>"Vision model server"</summary>
+            {text(s, "Vision model server address", "Ollama's is http://localhost:11434/v1.", |x| x.ai.vision_url.clone(), |x, v| x.ai.vision_url = v)}
+            {text(s, "Vision model name", "", |x| x.ai.vision_model.clone(), |x, v| x.ai.vision_model = v)}
+        </details>
     }
 }
 

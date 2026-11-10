@@ -566,6 +566,28 @@ button.link { background: none; border: 0; color: var(--muted); padding: 0; text
 .bookview:not(.paged) .img-page { margin: 0 0 1rem; }
 .bookview.images.paged.spread::after { display: none; }
 
+/* Comics: balloons found on the page, laid over it. Invisible until one is being performed (it
+   glows) or the page is translated (the translation is lettered over the original). */
+.img-page { position: relative; }
+.img-page > .bubbles { position: absolute; pointer-events: none; }
+.bubble { position: absolute; border-radius: 40%; pointer-events: auto; cursor: pointer; transition: box-shadow 0.25s, background-color 0.25s; }
+.bubble.k-caption, .bubble.k-sign, .bubble.k-sfx { border-radius: 6px; }
+.bubble.now { box-shadow: 0 0 0 3px var(--accent, #d4862b), 0 0 18px 4px color-mix(in srgb, var(--accent, #d4862b) 55%, transparent); background: color-mix(in srgb, var(--accent, #d4862b) 10%, transparent); }
+.bubble.tr { display: flex; align-items: center; justify-content: center; background: #fff; color: #111; overflow: hidden; padding: 2%; box-sizing: border-box; }
+.bubble.tr.k-caption { background: #fdf6d8; }
+.bubble.tr.k-sfx { background: rgba(255,255,255,0.85); }
+.bubble.tr span { font-family: "Comic Neue", "Comic Sans MS", "Atkinson Hyperlegible", system-ui, sans-serif; font-weight: 700; line-height: 1.05; text-align: center; overflow-wrap: anywhere; hyphens: auto; }
+.bubble.tr.now { box-shadow: 0 0 0 3px var(--accent, #d4862b), 0 0 18px 4px color-mix(in srgb, var(--accent, #d4862b) 55%, transparent); }
+
+/* Panel by panel: the page zoomed to one panel at a time. */
+.panel-view { position: fixed; inset: 0; z-index: 60; background: #0b0b0c; overflow: hidden; touch-action: pan-y; user-select: none; }
+.panel-view .pv-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; display: block; padding: 0; transition: transform 0.5s var(--ease-out, ease-out); }
+.panel-view .pv-stage > img { width: 100%; height: 100%; display: block; max-width: none; }
+.panel-view .pv-bar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: 0.6rem 1rem calc(0.6rem + env(safe-area-inset-bottom)); color: #ddd; font-size: 0.9rem; background: linear-gradient(to top, rgba(0,0,0,0.7), rgba(0,0,0,0)); }
+.panel-view .pv-close { background: rgba(255,255,255,0.14); color: #fff; border: 0; border-radius: 999px; padding: 0.4rem 1rem; font: inherit; cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .panel-view .pv-stage { transition: none; } }
+
 /* Reader view options */
 .view-panel { display: grid; gap: 0.7rem; }
 .view-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }

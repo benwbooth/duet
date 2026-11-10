@@ -127,6 +127,8 @@ export function highlight(container, n, scroll) {
 export function visibleSentence(container) {
   if (!container) return 0;
   const pager = pagerOf(container);
+  // (Page pictures: the page showing, which is where a comic or PDF is kept.)
+  if (!container.querySelector(".s") && container.querySelector(".img-page")) return Math.max(0, visiblePage(container));
   if (pager) return pager.firstSentence();
   for (const e of container.querySelectorAll(".s")) {
     if (e.getBoundingClientRect().bottom > 70) return Number(e.dataset.s);
@@ -135,7 +137,7 @@ export function visibleSentence(container) {
 }
 
 export function scrollToSentence(container, n) {
-  const e = container && container.querySelector(`.s[data-s="${n}"]`);
+  const e = container && (container.querySelector(`.s[data-s="${n}"]`) || container.querySelector(`.img-page[data-p="${n}"]`));
   const pager = pagerOf(container);
   if (pager) {
     if (e) pager.showElement(e, false);
@@ -153,6 +155,8 @@ export function clickTarget(ev) {
     ev.preventDefault();
     return { link: link.dataset.href };
   }
+  const bubble = ev.target.closest(".bubble");
+  if (bubble) return { page: Number(bubble.dataset.p), line: Number(bubble.dataset.b) };
   const s = ev.target.closest(".s");
   // A text selection is not a tap on a sentence.
   if (s && String(window.getSelection()) === "") return { sentence: Number(s.dataset.s) };
@@ -2716,6 +2720,8 @@ export function pagerSetBookPages(book, base, total) {
 
 // "Page 41 of 213 · 3 pages left in chapter" (or within the chapter, until the book is counted).
 function folioText(book, p, n) {
+  // (Manga is laid out last page first.)
+  if (book && book.__rtl) p = n - p + 1;
   const left = n - p;
   const rest = left === 0 ? "last page in chapter" : left === 1 ? "1 page left in chapter" : `${left} pages left in chapter`;
   const b = book && book.__bookPages;
@@ -3135,4 +3141,335 @@ export function browsing(book) {
 
 export function stopBrowsing(book) {
   if (book) book.__userTurn = 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Comics: the balloons and captions the vision model found on each page, laid over the page
+// picture (invisible, until one is being performed or the page is translated), and a guided view
+// that moves through the page a panel at a time.
+
+const comicData = new Map();
+const comicWanted = new Map();
+
+function imgPage(container, p) {
+  return container && container.querySelector(`.img-page[data-p="${p}"]`);
+}
+
+// The page picture showing (the first, of two facing), or -1.
+export function visiblePage(container) {
+  if (!container) return -1;
+  const book = container.closest(".bookview");
+  const r = book && book.classList.contains("paged") ? book.getBoundingClientRect() : { left: 0, right: window.innerWidth, top: 0, bottom: window.innerHeight };
+  let best = -1, bestLeft = Infinity;
+  for (const e of container.querySelectorAll(".img-page")) {
+    const b = e.getBoundingClientRect();
+    if (!b.width || b.right <= r.left + 4 || b.left >= r.right - 4 || b.bottom <= r.top + 4 || b.top >= r.bottom - 4) continue;
+    // Facing pages: the one read first (the right one, in manga).
+    const rtl = !!(book && book.__rtl);
+    const key = rtl ? -b.left : b.top * 10000 + b.left;
+    if (key < bestLeft) { bestLeft = key; best = Number(e.dataset.p); }
+  }
+  return best;
+}
+
+// The pages on screen and either side of them.
+function pagesNear(container) {
+  const all = Array.from(container.querySelectorAll(".img-page"));
+  const book = container.closest(".bookview");
+  const r = book && book.classList.contains("paged") ? book.getBoundingClientRect() : { left: 0, right: window.innerWidth, top: 0, bottom: window.innerHeight };
+  const near = new Set();
+  all.forEach((e, i) => {
+    const b = e.getBoundingClientRect();
+    if (b.width && b.right > r.left && b.left < r.right && b.bottom > r.top && b.top < r.bottom) {
+      for (const j of [i - 1, i, i + 1]) if (all[j]) near.add(Number(all[j].dataset.p));
+    }
+  });
+  return Array.from(near);
+}
+
+// The bubbles' layer sits exactly over the picture (which is centred and scaled to fit).
+function placeLayer(pageEl) {
+  const img = pageEl.querySelector("img");
+  const layer = pageEl.querySelector(":scope > .bubbles");
+  if (!img || !layer) return;
+  layer.style.left = `${img.offsetLeft}px`;
+  layer.style.top = `${img.offsetTop}px`;
+  layer.style.width = `${img.offsetWidth}px`;
+  layer.style.height = `${img.offsetHeight}px`;
+  fitTranslations(layer);
+}
+
+// Translated words fill their balloon as a letterer would: as big as fits.
+function fitTranslations(layer) {
+  for (const b of layer.querySelectorAll(".bubble.tr")) {
+    const span = b.firstElementChild;
+    if (!span || !b.clientHeight) continue;
+    let lo = 5, hi = Math.max(6, Math.min(40, b.clientHeight * 0.6));
+    for (let i = 0; i < 8; i++) {
+      const mid = (lo + hi) / 2;
+      span.style.fontSize = `${mid}px`;
+      if (span.scrollHeight <= b.clientHeight + 1 && span.scrollWidth <= b.clientWidth + 1) lo = mid; else hi = mid;
+    }
+    span.style.fontSize = `${lo}px`;
+  }
+}
+
+function drawBubbles(pageEl, data, translate) {
+  pageEl.querySelectorAll(":scope > .bubbles").forEach((e) => e.remove());
+  const layer = document.createElement("div");
+  layer.className = "bubbles";
+  const p = pageEl.dataset.p;
+  data.lines.forEach((l, i) => {
+    const [x0, y0, x1, y1] = l.box;
+    if (x1 - x0 <= 0 || y1 - y0 <= 0) return;
+    const b = document.createElement("div");
+    b.className = `bubble k-${l.kind}`;
+    b.dataset.p = p;
+    b.dataset.b = i;
+    b.style.left = `${x0 * 100}%`;
+    b.style.top = `${y0 * 100}%`;
+    b.style.width = `${(x1 - x0) * 100}%`;
+    b.style.height = `${(y1 - y0) * 100}%`;
+    b.title = (l.speaker ? `${l.speaker}: ` : "") + (l.original ? `${l.original}\n${l.text}` : l.text);
+    if (translate && l.original) {
+      b.classList.add("tr");
+      const span = document.createElement("span");
+      span.textContent = l.text;
+      b.appendChild(span);
+    }
+    layer.appendChild(b);
+  });
+  pageEl.appendChild(layer);
+  const img = pageEl.querySelector("img");
+  if (img) {
+    if (!img.complete) img.addEventListener("load", () => placeLayer(pageEl), { once: true });
+    if (!pageEl.__ro && window.ResizeObserver) {
+      pageEl.__ro = new ResizeObserver(() => placeLayer(pageEl));
+      pageEl.__ro.observe(img);
+    }
+  }
+  placeLayer(pageEl);
+}
+
+async function comicFetch(asset, p) {
+  const key = `${asset}/${p}`;
+  if (comicData.has(key)) return comicData.get(key);
+  if (!comicWanted.has(key)) {
+    comicWanted.set(key, (async () => {
+      const r = await fetch(`/api/assets/${asset}/comic/${p}`);
+      if (!r.ok) {
+        comicWanted.delete(key);
+        throw new Error((await r.text()) || `page ${p + 1} couldn't be read`);
+      }
+      const data = await r.json();
+      comicData.set(key, data);
+      return data;
+    })());
+  }
+  return comicWanted.get(key);
+}
+
+// Lays the balloons over the pages on screen (and either side), reading any not read yet.
+// `translate`: translations shown over the balloons. Resolves to an error message, or "".
+export async function comicLoad(container, asset, translate) {
+  if (!container) return "";
+  const book = container.closest(".bookview");
+  for (const p of pagesNear(container)) {
+    const el = imgPage(container, p);
+    if (!el || (el.__drawn === translate && el.querySelector(":scope > .bubbles"))) continue;
+    try {
+      const data = await comicFetch(asset, p);
+      const now = imgPage(container, p);
+      if (!now) continue;
+      drawBubbles(now, data, translate);
+      now.__drawn = translate;
+      if (book && book.__comicNow && book.__comicNow[0] === p) comicShow(container, p, book.__comicNow[1], false);
+    } catch (e) {
+      return String(e.message || e);
+    }
+  }
+  return "";
+}
+
+// Takes the balloons off (back to plain pictures).
+export function comicClear(container) {
+  if (!container) return;
+  container.querySelectorAll(".img-page > .bubbles").forEach((e) => e.remove());
+  container.querySelectorAll(".img-page").forEach((e) => { e.__drawn = undefined; });
+}
+
+export function comicSetRtl(container, rtl) {
+  const book = container && container.closest(".bookview");
+  if (book) book.__rtl = !!rtl;
+}
+
+// Highlights the line being performed (page p, line b; b < 0: none) and turns to its page.
+export function comicShow(container, p, b, follow) {
+  if (!container) return;
+  const book = container.closest(".bookview");
+  if (book) book.__comicNow = [p, b];
+  container.querySelectorAll(".bubble.now").forEach((e) => e.classList.remove("now"));
+  if (b >= 0) container.querySelectorAll(`.bubble[data-p="${p}"][data-b="${b}"]`).forEach((e) => e.classList.add("now"));
+  if (panel && panel.container === container) {
+    panel.now = [p, b];
+    panelMark();
+    panelFollow(p, b);
+  }
+  if (!follow) return;
+  const el = imgPage(container, p);
+  if (!el) return;
+  const pager = pagerOf(container);
+  if (pager) {
+    const r = el.getBoundingClientRect(), v = pager.book.getBoundingClientRect();
+    const showing = r.width > 0 && r.right > v.left + 4 && r.left < v.right - 4;
+    if (!showing && !browsing(pager.book)) pager.showElement(el, true);
+    return;
+  }
+  const r = el.getBoundingClientRect();
+  if (r.bottom < 60 || r.top > window.innerHeight - 120) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// --- Panel by panel ---------------------------------------------------------------------------
+
+let panel = null;
+
+function panelBox(data, k) {
+  const panels = data && data.panels && data.panels.length ? data.panels : [[0, 0, 1, 1]];
+  return panels[Math.max(0, Math.min(panels.length - 1, k))];
+}
+
+function panelCount(data) {
+  return data && data.panels && data.panels.length ? data.panels.length : 1;
+}
+
+function panelFit() {
+  if (!panel) return;
+  const { stage, img } = panel;
+  const VW = panel.root.clientWidth, VH = panel.root.clientHeight;
+  const aspect = img.naturalWidth ? img.naturalHeight / img.naturalWidth : 1.5;
+  const Sw = 1000, Sh = Sw * aspect;
+  stage.style.width = `${Sw}px`;
+  stage.style.height = `${Sh}px`;
+  const [x0, y0, x1, y1] = panel.whole ? [0, 0, 1, 1] : panelBox(panel.data, panel.k);
+  const pw = Math.max(0.05, x1 - x0) * Sw, ph = Math.max(0.05, y1 - y0) * Sh;
+  const m = 0.94;
+  const scale = Math.min((VW * m) / pw, (VH * m) / ph);
+  const tx = VW / 2 - (x0 * Sw + pw / 2) * scale, ty = VH / 2 - (y0 * Sh + ph / 2) * scale;
+  stage.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+  placeLayer(stage);
+}
+
+async function panelPage(p, k, whole) {
+  if (!panel) return;
+  panel.p = p;
+  panel.k = k;
+  panel.whole = !!whole;
+  const url = `/api/assets/${panel.asset}/pages/${p}`;
+  if (panel.img.getAttribute("src") !== url) {
+    panel.stage.querySelectorAll(":scope > .bubbles").forEach((e) => e.remove());
+    panel.data = null;
+    panel.img.src = url;
+    await new Promise((res) => { if (panel.img.complete) res(); else panel.img.onload = panel.img.onerror = () => res(); });
+  }
+  panel.stage.dataset.p = p;
+  panel.label.textContent = `Page ${p + 1}`;
+  panelFit();
+  try {
+    const data = await comicFetch(panel.asset, p);
+    if (!panel || panel.p !== p) return;
+    const fresh = !panel.data;
+    panel.data = data;
+    if (fresh) {
+      drawBubbles(panel.stage, data, panel.translate);
+      panelMark();
+    }
+    if (k < 0) panel.k = panelCount(data) - 1;
+    panelFit();
+    panel.label.textContent = `Page ${p + 1} · panel ${panel.k + 1} of ${panelCount(data)}`;
+  } catch (e) {
+    panel.label.textContent = `Page ${p + 1} (couldn't find its panels: ${e.message || e})`;
+  }
+}
+
+function panelStep(d) {
+  if (!panel) return;
+  const n = panelCount(panel.data);
+  if (panel.whole && d > 0) return panelPage(panel.p, 0, false);
+  const k = panel.k + d;
+  if (k >= 0 && k < n && panel.data) return panelPage(panel.p, k, false);
+  const p = panel.p + d;
+  if (p < 0 || p >= panel.pages) return;
+  // A new page is seen whole first, then panel by panel.
+  return d > 0 ? panelPage(p, 0, true) : panelPage(p, -1, false);
+}
+
+function panelFollow(p, b) {
+  if (!panel || b < 0) return;
+  const go = () => {
+    const line = panel.data && panel.data.lines[b];
+    if (line && panel.p === p && (line.panel !== panel.k || panel.whole)) panelPage(p, line.panel, false);
+  };
+  if (panel.p !== p) panelPage(p, 0, false).then(go); else go();
+}
+
+function panelMark() {
+  if (!panel) return;
+  panel.stage.querySelectorAll(".bubble.now").forEach((e) => e.classList.remove("now"));
+  const [p, b] = panel.now || [-1, -1];
+  if (p === panel.p && b >= 0) panel.stage.querySelectorAll(`.bubble[data-b="${b}"]`).forEach((e) => e.classList.add("now"));
+}
+
+function panelKey(ev) {
+  if (!panel) return;
+  const fwd = panel.rtl ? "ArrowLeft" : "ArrowRight", back = panel.rtl ? "ArrowRight" : "ArrowLeft";
+  if (ev.key === "Escape") panelClose();
+  else if (ev.key === fwd || ev.key === "ArrowDown" || ev.key === " " || ev.key === "PageDown") panelStep(1);
+  else if (ev.key === back || ev.key === "ArrowUp" || ev.key === "PageUp") panelStep(-1);
+  else return;
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
+export function panelClose() {
+  if (!panel) return;
+  const { root, onClose, p } = panel;
+  window.removeEventListener("keydown", panelKey, true);
+  window.removeEventListener("resize", panelFit);
+  panel = null;
+  root.remove();
+  if (onClose) onClose(p);
+}
+
+// Opens the guided view at page p: tap the right side (the left, in manga) or press → for the next
+// panel. `onClose(page)` is told where it was left.
+export function panelOpen(container, asset, p, pages, rtl, translate, onClose) {
+  panelClose();
+  const root = document.createElement("div");
+  root.className = "panel-view";
+  root.innerHTML = `<div class="pv-stage img-page"><img alt=""></div><div class="pv-bar"><span class="pv-label"></span><button class="pv-close" title="Back to pages">Done</button></div>`;
+  document.body.appendChild(root);
+  const stage = root.querySelector(".pv-stage");
+  panel = { root, stage, img: stage.querySelector("img"), label: root.querySelector(".pv-label"), container, asset, p, k: 0, pages, rtl, translate, onClose, data: null, whole: false };
+  root.querySelector(".pv-close").addEventListener("click", (e) => { e.stopPropagation(); panelClose(); });
+  root.addEventListener("click", (e) => {
+    if (e.target.closest(".pv-bar")) return;
+    const x = e.clientX / root.clientWidth;
+    const back = panel.rtl ? x > 0.7 : x < 0.3;
+    panelStep(back ? -1 : 1);
+  });
+  let sx = null;
+  root.addEventListener("touchstart", (e) => { sx = e.touches[0].clientX; }, { passive: true });
+  root.addEventListener("touchend", (e) => {
+    if (sx === null) return;
+    const dx = e.changedTouches[0].clientX - sx;
+    sx = null;
+    if (Math.abs(dx) > 50) {
+      e.preventDefault();
+      panelStep((dx < 0) !== panel.rtl ? 1 : -1);
+    }
+  });
+  window.addEventListener("keydown", panelKey, true);
+  window.addEventListener("resize", panelFit);
+  const now = container && container.closest(".bookview") && container.closest(".bookview").__comicNow;
+  panelPage(p, 0, false).then(() => { if (now && now[0] === p) panelFollow(now[0], now[1]); });
 }

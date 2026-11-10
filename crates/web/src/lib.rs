@@ -49,6 +49,20 @@ extern "C" {
     fn visible_sentence(container: &web_sys::Element) -> u32;
     #[wasm_bindgen(js_name = scrollToSentence)]
     fn scroll_to_sentence(container: &web_sys::Element, n: u32);
+    #[wasm_bindgen(js_name = comicLoad)]
+    async fn comic_load(container: &web_sys::Element, asset: f64, translate: bool) -> JsValue;
+    #[wasm_bindgen(js_name = comicClear)]
+    fn comic_clear(container: &web_sys::Element);
+    #[wasm_bindgen(js_name = comicSetRtl)]
+    fn comic_set_rtl(container: &web_sys::Element, rtl: bool);
+    #[wasm_bindgen(js_name = comicShow)]
+    fn comic_show(container: &web_sys::Element, page: u32, line: i32, follow: bool);
+    #[wasm_bindgen(js_name = visiblePage)]
+    fn visible_page(container: &web_sys::Element) -> i32;
+    #[wasm_bindgen(js_name = panelOpen)]
+    fn panel_open(container: &web_sys::Element, asset: f64, page: u32, pages: u32, rtl: bool, translate: bool, on_close: &js_sys::Function);
+    #[wasm_bindgen(js_name = panelClose)]
+    fn panel_close();
     #[wasm_bindgen(js_name = clickTarget)]
     fn click_target(ev: &web_sys::MouseEvent) -> JsValue;
     #[wasm_bindgen(js_name = selectedText)]

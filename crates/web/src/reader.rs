@@ -411,6 +411,15 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     let chapter = RwSignal::new(usize::MAX);
     let html = RwSignal::new(String::new());
     let sentence = RwSignal::new(-1i32);
+    // A comic (or any book of page pictures): the full cast performs it a page at a time, its
+    // place being (page, line on the page).
+    let comic = move || layout.with(|l| l.as_ref().is_some_and(|l| l.mode == ReadMode::Images));
+    // How the comic is read: right to left (manga), and with translations over the balloons.
+    let comic_rtl = RwSignal::new(false);
+    let comic_translate = RwSignal::new(false);
+    let comic_language = RwSignal::new(String::new());
+    // Each comic page's lines as read off it (for showing the line being heard).
+    let comic_lines = RwSignal::new(std::collections::HashMap::<usize, Vec<String>>::new());
     // Where to scroll once the chapter's HTML is in the page.
     let scroll_to = RwSignal::new(None::<u32>);
 
@@ -539,9 +548,11 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 pending_seek.set(Some((pos.seconds, false)));
             }
         }
-        cast_at.set((pos.chapter, pos.sentence));
+        // (A comic's place is its page, kept as the "sentence".)
+        let pictures = layout.get_untracked().is_some_and(|l| l.mode == ReadMode::Images);
+        cast_at.set(if pictures { (pos.sentence, 0) } else { (pos.chapter, pos.sentence) });
         scroll_to.set(Some(pos.sentence as u32));
-        chapter.set(pos.chapter);
+        chapter.set(if pictures { 0 } else { pos.chapter });
         work.set(Some(w));
     });
 
@@ -736,6 +747,95 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             }
         });
     };
+    // Comics: how this one is read (right to left, translated), as it says or you chose.
+    Effect::new(move |_| {
+        let Some(e) = ebook.get() else { return };
+        if !comic() {
+            return;
+        }
+        spawn_local(async move {
+            if let Ok(v) = api::get::<serde_json::Value>(&format!("/api/assets/{}/comic", e.id)).await {
+                comic_rtl.try_set(v["rtl"].as_bool().unwrap_or(false));
+                comic_translate.try_set(v["translate"].as_bool().unwrap_or(false));
+                comic_language.try_set(v["language"].as_str().unwrap_or("").to_string());
+            }
+        });
+    });
+    Effect::new(move |_| {
+        let rtl = comic_rtl.get();
+        if let Some(el) = page.get() {
+            crate::comic_set_rtl(&el, rtl);
+        }
+    });
+    // The balloons laid over the pages on screen whenever they're wanted (the full cast is
+    // performing, or the comic is translated), read off each page the first time.
+    let comic_loop = StoredValue::new(false);
+    Effect::new(move |_| {
+        if !comic() || comic_loop.get_value() {
+            return;
+        }
+        comic_loop.set_value(true);
+        let mut shown_error = false;
+        let mut was = None::<bool>;
+        spawn_local(async move {
+            while let Some(m) = mode.try_get_untracked() {
+                let translate = comic_translate.get_untracked();
+                let want = (m.cast() || translate) && !m.listening_only();
+                if let (Some(el), Some(e)) = (page.get_untracked(), ebook.get_untracked()) {
+                    if want {
+                        if was != Some(translate) {
+                            crate::comic_clear(&el);
+                            was = Some(translate);
+                        }
+                        let err = crate::comic_load(&el, e.id as f64, translate).await.as_string().unwrap_or_default();
+                        if !err.is_empty() && !shown_error {
+                            shown_error = true;
+                            toast.show(format!("Couldn't read the balloons: {err}"));
+                        }
+                    } else if was.is_some() {
+                        crate::comic_clear(&el);
+                        was = None;
+                    }
+                }
+                gloo_timers::future::TimeoutFuture::new(if want { 700 } else { 1500 }).await;
+            }
+        });
+    });
+    // Right to left or left to right, translated or not: kept for this comic.
+    let set_comic = move |rtl: Option<bool>, translate: Option<bool>| {
+        let Some(e) = ebook.get_untracked() else { return };
+        let here = page.get_untracked().map(|el| crate::visible_page(&el)).unwrap_or(0).max(0) as u32;
+        if let Some(r) = rtl {
+            comic_rtl.set(r);
+        }
+        if let Some(t) = translate {
+            comic_translate.set(t);
+        }
+        spawn_local(async move {
+            let _ = api::put::<_, serde_json::Value>(&format!("/api/assets/{}/comic", e.id), &serde_json::json!({ "rtl": rtl, "translate": translate })).await;
+            // The pages laid out the other way round, at the same page.
+            if rtl.is_some() {
+                scroll_to.set(Some(here));
+                chapter.set(usize::MAX);
+                chapter.set(0);
+            }
+        });
+    };
+    // The guided view, a panel at a time, from the page showing; back on the page it's left at.
+    let open_panels = move || {
+        let (Some(el), Some(e), Some(l)) = (page.get_untracked(), ebook.get_untracked(), layout.get_untracked()) else { return };
+        let here = if mode.get_untracked().cast() && playing.get_untracked() { cast_at.get_untracked().0 as i32 } else { crate::visible_page(&el) };
+        let back = Closure::<dyn Fn(u32)>::new(move |p: u32| {
+            if let Some(el) = page.get_untracked() {
+                crate::scroll_to_sentence(&el, p);
+            }
+        })
+        .into_js_value()
+        .unchecked_into::<js_sys::Function>();
+        view_open.set(false);
+        crate::panel_open(&el, e.id as f64, here.max(0) as u32, l.pages as u32, comic_rtl.get_untracked(), comic_translate.get_untracked(), &back);
+    };
+    on_cleanup(crate::panel_close);
     let set_curl = move |on: bool| {
         prefs.update(|p| p.page_curl = on);
         if let Some(b) = book.get_untracked() {
@@ -919,11 +1019,30 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     // image pages); None past the end of the book.
     let settle = move |mut c: usize, mut s: usize| async move {
         let e = ebook.get_untracked()?;
-        let total = layout.get_untracked().map(|l| l.chapters).unwrap_or(0);
+        // (A comic's "chapters" are its pages, and their sentences the lines read off each.)
+        let pictures = layout.get_untracked().is_some_and(|l| l.mode == ReadMode::Images);
+        let total = layout.get_untracked().map(|l| if pictures { l.pages } else { l.chapters }).unwrap_or(0);
         while c < total {
             // (try_: the reader may close while a chapter is being fetched.)
             let n = match counts.try_with_untracked(|m| m.get(&c).copied())? {
                 Some(n) => n,
+                None if pictures => {
+                    let _ = cast_status.try_set(Some(format!("Reading the balloons on page {}…", c + 1)));
+                    let n = match api::get::<serde_json::Value>(&format!("/api/assets/{}/comic/{c}", e.id)).await {
+                        Ok(v) => {
+                            let lines: Vec<String> = v["lines"].as_array().into_iter().flatten().map(|l| l["text"].as_str().unwrap_or("").to_string()).collect();
+                            let n = lines.len();
+                            comic_lines.try_update(|m| { m.insert(c, lines); });
+                            n
+                        }
+                        Err(err) => {
+                            toast.show(format!("Couldn't read page {}: {}", c + 1, err.0));
+                            return None;
+                        }
+                    };
+                    counts.try_update(|m| { m.insert(c, n); })?;
+                    n
+                }
                 None => {
                     let n = api::get::<Chapter>(&format!("/api/assets/{}/chapters/{c}", e.id)).await.ok()?.sentences;
                     counts.try_update(|m| { m.insert(c, n); })?;
@@ -1016,12 +1135,19 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         if !mode.get().cast() {
             return;
         }
-        sentence.set(s as i32);
-        if c != chapter.get_untracked() {
-            scroll_to.set(Some(s as u32));
-            chapter.set(c);
-        } else if let Some(el) = page.get_untracked() {
-            crate::highlight(&el, s as i32, prefs.get_untracked().follow_audio);
+        if comic() {
+            // The line being performed lit up on its page, and the page turned to.
+            if let Some(el) = page.get_untracked() {
+                crate::comic_show(&el, c as u32, s as i32, prefs.get_untracked().follow_audio);
+            }
+        } else {
+            sentence.set(s as i32);
+            if c != chapter.get_untracked() {
+                scroll_to.set(Some(s as u32));
+                chapter.set(c);
+            } else if let Some(el) = page.get_untracked() {
+                crate::highlight(&el, s as i32, prefs.get_untracked().follow_audio);
+            }
         }
         if prefetching.get_untracked() {
             return;
@@ -1245,9 +1371,17 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         }
         let seq = tap_seq.get_untracked();
         let n = js_sys::Reflect::get(&target, &JsValue::from_str("sentence")).ok().and_then(|v| v.as_f64());
+        // A comic balloon: (page, line).
+        let get = |k: &str| js_sys::Reflect::get(&target, &JsValue::from_str(k)).ok().and_then(|v| v.as_f64());
+        let balloon = get("page").zip(get("line"));
         set_timeout(
             move || {
                 if tap_seq.try_get_untracked() != Some(seq) || !crate::selected_text().is_empty() {
+                    return;
+                }
+                // Tapping a balloon has the full cast perform from it.
+                if let Some((p, l)) = balloon.filter(|_| mode.get_untracked().cast()) {
+                    cast_go(p as usize, l as usize, true);
                     return;
                 }
                 if let Some(n) = n {
@@ -1311,7 +1445,10 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         let a = audio_asset.get_untracked().filter(|_| mode.get_untracked().audiobook());
         let (tr, t) = book_pos.get_untracked();
         let c = chapter.get_untracked();
-        let s = if playing.get_untracked() && sentence.get_untracked() >= 0 {
+        let s = if comic() && playing.get_untracked() && mode.get_untracked().cast() {
+            // (A comic's place is the page being performed.)
+            cast_at.get_untracked().0
+        } else if playing.get_untracked() && sentence.get_untracked() >= 0 && !comic() {
             sentence.get_untracked() as usize
         } else {
             page.get_untracked().map(|el| crate::visible_sentence(&el) as usize).unwrap_or(0)
@@ -1321,6 +1458,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 let before: f64 = a.tracks.iter().take(tr).map(|t| t.duration_secs).sum();
                 ((before + t) / a.duration_secs.unwrap()).clamp(0.0, 1.0)
             }
+            (_, Some(l)) if l.mode == ReadMode::Images && l.pages > 0 => ((s as f64 + 1.0) / l.pages as f64).clamp(0.0, 1.0),
             (_, Some(l)) if l.chapters > 0 => ((c as f64 + 0.5) / l.chapters as f64).clamp(0.0, 1.0),
             _ => 0.0,
         };
@@ -1484,6 +1622,13 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     a.set_current_time(secs);
                 }
             }
+        } else if m == Mode::ReadCast && comic() {
+            // From the page showing, unless the full cast is already on it.
+            let p = el.as_ref().map(|el| crate::visible_page(el)).unwrap_or(-1);
+            if p >= 0 && cast_at.get_untracked().0 != p as usize {
+                cast_go(p as usize, 0, true);
+                return;
+            }
         } else if m == Mode::ReadCast {
             let (cc, cs) = cast_at.get_untracked();
             if !(cc == c && showing(cs)) && c != usize::MAX {
@@ -1551,7 +1696,10 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                 let _ = a.pause();
             }
             if m.cast() {
-                let (c, s) = if old.audiobook() {
+                let (c, s) = if comic() {
+                    // (A comic: from the top of the page showing.)
+                    (s, 0)
+                } else if old.audiobook() {
                     let (tr, t) = book_pos.get_untracked();
                     sync.with_untracked(|x| x.at(tr, t).map(|sp| (sp.chapter, sp.sentence))).unwrap_or((c, s))
                 } else {
@@ -1686,6 +1834,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         let m = mode.get();
         let heard = sync.with(|x| x.at(track.get(), time.get()).map(|sp| sp.chapter));
         match (m.cast(), heard) {
+            (true, _) if comic() => format!("Page {}", cast_at.get().0 + 1),
             (true, _) => toc_title(cast_at.get().0).unwrap_or_default(),
             (false, Some(c)) => toc_title(c).unwrap_or_default(),
             _ => audio_asset.get().and_then(|a| a.tracks.get(track.get()).map(|t| t.title.clone())).unwrap_or_default(),
@@ -1834,6 +1983,26 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                                 <button class:active=move || prefs.with(|p| !p.page_curl) on:click=move |_| set_curl(false)>"Instant"</button>
                             </div>
                         </div>
+                    </Show>
+                    <Show when=comic>
+                        <div class="view-row">
+                            <span>"Reading order"</span>
+                            <div class="segmented">
+                                <button class:active=move || !comic_rtl.get() on:click=move |_| if comic_rtl.get_untracked() { set_comic(Some(false), None) }>"Left to right"</button>
+                                <button class:active=move || comic_rtl.get() title="Manga: pages and panels right to left" on:click=move |_| if !comic_rtl.get_untracked() { set_comic(Some(true), None) }>"Right to left"</button>
+                            </div>
+                        </div>
+                        <div class="view-row">
+                            <span title="Balloons in another language, translated by the AI and lettered over the page">{move || {
+                                let lang = comic_language.get();
+                                if lang.is_empty() || lang == "en" { "Translate balloons".to_string() } else { format!("Translate balloons ({lang})") }
+                            }}<span class="ai-tag" title="Translated by AI">"AI"</span></span>
+                            <div class="segmented">
+                                <button class:active=move || comic_translate.get() on:click=move |_| set_comic(None, Some(true))>"On"</button>
+                                <button class:active=move || !comic_translate.get() on:click=move |_| set_comic(None, Some(false))>"Off"</button>
+                            </div>
+                        </div>
+                        <button class="button" on:click=move |_| open_panels()>"Read panel by panel"</button>
                     </Show>
                     <Show when=paged>
                         <div class="view-row">
@@ -2028,7 +2197,10 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     <Show when=move || mode.get().cast()>
                         <blockquote class="listen-line">{move || {
                             html.track();
-                            let (_, s) = cast_at.get();
+                            let (c, s) = cast_at.get();
+                            if comic() {
+                                return comic_lines.with(|m| m.get(&c).and_then(|l| l.get(s).cloned())).unwrap_or_default();
+                            }
                             page.get().map(|el| crate::sentence_text(&el, s as i32)).unwrap_or_default()
                         }}</blockquote>
                     </Show>
@@ -2062,7 +2234,8 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                             }
                             // The full cast's line: follow it word by word (its words timed once
                             // it's been performed).
-                            if mode.get_untracked().cast() {
+                            // (A comic's balloons are lit whole.)
+                            if mode.get_untracked().cast() && !comic() {
                                 let Some(e) = ebook.get_untracked().map(|e| e.id) else { return };
                                 let (c, n) = cast_at.get_untracked();
                                 let dur = a.duration();
@@ -2187,7 +2360,10 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                                 on:change=move |ev| {
                                     if let Ok(v) = event_target_value(&ev).parse::<usize>() { cast_go(cast_at.get_untracked().0, v, playing.get_untracked()) }
                                 }/>
-                            <span>{move || format!("of {} sentences", counts.with(|m| m.get(&cast_at.get().0).copied().unwrap_or(0)))}</span>
+                            <span>{move || {
+                                let n = counts.with(|m| m.get(&cast_at.get().0).copied().unwrap_or(0));
+                                if comic() { format!("of {n} on page {}", cast_at.get().0 + 1) } else { format!("of {n} sentences") }
+                            }}</span>
                         </div>
                     </Show>
                     <div class="scrub" class:hidden=move || mode.get().cast()>
