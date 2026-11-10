@@ -18,6 +18,11 @@ pub struct PodcastSettings {
     /// Make the day's episode at this local time ("06:30"), ready before you head out. Empty:
     /// only when you ask.
     pub daily_at: String,
+    /// The remote browser's WebDriver (geckodriver attached to the Firefox you can see in
+    /// duet), for X and Instagram: you log in there once, and duet reads your feeds off the page.
+    pub webdriver_url: String,
+    /// Its viewer, for logging in. Empty: this page's host, port 3001.
+    pub viewer_url: String,
     /// An RSSHub instance (https://docs.rsshub.app), for X and Instagram accounts, which have
     /// no free feeds of their own.
     pub rsshub_url: String,
@@ -44,6 +49,8 @@ impl Default for PodcastSettings {
                 },
             ],
             daily_at: "06:30".into(),
+            webdriver_url: "http://127.0.0.1:4444".into(),
+            viewer_url: String::new(),
             rsshub_url: String::new(),
             watch_videos: true,
         }
@@ -64,6 +71,8 @@ const fn c(category: &'static str, name: &'static str, kind: &'static str, value
 
 /// Major news, tech, science and the aggregators, ready to switch on.
 pub const CATALOG: &[CatalogEntry] = &[
+    c("Social", "X (your timeline)", "x", "home"),
+    c("Social", "Instagram (your feed)", "instagram", "home"),
     c("Aggregators", "Hacker News", "hackernews", "best"),
     c("Aggregators", "Lobsters", "lobsters", "hottest"),
     c("Aggregators", "Techmeme", "feed", "https://www.techmeme.com/feed.xml"),
@@ -121,8 +130,8 @@ const DEFAULT_ON: &[&str] = &[
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PodcastSource {
     /// "feed" (any RSS/Atom address), "reddit" (a subreddit, or your private front-page feed
-    /// address), "x" (an account, "home" or "list/<id>", through RSSHub), "instagram" (an
-    /// account, through RSSHub), "youtube" (a channel's address or id), "hackernews"
+    /// address), "x" (an account, "home" or "list/<id>", read in the remote browser),
+    /// "instagram" (an account or "home", read in the remote browser), "youtube" (a channel's address or id), "hackernews"
     /// ("best", "frontpage", "newest", "ask", "show"), "lobsters" ("hottest", "newest" or a
     /// tag), "bluesky" (a handle), "mastodon" ("@name@instance" or "#tag@instance").
     pub kind: String,

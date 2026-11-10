@@ -7,6 +7,7 @@
 //! Everything lives under `data/podcast/`: `settings.json`, and one folder per episode with
 //! `episode.json`, `notes.json` (what the hosts read, for questions) and a recording per line.
 
+mod browser;
 mod feeds;
 
 use std::{
@@ -49,6 +50,8 @@ pub fn routes() -> Router<State> {
         .route("/podcast/voices/recast", post(recast))
         .route("/podcast/voices/{name}/clip", get(clip))
         .route("/podcast/warm", post(warm))
+        .route("/podcast/browser/login", post(browser_login))
+        .route("/podcast/browser/check", post(browser_check))
 }
 
 fn base(state: &State) -> PathBuf {
@@ -921,6 +924,22 @@ async fn clip(AxState(s): AxState<State>, Path(name): Path<String>) -> ApiResult
         .await
         .map_err(|_| ApiError::not_found("voice"))?;
     Ok(([(header::CONTENT_TYPE, "audio/wav"), (header::CACHE_CONTROL, "no-cache")], bytes).into_response())
+}
+
+#[derive(Deserialize)]
+struct Site {
+    site: String,
+}
+
+/// Opens the site's login page in the remote browser, for you to log in through the viewer.
+async fn browser_login(AxState(s): AxState<State>, Json(site): Json<Site>) -> ApiResult<()> {
+    let wd = settings(&s).await.webdriver_url;
+    browser::open_login(&s, &wd, &site.site).await.map_err(bad_gateway)
+}
+
+async fn browser_check(AxState(s): AxState<State>, Json(site): Json<Site>) -> ApiResult<Json<bool>> {
+    let wd = settings(&s).await.webdriver_url;
+    Ok(Json(browser::logged_in(&s, &wd, &site.site).await.map_err(bad_gateway)?))
 }
 
 /// The player is open: have the performer loaded and kept loaded.

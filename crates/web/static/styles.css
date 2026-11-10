@@ -1929,3 +1929,14 @@ html.eink .swatch-gray { background: #4a4a4c; } html.eink .swatch-dark { backgro
 .story-sources, .answer-links { grid-template-columns: minmax(0, 1fr); }
 .story-sources li, .answer-links li { min-width: 0; }
 .brief-ep { width: 100%; justify-content: start; }
+.brief-logins { margin-top: 1rem; }
+.login-row { display: grid; gap: 0.4rem; }
+.login-site { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.login-site > span { font-weight: 500; min-width: 6rem; }
+.login-site small { color: var(--muted); min-width: 6rem; }
+.login-viewer { margin-top: 0.8rem; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; background: var(--bg-2); }
+.login-bar { display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0.7rem; background: var(--surface-2); }
+.login-bar span { flex: 1; }
+.login-viewer iframe { width: 100%; height: min(70vh, 720px); border: 0; display: block; background: #fff; }
+.brief-advanced { margin-top: 1rem; }
+.brief-advanced summary { cursor: pointer; color: var(--muted); }

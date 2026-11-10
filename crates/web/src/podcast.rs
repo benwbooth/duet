@@ -736,8 +736,8 @@ fn BriefingSettings(settings: RwSignal<Option<PodcastSettings>>) -> impl IntoVie
                     </form>
                     <p class="hint">{move || match new_kind.get().as_str() {
                         "reddit" => "A subreddit's name, or your private front-page feed address from reddit.com/prefs/feeds (the RSS link) for everything you follow.",
-                        "x" => "An account, \"home\" for your timeline, or list/<id>. X has no free feeds, so this goes through RSSHub (set below; your timeline needs your X login in RSSHub's settings).",
-                        "instagram" => "An account. Goes through RSSHub (set below). Reels are listened to.",
+                        "x" => "\"home\" for your timeline, an account, or list/<id>. Read in the remote browser: log in to X there first (below).",
+                        "instagram" => "\"home\" for your feed, or an account. Read in the remote browser: log in to Instagram there first (below). Reels are listened to.",
                         "bluesky" => "A handle, like someone.bsky.social.",
                         "mastodon" => "@name@instance, or #tag@instance for a hashtag.",
                         "youtube" => "A channel's @handle, address or id. Videos are listened to.",
@@ -745,18 +745,13 @@ fn BriefingSettings(settings: RwSignal<Option<PodcastSettings>>) -> impl IntoVie
                         "hackernews" => "best, frontpage, newest, ask or show.",
                         _ => "Any RSS or Atom feed address: blogs, newsletters, news sites.",
                     }}</p>
-                    <label class="field">
-                        <span>"RSSHub address (for X and Instagram)"</span>
-                        <input type="url" placeholder="http://localhost:1200" prop:value=move || s().rsshub_url
-                            on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| s.rsshub_url = v)) }/>
-                        <small>"A self-hosted RSSHub (docker run -p 1200:1200 diygod/rsshub) turns X and Instagram accounts into feeds."</small>
-                    </label>
+                    <Logins settings=settings save/>
                 </section>
 
                 <section>
                     <h3>"More sources"</h3>
                     <p class="hint">"Major news, tech and science sites and the aggregators. Switch on as many as you like: the producer picks from all of them by your interests."</p>
-                    {["Aggregators", "News", "Tech", "Science"].map(|cat| view! {
+                    {["Social", "Aggregators", "News", "Tech", "Science"].map(|cat| view! {
                         <h4>{cat}</h4>
                         <div class="chips">
                             {CATALOG.iter().filter(|c| c.category == cat).map(|c| {
@@ -830,8 +825,8 @@ fn BriefingSettings(settings: RwSignal<Option<PodcastSettings>>) -> impl IntoVie
 
 const KINDS: [(&str, &str, &str); 9] = [
     ("reddit", "Reddit", "subreddit, or your front-page feed address"),
-    ("x", "X", "account, home, or list/<id>"),
-    ("instagram", "Instagram", "account"),
+    ("x", "X", "home, an account, or list/<id>"),
+    ("instagram", "Instagram", "home, or an account"),
     ("bluesky", "Bluesky", "handle.bsky.social"),
     ("mastodon", "Mastodon", "@name@instance or #tag@instance"),
     ("youtube", "YouTube", "@channel"),
@@ -849,4 +844,104 @@ fn source_label(s: &PodcastSource) -> String {
         return c.name.to_string();
     }
     s.value.clone()
+}
+
+/// Logging in to the sites read through the remote browser: the login page opens in a tab of
+/// the remote Firefox, shown here, and duet checks it worked.
+#[component]
+fn Logins(settings: RwSignal<Option<PodcastSettings>>, save: impl Fn(Box<dyn FnOnce(&mut PodcastSettings)>) + Copy + Send + Sync + 'static) -> impl IntoView {
+    let toast = toast();
+    let open = RwSignal::new(None::<&'static str>);
+    let status = RwSignal::new(std::collections::HashMap::<&'static str, Option<bool>>::new());
+    let busy = RwSignal::new(false);
+    let viewer = move || {
+        let configured = settings.get().map(|s| s.viewer_url).unwrap_or_default();
+        if !configured.trim().is_empty() {
+            return configured;
+        }
+        let loc = web_sys::window().and_then(|w| w.location().href().ok()).unwrap_or_default();
+        let (proto, host) = match loc.split_once("://") {
+            Some((p, rest)) => (p.to_string(), rest.split('/').next().unwrap_or("localhost").split(':').next().unwrap_or("localhost").to_string()),
+            None => ("http".into(), "localhost".into()),
+        };
+        format!("{proto}://{host}:3001/")
+    };
+    let check = move |site: &'static str| {
+        busy.set(true);
+        spawn_local(async move {
+            match api::post::<_, bool>("/api/podcast/browser/check", &serde_json::json!({ "site": site })).await {
+                Ok(ok) => {
+                    status.update(|m| {
+                        m.insert(site, Some(ok));
+                    });
+                    if ok {
+                        toast.show("Logged in");
+                        if open.get_untracked() == Some(site) {
+                            open.set(None);
+                        }
+                    } else {
+                        toast.show("Not logged in yet");
+                    }
+                }
+                Err(e) => toast.show(e.0),
+            }
+            busy.set(false);
+        });
+    };
+    let login = move |site: &'static str| {
+        busy.set(true);
+        open.set(Some(site));
+        spawn_local(async move {
+            if let Err(e) = api::post::<_, ()>("/api/podcast/browser/login", &serde_json::json!({ "site": site })).await {
+                toast.show(e.0);
+            }
+            busy.set(false);
+        });
+    };
+    view! {
+        <div class="brief-logins">
+            <h4>"Logins (for X and Instagram)"</h4>
+            <p class="hint">"These are read in your remote Firefox (on the VPN), logged in as you. Log in once; duet opens its own tab to read your feed each morning and closes it after."</p>
+            <div class="login-row">
+                {[("x", "X"), ("instagram", "Instagram"), ("reddit", "Reddit")].map(|(site, name)| view! {
+                    <div class="login-site">
+                        <span>{name}</span>
+                        <small>{move || match status.get().get(site).copied().flatten() { Some(true) => "Logged in", Some(false) => "Not logged in", None => "" }}</small>
+                        <button disabled=move || busy.get() on:click=move |_| login(site)>{format!("Log in to {name}")}</button>
+                        <button class="link" disabled=move || busy.get() on:click=move |_| check(site)>"Check"</button>
+                    </div>
+                })}
+            </div>
+            <Show when=move || open.get().is_some()>
+                <div class="login-viewer">
+                    <div class="login-bar">
+                        <span>{move || format!("Log in to {} below, then press Done.", match open.get() { Some("x") => "X", Some("instagram") => "Instagram", Some("reddit") => "Reddit", _ => "the site" })}</span>
+                        <button class="primary" disabled=move || busy.get() on:click=move |_| { if let Some(s) = open.get_untracked() { check(s) } }>"Done"</button>
+                        <button class="icon-button" aria-label="Close" on:click=move |_| open.set(None)>"×"</button>
+                    </div>
+                    <iframe src=viewer title="Remote Firefox" allow="clipboard-read; clipboard-write"></iframe>
+                </div>
+            </Show>
+            <details class="brief-advanced">
+                <summary>"Advanced"</summary>
+                <label class="field">
+                    <span>"Remote browser WebDriver"</span>
+                    <input type="url" placeholder="http://127.0.0.1:4444" prop:value=move || settings.get().map(|s| s.webdriver_url).unwrap_or_default()
+                        on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| s.webdriver_url = v)) }/>
+                    <small>"geckodriver attached to the remote Firefox. Empty: don't use the browser."</small>
+                </label>
+                <label class="field">
+                    <span>"Remote browser viewer"</span>
+                    <input type="url" placeholder="(this host, port 3001)" prop:value=move || settings.get().map(|s| s.viewer_url).unwrap_or_default()
+                        on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| s.viewer_url = v)) }/>
+                </label>
+                <label class="field">
+                    <span>"RSSHub (optional fallback)"</span>
+                    <input type="url" placeholder="http://localhost:1200" prop:value=move || settings.get().map(|s| s.rsshub_url).unwrap_or_default()
+                        on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| s.rsshub_url = v)) }/>
+                    <small>"Used for X and Instagram if the browser can't read them."</small>
+                </label>
+            </details>
+        </div>
+    }
 }

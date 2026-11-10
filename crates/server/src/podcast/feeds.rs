@@ -38,6 +38,7 @@ pub fn label(s: &PodcastSource) -> String {
         "reddit" if v.starts_with("http") => "Reddit (your front page)".into(),
         "reddit" => format!("Reddit · r/{}", v.trim_start_matches("r/").trim_start_matches("/r/")),
         "x" if v == "home" => "X (your timeline)".into(),
+        "instagram" if v == "home" => "Instagram (your feed)".into(),
         "x" => format!("X · @{}", v.trim_start_matches('@')),
         "instagram" => format!("Instagram · @{}", v.trim_start_matches('@')),
         "youtube" => format!("YouTube · {v}"),
@@ -65,9 +66,32 @@ pub async fn gather(state: &State, settings: &PodcastSettings) -> (Vec<Item>, Ve
     let jobs = settings.sources.iter().filter(|s| s.enabled && !s.value.trim().is_empty()).map(|s| {
         let client = client.clone();
         let rsshub = settings.rsshub_url.clone();
+        let webdriver = settings.webdriver_url.clone();
         let s = s.clone();
+        let state = state.clone();
         async move {
-            let r = tokio::time::timeout(Duration::from_secs(45), fetch_source(&client, &rsshub, &s)).await;
+            // Through the remote browser: X and Instagram (unless they're RSSHub routes). They
+            // take turns in the one browser, so they get longer.
+            let browse = matches!(s.kind.as_str(), "x" | "instagram") && !s.value.trim().starts_with('/') && !webdriver.trim().is_empty();
+            let r = if browse {
+                let r = tokio::time::timeout(Duration::from_secs(300), async {
+                    match s.kind.as_str() {
+                        "x" => super::browser::x(&state, &webdriver, &s.value).await,
+                        _ => super::browser::instagram(&state, &webdriver, &s.value).await,
+                    }
+                })
+                .await;
+                match r {
+                    // (RSSHub as the fallback, when there is one.)
+                    Ok(Err(e)) if !rsshub.trim().is_empty() => {
+                        tracing::info!("{} through the browser: {e:#}; trying RSSHub", label(&s));
+                        tokio::time::timeout(Duration::from_secs(45), fetch_source(&client, &rsshub, &s)).await
+                    }
+                    r => r,
+                }
+            } else {
+                tokio::time::timeout(Duration::from_secs(45), fetch_source(&client, &rsshub, &s)).await
+            };
             (s, r.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out"))))
         }
     });
@@ -115,7 +139,7 @@ async fn fetch_source(client: &reqwest::Client, rsshub: &str, s: &PodcastSource)
     let hub = || -> anyhow::Result<String> {
         let h = rsshub.trim().trim_end_matches('/');
         if h.is_empty() {
-            bail!("X and Instagram need an RSSHub address (Briefing → Sources)");
+            bail!("X and Instagram need the remote browser or an RSSHub address (Briefing → Sources)");
         }
         Ok(h.to_string())
     };
