@@ -106,7 +106,7 @@ pub const CATALOG: &[CatalogEntry] = &[
     c("Tech", "Polygon (games)", "feed", "https://www.polygon.com/rss/index.xml"),
     c("Science", "Quanta Magazine", "feed", "https://www.quantamagazine.org/feed/"),
     c("Science", "Science Daily", "feed", "https://www.sciencedaily.com/rss/top.xml"),
-    c("Science", "New Scientist", "feed", "https://www.newscientist.com/feed/home/"),
+    c("Science", "New Scientist", "feed", "https://www.newscientist.com/feed/"),
     c("Science", "Nature", "feed", "https://www.nature.com/nature.rss"),
     c("Science", "NASA", "feed", "https://www.nasa.gov/feed/"),
 ];
