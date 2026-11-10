@@ -1225,7 +1225,14 @@ class Pager {
         last = e.dataset.s;
       }
     }
-    return `${first}-${last}`;
+    // (And the pictures on it, by address: a picture drawn again has a new one, so the page's
+    // picture for turning is made again rather than flipping over with the old drawing.)
+    let pics = "";
+    for (const img of this.article.querySelectorAll("img")) {
+      const x = img.getBoundingClientRect().left - a;
+      if (x >= offset - 1 && x < offset + this.width - 1) pics += "|" + img.getAttribute("src") + (img.closest(".redrawing") ? "~" : "");
+    }
+    return `${first}-${last}${pics}`;
   }
 
   // A picture's key without the sentence and word being read aloud: while the recording plays the word moves
