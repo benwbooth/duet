@@ -336,6 +336,16 @@ fn ahead(state: &State, asset: i64) {
             if todo.is_empty() {
                 break;
             }
+            // The reader's audio comes first: while the full cast has the card (or is kept
+            // loaded for a reader in full cast mode), the pictures wait. (Lining an audiobook up
+            // with the book pauses them in the voice server, for as long as it takes.)
+            if crate::cast::performing_recently() || crate::cast::cast_open_recently() {
+                crate::activity::set(&key, "Pictures", &title, "Waiting: the full cast's voices come first", 0, 0);
+                while crate::cast::performing_recently() || crate::cast::cast_open_recently() {
+                    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                }
+                continue;
+            }
             // (How the chapter being drawn is coming along, for the jobs pane: counted again from
             // the pictures as they land, every few seconds while a batch is drawn.)
             let cd = todo[0].1;
@@ -390,15 +400,6 @@ async fn draw(state: &State, asset: i64, items: &[(usize, usize, Scene)]) -> any
     }
     if jobs.is_empty() {
         return Ok(());
-    }
-    if crate::cast::performing_recently() {
-        let title = crate::activity::title(state, asset).await;
-        let key = format!("pictures-wait:{asset}");
-        crate::activity::set(&key, "Pictures", &title, "Waiting for the full cast to finish with the graphics card", 0, 0);
-        while crate::cast::performing_recently() {
-            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-        }
-        crate::activity::clear(&key);
     }
     let tts = state.settings.read().await.ai.tts_url.clone();
     state

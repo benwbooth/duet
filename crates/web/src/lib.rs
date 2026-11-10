@@ -276,11 +276,15 @@ pub struct Activity {
 pub fn ActivityList(list: Signal<Vec<Activity>>) -> impl IntoView {
     view! {
         <ul class="activity-list">
-            <For each=move || list.get() key=|a| a.key.clone() let:a>
+            // (Keyed on what's shown too, not just which work it is: keyed on the work alone, a
+            // row kept its first numbers, and a chapter's pictures read "0 of 15" however many
+            // had been drawn.)
+            <For each=move || list.get() key=|a| format!("{}|{}|{}|{}|{}", a.key, a.detail, a.done, a.total, a.title) let:a>
                 {
                     let known = a.fraction >= 0.0;
                     let pct = (a.fraction * 100.0).clamp(0.0, 100.0);
-                    let count = (a.total > 0).then(|| format!("{} of {}", a.done.min(a.total), a.total));
+                    // (Lining up the audio counts seconds of the track: its detail says how far, as a time.)
+                    let count = (a.total > 0 && a.kind != "Audio sync").then(|| format!("{} of {}", a.done.min(a.total), a.total));
                     view! {
                         <li>
                             <div class="dl-body">

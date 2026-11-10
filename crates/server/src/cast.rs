@@ -985,6 +985,19 @@ pub fn performing_recently() -> bool {
     LAST_HEARD.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(300))
 }
 
+/// When a reader in full cast mode last said they're there (every two minutes while it's open).
+static CAST_OPEN: LazyLock<std::sync::Mutex<Option<std::time::Instant>>> = LazyLock::new(Default::default);
+
+pub fn cast_open() {
+    *CAST_OPEN.lock().unwrap() = Some(std::time::Instant::now());
+}
+
+/// Whether a reader is open in full cast mode: the performer is kept loaded for it, so the
+/// pictures (which don't fit on the card beside it) wait.
+pub fn cast_open_recently() -> bool {
+    CAST_OPEN.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(150))
+}
+
 pub async fn sentence(state: &State, asset: i64, chapter: usize, n: usize) -> anyhow::Result<Vec<u8>> {
     *LAST_HEARD.lock().unwrap() = Some(std::time::Instant::now());
     work_ahead(state, asset, chapter, n);

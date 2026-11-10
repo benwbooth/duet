@@ -20,6 +20,7 @@ struct Task {
     total: u32,
     since: Instant,
     started: SystemTime,
+    updated: Instant,
 }
 
 static TASKS: LazyLock<Mutex<BTreeMap<String, Task>>> = LazyLock::new(Default::default);
@@ -34,11 +35,12 @@ pub fn set(key: &str, kind: &'static str, title: &str, detail: impl Into<String>
             task.detail = detail;
             task.done = done;
             task.total = total;
+            task.updated = Instant::now();
         }
         None => {
             t.insert(
                 key.to_string(),
-                Task { kind, title: title.to_string(), detail, done, total, since: Instant::now(), started: SystemTime::now() },
+                Task { kind, title: title.to_string(), detail, done, total, since: Instant::now(), started: SystemTime::now(), updated: Instant::now() },
             );
         }
     }
@@ -46,6 +48,20 @@ pub fn set(key: &str, kind: &'static str, title: &str, detail: impl Into<String>
 
 pub fn clear(key: &str) {
     TASKS.lock().unwrap().remove(key);
+}
+
+/// Clears it after a while, unless it's been updated since (work that comes in bursts, like
+/// lining up the audio as you listen, stays shown between them).
+pub fn clear_later(key: &str, after: std::time::Duration) {
+    let key = key.to_string();
+    let stamp = TASKS.lock().unwrap().get(&key).map(|t| t.updated);
+    tokio::spawn(async move {
+        tokio::time::sleep(after).await;
+        let mut t = TASKS.lock().unwrap();
+        if t.get(&key).map(|t| t.updated) == stamp {
+            t.remove(&key);
+        }
+    });
 }
 
 /// A book's title, for naming its work.

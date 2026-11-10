@@ -31,11 +31,13 @@ import os
 os.environ.setdefault("MIOPEN_FIND_MODE", "FAST")
 
 import argparse
+import contextlib
 import gc
 import io
 import json
 import os
 import re
+import signal
 import subprocess
 import threading
 import errno
@@ -420,6 +422,8 @@ def stop_drawing():
     if p is not None and p.poll() is None:
         print("pictures: drawing stopped (the card's wanted)", flush=True)
         p.terminate()
+        # (A drawing paused for listening only takes the signal once it's let go again.)
+        resume(p)
         try:
             p.wait(20)
         except subprocess.TimeoutExpired:
@@ -429,6 +433,44 @@ def stop_drawing():
 
 def drawing_now():
     return drawing is not None and drawing.poll() is None
+
+
+# Listening (lining the recording up with the book) under way: while it is, the pictures being
+# drawn are paused where they are, the model kept loaded, so the reader's audio gets the card
+# to itself and the drawing carries on afterwards from the same step.
+listening = 0
+listening_guard = threading.Lock()
+
+
+def pause(p):
+    try:
+        os.kill(p.pid, signal.SIGSTOP)
+    except OSError:
+        pass
+
+
+def resume(p):
+    try:
+        os.kill(p.pid, signal.SIGCONT)
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def audio_first():
+    """The reader's audio comes before the pictures: the drawing waits while this runs."""
+    global listening
+    with listening_guard:
+        listening += 1
+        if listening == 1 and drawing_now():
+            pause(drawing)
+    try:
+        yield
+    finally:
+        with listening_guard:
+            listening -= 1
+            if listening == 0 and drawing_now():
+                resume(drawing)
 
 
 def draw(body):
@@ -443,6 +485,9 @@ def draw(body):
     if not drawing_now():
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "illustrate.py")
         drawing = subprocess.Popen([args.design_python, script, "--serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        with listening_guard:
+            if listening:
+                pause(drawing)
         line = drawing.stdout.readline()
         if not line:
             drawing = None
@@ -467,24 +512,20 @@ def draw(body):
 
 
 def listen_aligner():
-    """The forced aligner: on the card, or on the processor while pictures are being drawn."""
-    from common import aligner, aligner_cpu
+    """The forced aligner, on the card (beside the pictures, which pause while it runs)."""
+    from common import aligner
 
-    return aligner_cpu() if drawing_now() else aligner()
+    return aligner()
 
 
 def listen_model():
     """Whisper for finding where in the book the audio is: on the graphics card when there is
-    one; while pictures are being drawn there, on the processor instead (slower, but the drawing
-    goes on: stopping it every time the recording was lined up meant no picture ever finished
-    while listening). Exact word times come from the forced aligner, not from Whisper."""
+    one. Pictures being drawn there pause while it listens (see audio_first), rather than the
+    listening moving to the processor, which left the reader waiting on the audio while the
+    pictures had the card. (It's small: it fits beside the drawing.) Exact word times come from
+    the forced aligner, not from Whisper."""
     from common import whisper as load_whisper
 
-    if drawing_now():
-        key = "live-cpu:" + args.listen_model
-        if key not in whisper:
-            whisper[key], _ = load_whisper(args.listen_model, "cpu")
-        return whisper[key]
     key = "live:" + args.listen_model
     if key not in whisper:
         whisper[key], _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda")
@@ -492,6 +533,11 @@ def listen_model():
 
 
 def sync_window(body):
+    with audio_first():
+        return _sync_window(body)
+
+
+def _sync_window(body):
     """Hears a stretch of audio, finds it in the book, and times every word of the sentences it
     covers: Whisper says roughly what's being read; the book's own text for those sentences is
     then lined up against the audio by the forced aligner."""
@@ -572,6 +618,11 @@ def sync_window(body):
 
 
 def align_words(body):
+    with audio_first():
+        return _align_words(body)
+
+
+def _align_words(body):
     """When each word of `text` starts in the recording at `audio` (a performed line): the words
     as the reader counts them ([\\w']+, apostrophes trimmed), timed by the forced aligner, the
     ones it can't spell (numbers) placed between their neighbours."""
@@ -589,6 +640,11 @@ def align_words(body):
 
 
 def track_words(body):
+    with audio_first():
+        return _track_words(body)
+
+
+def _track_words(body):
     """Transcribes a whole track with word timings, for making a book from an audiobook:
     segments of {start, end, text, words: [[word, start, end]]}. Whisper writes the text (on the
     graphics card when there is one); each segment's words are then timed exactly by the forced
@@ -678,6 +734,8 @@ class Handler(BaseHTTPRequestHandler):
                     def start():
                         try:
                             with lock:
+                                # (The full cast comes before the pictures: they don't both fit.)
+                                stop_drawing()
                                 fish.start()
                         except Exception as e:
                             print(f"warming fish: {e}", flush=True)
@@ -702,11 +760,8 @@ class Handler(BaseHTTPRequestHandler):
                     if args.engine == "fish" and args.fish_dir:
                         fish.stop()
                     unload_qwen()
-                    with listen_lock:
-                        whisper.clear()
-                        from common import release_gpu_whisper
-
-                        release_gpu_whisper()
+                    # (Speech recognition stays: it's small, and the reader's audio is lined up
+                    # with it while the pictures pause.)
                     free_ollama()
                     free_gpu()
                     made = draw(body)

@@ -2236,6 +2236,11 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                                 a.set_current_time(secs);
                                 if play { let _ = a.play(); }
                             }
+                            // Reading along with the audiobook: start lining up where you are
+                            // straight away, before you press play, so the highlight's ready.
+                            if mode.get_untracked() == Mode::ReadAudiobook {
+                                live_sync(a.current_time());
+                            }
                             // The full cast's line: follow it word by word (its words timed once
                             // it's been performed).
                             // (A comic's balloons are lit whole.)

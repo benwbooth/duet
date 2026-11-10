@@ -347,6 +347,9 @@ async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResul
 async fn cast_warm(AxState(s): AxState<State>, Json(body): Json<serde_json::Value>) -> Json<serde_json::Value> {
     let tts = s.settings.read().await.ai.tts_url.clone();
     let start = body["start"].as_bool().unwrap_or(true);
+    if start {
+        crate::cast::cast_open();
+    }
     let _ = s.http.post(format!("{}/warm", tts.trim_end_matches('/'))).json(&serde_json::json!({ "start": start })).timeout(std::time::Duration::from_secs(5)).send().await;
     Json(serde_json::json!({ "ok": true }))
 }
@@ -923,7 +926,28 @@ struct LiveSyncReq {
 async fn sync_live(AxState(s): AxState<State>, Path(id): Path<i64>, Json(r): Json<LiveSyncReq>) -> ApiResult<Json<serde_json::Value>> {
     crate::illustrate::listening();
     let ebook = asset_or_404(&s, r.ebook).await?;
-    let book_json = jobs::book_json_cached(&s, &ebook).await?;
+    // (Shown in the jobs pane while it's at it, and for a little while after: how far into the
+    // track the book has been lined up.)
+    let key = format!("sync:{id}");
+    let title = crate::activity::title(&s, r.ebook).await;
+    let track_len = db::asset(&s.db, r.audio).await.ok().flatten().and_then(|a| a.tracks.iter().find(|t| t.index == r.track).map(|t| t.duration_secs)).unwrap_or(0.0);
+    let clock = |t: f64| format!("{}:{:02}", (t / 60.0) as u64, (t % 60.0) as u64);
+    let of = |t: f64| if track_len > 0.0 { format!("{} of {}", clock(t), clock(track_len)) } else { clock(t) };
+    crate::activity::set(&key, "Audio sync", &title, format!("Listening to the audiobook at {} (track {}) and finding it in the book", of(r.start), r.track + 1), r.start as u32, track_len as u32);
+    let result = sync_live_inner(&s, id, &r, &ebook).await;
+    match &result {
+        Ok(v) => {
+            let reach = v["spans"].as_array().and_then(|a| a.iter().filter_map(|x| x["end"].as_f64()).reduce(f64::max)).unwrap_or(r.start);
+            crate::activity::set(&key, "Audio sync", &title, format!("In sync up to {} (track {})", of(reach), r.track + 1), reach as u32, track_len as u32);
+        }
+        Err(e) => crate::activity::set(&key, "Audio sync", &title, format!("Couldn't line up the audio: {}", e.1), 0, 0),
+    }
+    crate::activity::clear_later(&key, std::time::Duration::from_secs(60));
+    Ok(Json(result?))
+}
+
+async fn sync_live_inner(s: &State, id: i64, r: &LiveSyncReq, ebook: &duet_common::Asset) -> Result<serde_json::Value, ApiError> {
+    let book_json = jobs::book_json_cached(s, ebook).await?;
     let audio_path = db::track_path(&s.db, r.audio, r.track).await?.ok_or_else(|| ApiError::not_found("track"))?;
     let tts = s.settings.read().await.ai.tts_url.clone();
     let resp = s
@@ -942,6 +966,6 @@ async fn sync_live(AxState(s): AxState<State>, Path(id): Path<i64>, Json(r): Jso
     }
     let v: serde_json::Value = resp.json().await?;
     let spans: Vec<duet_common::SyncSpan> = serde_json::from_value(v["spans"].clone()).unwrap_or_default();
-    jobs::merge_sync(&s, id, r.ebook, r.audio, spans.clone()).await?;
-    Ok(Json(serde_json::json!({ "spans": spans, "near": v["near"] })))
+    jobs::merge_sync(s, id, r.ebook, r.audio, spans.clone()).await?;
+    Ok(serde_json::json!({ "spans": spans, "near": v["near"] }))
 }
