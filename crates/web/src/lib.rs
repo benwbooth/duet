@@ -897,6 +897,7 @@ fn WorkPage(id: i64) -> impl IntoView {
                     let cover_url = w.cover_url.clone();
                     let backdrop = w.cover_url.clone().map(|u| format!("background-image:url('{u}')"));
                     let long_description = w.description.as_ref().is_some_and(|d| d.len() > 420);
+                    let opening = RwSignal::new(reader::opening_editions(&w));
                     view! {
                         <div class="work">
                             <div class="work-backdrop" style=backdrop.unwrap_or_default()></div>
@@ -958,14 +959,40 @@ fn WorkPage(id: i64) -> impl IntoView {
                                     {w.assets.iter().map(|a| {
                                         let ebook = a.kind == AssetKind::Ebook;
                                         let name = reader::edition_label(a);
+                                        let (aid, kind) = (a.id, a.kind);
+                                        // With more than one of a kind, tapping one makes it the one the book opens with.
+                                        let choosable = w.assets.iter().filter(|b| b.kind == kind).count() > 1;
+                                        let is_default = move || {
+                                            let (e, au) = opening.get();
+                                            choosable && (if ebook { e } else { au }) == Some(aid)
+                                        };
+                                        let choose = move |_| {
+                                            if !choosable || is_default() {
+                                                return;
+                                            }
+                                            opening.update(|(e, au)| if ebook { *e = Some(aid) } else { *au = Some(aid) });
+                                            reader::remember(id, aid);
+                                            toast.show(if ebook { "This edition opens from now on" } else { "This recording plays from now on" });
+                                        };
                                         view! {
-                                            <div class="edition-card" class:generated=a.origin == "generated" title=a.path.clone()>
+                                            <div class="edition-card" class:generated=a.origin == "generated" class:choosable=choosable class:default=is_default
+                                                title=if choosable { format!("{}\nTap to open the book with this edition", a.path) } else { a.path.clone() }
+                                                role=choosable.then_some("button") tabindex=choosable.then_some("0")
+                                                on:click=choose>
                                                 <div class="action-icon">{icon(if ebook { icons::BOOK } else { icons::HEADPHONES })}</div>
                                                 <div>
                                                     <strong>{name}</strong>
                                                     <p>{asset_label(a)}</p>
+                                                    // Editions of one kind otherwise look alike: name the file.
+                                                    {choosable.then(|| {
+                                                        let file = a.path.trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_string();
+                                                        view! { <p class="file">{file}</p> }
+                                                    })}
                                                 </div>
                                                 {(a.origin == "generated").then(|| view! { <span class="pill ai">{icon(icons::SPARKLE)}"AI"</span> })}
+                                                <Show when=is_default>
+                                                    <span class="pill default">{icon(icons::CHECK)}"Default"</span>
+                                                </Show>
                                             </div>
                                         }
                                     }).collect_view()}

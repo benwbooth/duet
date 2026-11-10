@@ -177,18 +177,28 @@ fn storage() -> Option<web_sys::Storage> {
     window().local_storage().ok().flatten()
 }
 
-/// The editions last chosen for a book on this device.
+/// The editions last chosen for a book on this device, from before the choice was kept on the
+/// server; only used when the book has no default yet.
 fn remembered(work: i64) -> (Option<i64>, Option<i64>) {
     let v = storage().and_then(|s| s.get_item(&format!("duet-editions-{work}")).ok().flatten()).unwrap_or_default();
     let mut parts = v.split(',').map(|p| p.parse::<i64>().ok());
     (parts.next().flatten(), parts.next().flatten())
 }
 
-fn remember(work: i64, ebook: Option<i64>, audio: Option<i64>) {
-    let fmt = |x: Option<i64>| x.map(|v| v.to_string()).unwrap_or_default();
-    if let Some(s) = storage() {
-        let _ = s.set_item(&format!("duet-editions-{work}"), &format!("{},{}", fmt(ebook), fmt(audio)));
-    }
+/// The ebook and recording a book opens with: its default when set, else the best guess.
+pub fn opening_editions(w: &WorkDetail) -> (Option<i64>, Option<i64>) {
+    let (old_e, old_a) = remembered(w.id);
+    let has = |want: Option<i64>| want.filter(|want| w.assets.iter().any(|a| a.id == *want));
+    let e = has(w.default_ebook.or(old_e)).or_else(|| pick_ebook(&w.assets).map(|a| a.id));
+    let a = has(w.default_audio.or(old_a)).or_else(|| pick_audio(&w.assets, e, &[]).map(|a| a.id));
+    (e, a)
+}
+
+/// Makes an edition the one the book opens with, on every device.
+pub fn remember(work: i64, asset: i64) {
+    spawn_local(async move {
+        let _ = api::put::<_, ()>(&format!("/api/works/{work}/default-edition"), &serde_json::json!({ "asset": asset })).await;
+    });
 }
 
 async fn load_sync(work: i64, ebook: Option<i64>, audio: Option<i64>) -> SyncIndex {
@@ -494,7 +504,8 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             prefs.set(s.reader);
         }
         let synced: Vec<(i64, i64)> = api::get(&format!("/api/works/{id}/sync")).await.unwrap_or_default();
-        let (want_e, want_a) = remembered(id);
+        let (old_e, old_a) = remembered(id);
+        let (want_e, want_a) = (w.default_ebook.or(old_e), w.default_audio.or(old_a));
         let find = |want: Option<i64>| want.and_then(|want| w.assets.iter().find(|a| a.id == want).cloned());
         let mut e = find(want_e).or_else(|| pick_ebook(&w.assets));
         let a = find(want_a).or_else(|| pick_audio(&w.assets, e.as_ref().map(|e| e.id), &synced));
@@ -1326,7 +1337,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         let s = if sentence.get_untracked() >= 0 { sentence.get_untracked() as usize } else { here.sentence };
         let c = chapter.get_untracked();
         let e = ebook.get_untracked().map(|e| e.id);
-        remember(id, e, Some(new.id));
+        remember(id, new.id);
         spawn_local(async move {
             let idx = load_sync(id, e, Some(new.id)).await;
             let (tr, secs) = match idx.of(c, s) {
@@ -1357,7 +1368,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         let old_chapters = layout.get_untracked().map(|l| l.chapters).unwrap_or(1).max(1);
         let old_chapter = chapter.get_untracked().min(old_chapters - 1);
         let a = audio_asset.get_untracked().map(|a| a.id);
-        remember(id, Some(new.id), a);
+        remember(id, new.id);
         spawn_local(async move {
             let idx = load_sync(id, Some(new.id), a).await;
             let l = api::get::<BookLayout>(&format!("/api/assets/{}/layout", new.id)).await.ok();

@@ -13,7 +13,7 @@ use axum::{
     Json, Router,
     extract::{Path as UrlPath, State as AxState},
     http::StatusCode,
-    routing::get,
+    routing::{get, put},
 };
 use duet_common::{Asset, AssetKind, DownloadTarget, NewDownload, Position, text::normalize};
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,30 @@ use crate::{
 };
 
 pub fn routes() -> Router<State> {
-    Router::new().route("/works/{id}/editions", get(pending).post(fetch))
+    Router::new()
+        .route("/works/{id}/editions", get(pending).post(fetch))
+        .route("/works/{id}/default-edition", put(set_default))
+}
+
+#[derive(Deserialize)]
+struct DefaultEdition {
+    asset: i64,
+}
+
+/// Makes an edition the one the book opens with (its kind decides ebook or recording).
+async fn set_default(AxState(s): AxState<State>, UrlPath(id): UrlPath<i64>, Json(req): Json<DefaultEdition>) -> ApiResult<StatusCode> {
+    let asset = db::asset(&s.db, req.asset).await?.filter(|a| a.work_id == id).ok_or_else(|| ApiError::not_found("edition"))?;
+    let column = match asset.kind {
+        AssetKind::Ebook => "default_ebook",
+        AssetKind::Audiobook => "default_audio",
+    };
+    sqlx::query(&format!("UPDATE works SET {column} = ? WHERE id = ?"))
+        .bind(asset.id)
+        .bind(id)
+        .execute(&s.db)
+        .await
+        .map_err(anyhow::Error::from)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

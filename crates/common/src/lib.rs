@@ -49,6 +49,11 @@ pub struct WorkDetail {
     pub position: Option<Position>,
     pub has_sync: bool,
     pub cast: Vec<CastMember>,
+    /// The editions the book opens with (set on its page, or the last one picked in the reader).
+    #[serde(default)]
+    pub default_ebook: Option<i64>,
+    #[serde(default)]
+    pub default_audio: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]

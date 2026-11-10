@@ -109,6 +109,8 @@ pub async fn work_detail(db: &SqlitePool, id: i64) -> anyhow::Result<Option<Work
         position: get_position(db, id).await?,
         has_sync: has_sync.0,
         cast: cast(db, id).await?,
+        default_ebook: r.get("default_ebook"),
+        default_audio: r.get("default_audio"),
     }))
 }
 
