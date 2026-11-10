@@ -152,11 +152,13 @@ async fn fetch_source(client: &reqwest::Client, rsshub: &str, s: &PodcastSource)
         }
         "lobsters" => {
             let path = match v {
-                "" | "hottest" => "hottest".to_string(),
-                "newest" | "active" => v.to_string(),
+                // The front page ("hottest") is plain /rss; /hottest.rss and /active.rss are 404s.
+                "" | "hottest" | "active" => "rss".to_string(),
+                "newest" => v.to_string(),
                 tag => format!("t/{}", tag.trim_start_matches("t/")),
             };
-            feed(client, &format!("https://lobste.rs/{path}.rss"), &name).await
+            let url = if path == "rss" { "https://lobste.rs/rss".to_string() } else { format!("https://lobste.rs/{path}.rss") };
+            feed(client, &url, &name).await
         }
         "bluesky" => {
             let handle = v.trim_start_matches('@').trim_start_matches("https://bsky.app/profile/");
