@@ -100,7 +100,16 @@ async fn load(state: &State, id: &str) -> anyhow::Result<Episode> {
     if let Some(ep) = making(id) {
         return Ok(ep.lock().await.clone());
     }
-    read_json(&episode_dir(state, id)?.join("episode.json")).await.context("no such episode")
+    let mut ep: Episode = read_json(&episode_dir(state, id)?.join("episode.json")).await.context("no such episode")?;
+    if !ep.finished() {
+        // Nothing is making it any more (duet restarted part-way): say so, and keep only the
+        // parts that got written, so "Record again" can finish recording those.
+        ep.stage = "failed".into();
+        ep.doing.clear();
+        ep.error = Some("Interrupted (duet restarted while making it)".into());
+        ep.segments.retain(|s| !s.writing && !s.lines.is_empty());
+    }
+    Ok(ep)
 }
 
 async fn save(state: &State, ep: &Episode) -> anyhow::Result<()> {
@@ -141,9 +150,13 @@ pub async fn begin(state: &State) -> anyhow::Result<Episode> {
         hosts: s.hosts.iter().map(|h| h.name.clone()).collect(),
         ..Default::default()
     };
-    save(state, &ep).await?;
+    // Live before it's on disk, so it never reads back as an interrupted one.
     let live = Arc::new(Mutex::new(ep.clone()));
     MAKING.lock().unwrap().insert(ep.id.clone(), live.clone());
+    if let Err(e) = save(state, &ep).await {
+        MAKING.lock().unwrap().remove(&ep.id);
+        return Err(e);
+    }
     let st = state.clone();
     tokio::spawn(async move {
         let id = live.lock().await.id.clone();
