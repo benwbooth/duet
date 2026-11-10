@@ -2577,14 +2577,17 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                             let _ = f.class_list().add_1("redrawing");
                         }
                         spawn_local(async move {
-                            if let Err(err) = api::post::<_, serde_json::Value>(&format!("/api/assets/{}/illustrations/{c}/{i}/redraw", e.id), &()).await {
-                                toast.show(format!("Couldn't draw it again: {}", err.0));
-                                if let Some(f) = fig() {
-                                    let _ = f.class_list().remove_1("redrawing");
+                            match api::post::<_, serde_json::Value>(&format!("/api/assets/{}/illustrations/{c}/{i}/redraw", e.id), &()).await {
+                                Err(err) => {
+                                    toast.show(format!("Couldn't draw it again: {}", err.0));
+                                    if let Some(f) = fig() {
+                                        let _ = f.class_list().remove_1("redrawing");
+                                    }
+                                    return;
                                 }
-                                return;
+                                Ok(v) if v["rethought"].as_bool() == Some(true) => toast.show("Drawing it again from a fresh description…".to_string()),
+                                Ok(_) => toast.show("Drawing it again from another angle (the AI couldn't describe it afresh)…".to_string()),
                             }
-                            toast.show("Drawing that picture again…".to_string());
                             // (Asked after every few seconds, for up to ten minutes.)
                             for _ in 0..150 {
                                 gloo_timers::future::TimeoutFuture::new(4000).await;

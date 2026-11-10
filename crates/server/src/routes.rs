@@ -378,8 +378,8 @@ async fn illus_chapter(AxState(s): AxState<State>, Path((id, chapter)): Path<(i6
 
 /// Draws one picture again (a right-click on it): a new take on the same scene, drawn first.
 async fn illus_redraw(AxState(s): AxState<State>, Path((id, chapter, i)): Path<(i64, usize, usize)>) -> ApiResult<Json<serde_json::Value>> {
-    crate::illustrate::redraw(&s, id, chapter, i).await.map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    let rethought = crate::illustrate::redraw(&s, id, chapter, i).await.map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    Ok(Json(serde_json::json!({ "ok": true, "rethought": rethought })))
 }
 
 async fn illus_image(AxState(s): AxState<State>, Path((id, chapter, file)): Path<(i64, usize, String)>) -> ApiResult<Response> {

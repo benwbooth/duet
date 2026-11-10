@@ -32,7 +32,21 @@ pub struct Scene {
     #[serde(default)]
     pub places: Vec<String>,
     pub seed: u64,
+    /// How many times the reader's had it drawn again (each time from another angle).
+    #[serde(default)]
+    pub take: u32,
 }
+
+/// Another angle for each time a picture's drawn again: the image model draws much the same
+/// picture for the same words whatever the seed, so the framing changes too.
+const ANGLES: [&str; 6] = [
+    "Seen from a different angle, a wider view.",
+    "A closer view, from low down.",
+    "Seen from above and to one side.",
+    "A close-up on the faces and hands.",
+    "A wide view with more of the surroundings.",
+    "Seen from behind and to one side.",
+];
 
 /// The book's art style and its characters' looks: the same for every picture.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -243,6 +257,7 @@ async fn plan_with(state: &State, asset: i64, chapter: usize, text: &[String], t
                         places: names(&v["places"]),
                         // (Fixed per scene, so a picture drawn again comes out the same.)
                         seed: (asset as u64) * 1_000_003 + (chapter as u64) * 1009 + sentence as u64,
+                        take: 0,
                     })
                 })
                 .collect()
@@ -337,7 +352,7 @@ pub async fn chapter(state: &State, asset: i64, chapter: usize, near: Option<usi
 
 /// One picture drawn again (the reader didn't like it): the same scene with a new seed, kept in
 /// the plan so it stays, and drawn before anything else.
-pub async fn redraw(state: &State, asset: i64, chapter: usize, i: usize) -> anyhow::Result<()> {
+pub async fn redraw(state: &State, asset: i64, chapter: usize, i: usize) -> anyhow::Result<bool> {
     let path = dir(state, asset).join(format!("plan-{chapter}.json"));
     let mut scenes: Vec<Scene> = read_json(&path).await.context("no pictures planned for this chapter")?;
     let old = scenes.get(i).context("no such picture")?.clone();
@@ -345,7 +360,9 @@ pub async fn redraw(state: &State, asset: i64, chapter: usize, i: usize) -> anyh
     // the places as the book has them). The image model alone hardly changes a picture with a
     // new seed. (If the director can't be reached, the new seed it is.)
     let fresh = rethink(state, asset, chapter, &old).await.map_err(|e| tracing::warn!("redrawing a picture: {e:#}")).ok();
+    let rethought = fresh.is_some();
     let scene = &mut scenes[i];
+    scene.take += 1;
     if let Some(f) = fresh {
         scene.scene = f.scene;
         scene.characters = f.characters;
@@ -359,7 +376,7 @@ pub async fn redraw(state: &State, asset: i64, chapter: usize, i: usize) -> anyh
     // (The reader "at" the picture, so it's the nearest one left to draw.)
     READER.lock().unwrap().insert(asset, (chapter, sentence));
     ahead(state, asset);
-    Ok(())
+    Ok(rethought)
 }
 
 /// A new take on one scene, from the director: the passage round it, the look-books, and what
@@ -514,8 +531,9 @@ async fn draw(state: &State, asset: i64, items: &[(usize, usize, Scene)]) -> any
             .map(|(n, l)| format!("{n}: {l}"))
             .collect();
         let place = if wheres.is_empty() { String::new() } else { format!(" The place looks like this. {}", wheres.join(" ")) };
+        let angle = if s.take > 0 { format!(" {}", ANGLES[(s.take as usize - 1) % ANGLES.len()]) } else { String::new() };
         jobs.push(json!({
-            "full_prompt": format!("{}{place}{who} Art style: {}. No text or lettering.", s.scene, style.style),
+            "full_prompt": format!("{}{angle}{place}{who} Art style: {}. No text or lettering.", s.scene, style.style),
             "prompt": s.scene,
             "seed": s.seed,
             "out": image_path(state, asset, *chapter, *i),
