@@ -13,7 +13,7 @@ pub struct PodcastSettings {
     pub interests: String,
     /// Roughly how long an episode runs.
     pub minutes: u32,
-    /// One or two hosts.
+    /// One host talking to you (the default), or two talking with each other.
     pub hosts: Vec<PodcastHost>,
     /// Make the day's episode at this local time ("06:30"), ready before you head out. Empty:
     /// only when you ask.
@@ -40,12 +40,6 @@ impl Default for PodcastSettings {
                     name: "Maya".into(),
                     voice: "A woman in her thirties with a warm, bright American voice: quick, curious and funny, \
                             like a favourite morning radio host."
-                        .into(),
-                },
-                PodcastHost {
-                    name: "Theo".into(),
-                    voice: "A man in his forties with a relaxed, dry-witted British voice, Southern English accent, \
-                            thoughtful and wry."
                         .into(),
                 },
             ],
@@ -136,6 +130,14 @@ pub struct PodcastSource {
     pub enabled: bool,
 }
 
+/// The second host offered when switching to two.
+pub fn second_host() -> PodcastHost {
+    PodcastHost {
+        name: "Theo".into(),
+        voice: "A man in his forties with a relaxed, dry-witted British voice, Southern English accent, thoughtful and wry.".into(),
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PodcastHost {
     pub name: String,
@@ -172,8 +174,10 @@ impl Episode {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct Segment {
+    /// Names its recordings: `/api/podcast/episodes/{id}/audio/{key}/{line}`.
+    pub key: String,
     pub title: String,
-    /// "intro", "story" or "outro".
+    /// "intro", "story", "detour" (somewhere the listener asked to go) or "outro".
     pub kind: String,
     pub sources: Vec<SourceLink>,
     /// The script is still being written.
@@ -197,7 +201,7 @@ pub struct Line {
     pub speaker: String,
     /// With inline acting directions ("[laughing] No way."), which the voices follow.
     pub text: String,
-    /// Recorded: `/api/podcast/episodes/{id}/audio/{segment}/{line}` plays it.
+    /// Recorded: `/api/podcast/episodes/{id}/audio/{key}/{line}` plays it.
     pub ready: bool,
 }
 
@@ -232,6 +236,12 @@ pub struct PodcastAnswer {
     pub spoken: String,
     /// An mp3 data URL, when the voices are up.
     pub audio: Option<String>,
+    /// What was found while looking into it.
+    #[serde(default)]
+    pub links: Vec<SourceLink>,
+    /// A detour being made on it (the segment's key), to play next.
+    #[serde(default)]
+    pub detour: Option<String>,
 }
 
 /// A host's voice clip and whether it's been made.

@@ -43,7 +43,7 @@ pub fn routes() -> Router<State> {
         .route("/podcast/episodes", get(list).post(start))
         .route("/podcast/episodes/{id}", get(episode).delete(remove))
         .route("/podcast/episodes/{id}/record", post(record_again))
-        .route("/podcast/episodes/{id}/audio/{seg}/{line}", get(line_audio))
+        .route("/podcast/episodes/{id}/audio/{key}/{line}", get(line_audio))
         .route("/podcast/ask", post(ask))
         .route("/podcast/voices", get(voices))
         .route("/podcast/voices/recast", post(recast))
@@ -206,7 +206,7 @@ async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> a
     let picks = choose(state, s, &items, stories).await?;
     anyhow::ensure!(!picks.stories.is_empty(), "the chat model didn't pick any stories");
 
-    let mut segments = vec![Segment { title: "Today's briefing".into(), kind: "intro".into(), writing: true, ..Default::default() }];
+    let mut segments = vec![Segment { key: "intro".into(), title: "Today's briefing".into(), kind: "intro".into(), writing: true, ..Default::default() }];
     let mut chosen: Vec<Vec<feeds::Item>> = Vec::new();
     for p in &picks.stories {
         let its: Vec<feeds::Item> = p.items.iter().filter_map(|&i| items.get(i).cloned()).take(4).collect();
@@ -214,6 +214,7 @@ async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> a
             continue;
         }
         segments.push(Segment {
+            key: format!("s{}", chosen.len() + 1),
             title: p.title.clone(),
             kind: "story".into(),
             writing: true,
@@ -222,7 +223,7 @@ async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> a
         });
         chosen.push(its);
     }
-    segments.push(Segment { title: "Sign-off".into(), kind: "outro".into(), writing: true, ..Default::default() });
+    segments.push(Segment { key: "outro".into(), title: "Sign-off".into(), kind: "outro".into(), writing: true, ..Default::default() });
     let title = picks.title.trim().to_string();
     update(state, ep, |e| {
         if !title.is_empty() {
@@ -257,7 +258,8 @@ async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> a
         notes[k] = text;
         done += 1;
         update(state, ep, |e| {
-            if let Some(seg) = e.segments.get_mut(k + 1) {
+            let key = format!("s{}", k + 1);
+            if let Some(seg) = e.segments.iter_mut().find(|s| s.key == key) {
                 for (src, (img, site)) in seg.sources.iter_mut().zip(images) {
                     if src.image.is_none() {
                         src.image = img;
@@ -292,7 +294,7 @@ async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> a
         let st = state.clone();
         let ep = ep.clone();
         let hosts = s.hosts.clone();
-        tokio::spawn(async move { record(&st, &ep, &hosts).await })
+        tokio::spawn(async move { record(&st, &ep, &hosts, None).await })
     };
     let titles: Vec<String> = picks.stories.iter().map(|p| p.title.clone()).collect();
     let total = notes.len() + 2;
@@ -318,7 +320,8 @@ async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> a
             }
         };
         update(state, ep, |e| {
-            if let Some(seg) = e.segments.get_mut(k) {
+            let key = if k == 0 { "intro".to_string() } else if k == total - 1 { "outro".to_string() } else { format!("s{k}") };
+            if let Some(seg) = e.segments.iter_mut().find(|s| s.key == key) {
                 seg.lines = lines;
                 seg.writing = false;
             }
@@ -355,7 +358,11 @@ fn today() -> String {
 fn hosts_blurb(s: &PodcastSettings) -> String {
     let who: Vec<String> = s.hosts.iter().map(|h| format!("{} ({})", h.name, h.voice)).collect();
     if s.hosts.len() == 1 {
-        format!("The host is {}, talking straight to the listener.", who[0])
+        format!(
+            "The host is {}, talking straight to the listener on their own: a lively, personal monologue, like a \
+             favourite radio host catching a friend up. Every line's speaker is the host.",
+            who[0]
+        )
     } else {
         format!("The hosts are {}. They talk with each other and the listener like old friends who've read everything.", who.join(" and "))
     }
@@ -516,64 +523,65 @@ async fn perform(state: &State, text: &str, host: &duet_common::podcast::Podcast
 }
 
 /// Records every line in order, waiting for each part to be written. Returns once everything
-/// written has been recorded and nothing's still being written.
-async fn record(state: &State, ep: &Arc<Mutex<Episode>>, hosts: &[duet_common::podcast::PodcastHost]) -> anyhow::Result<()> {
+/// written has been recorded and nothing's still being written. `only`: just that part (a
+/// detour); otherwise everything but the detours, which record themselves.
+async fn record(state: &State, ep: &Arc<Mutex<Episode>>, hosts: &[duet_common::podcast::PodcastHost], only: Option<&str>) -> anyhow::Result<()> {
     let id = ep.lock().await.id.clone();
     let dir = episode_dir(state, &id)?;
     let mut failures = 0;
-    let mut seg = 0;
     loop {
-        // The next part, once it's written.
-        let (lines, count, still_writing) = {
+        // The first line not yet recorded, unless a part before it is still being written.
+        let (next, waiting) = {
             let e = ep.lock().await;
-            match e.segments.get(seg) {
-                None => (Vec::new(), e.segments.len(), false),
-                Some(s) => (s.lines.clone(), e.segments.len(), s.writing),
+            let mut next = None;
+            let mut waiting = false;
+            for seg in e.segments.iter().filter(|s| match only {
+                Some(k) => s.key == k,
+                None => s.kind != "detour",
+            }) {
+                if seg.writing {
+                    waiting = true;
+                    break;
+                }
+                if let Some(n) = seg.lines.iter().position(|l| !l.ready) {
+                    next = Some((seg.key.clone(), n, seg.lines[n].clone(), seg.title.clone()));
+                    break;
+                }
             }
+            (next, waiting)
         };
-        if seg >= count {
-            return Ok(());
-        }
-        if still_writing {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            continue;
-        }
-        let title = ep.lock().await.segments[seg].title.clone();
-        for (n, line) in lines.iter().enumerate() {
-            let file = dir.join(format!("{seg}-{n}.mp3"));
-            if line.ready && file.exists() {
+        let Some((key, n, line, title)) = next else {
+            if waiting {
+                tokio::time::sleep(Duration::from_millis(500)).await;
                 continue;
             }
-            {
-                let mut e = ep.lock().await;
-                if e.stage == "recording" || e.stage == "writing" {
-                    e.doing = format!("Recording “{}”", title);
-                }
-            }
-            let host = hosts.iter().find(|h| h.name == line.speaker).unwrap_or(&hosts[0]);
-            match perform(state, &line.text, host).await {
-                Ok(mp3) => {
-                    tokio::fs::write(&file, mp3).await?;
-                    update(state, ep, |e| {
-                        if let Some(l) = e.segments.get_mut(seg).and_then(|s| s.lines.get_mut(n)) {
-                            l.ready = true;
-                        }
-                    })
-                    .await;
-                }
-                Err(e) => {
-                    failures += 1;
-                    if failures >= 3 {
-                        return Err(e);
-                    }
-                    tracing::warn!("recording a briefing line: {e:#}");
-                }
+            return Ok(());
+        };
+        {
+            let mut e = ep.lock().await;
+            if only.is_none() && (e.stage == "recording" || e.stage == "writing") {
+                e.doing = format!("Recording “{title}”");
             }
         }
-        // (Segments with no lines are dropped once writing ends; the indexes then shift, so
-        // look the segment up again by title.)
-        let e = ep.lock().await;
-        seg = e.segments.iter().position(|s| s.title == title).map(|p| p + 1).unwrap_or(seg + 1);
+        let host = hosts.iter().find(|h| h.name == line.speaker).unwrap_or(&hosts[0]);
+        match perform(state, &line.text, host).await {
+            Ok(mp3) => {
+                tokio::fs::write(dir.join(format!("{key}-{n}.mp3")), mp3).await?;
+                update(state, ep, |e| {
+                    if let Some(l) = e.segments.iter_mut().find(|s| s.key == key).and_then(|s| s.lines.get_mut(n)) {
+                        l.ready = true;
+                    }
+                })
+                .await;
+            }
+            Err(e) => {
+                failures += 1;
+                if failures >= 3 {
+                    return Err(e);
+                }
+                tracing::warn!("recording a briefing line: {e:#}");
+            }
+        }
     }
 }
 
@@ -659,14 +667,39 @@ pub async fn answer(state: &State, q: PodcastAsk) -> anyhow::Result<PodcastAnswe
          they've just paused it to ask you something. Today is {}. Today's stories: {}.\n\n{context}\n\n\
          Answer the way you'd talk on the show: conversational, clear and brief (two to five spoken sentences unless \
          they ask for more). Look things up on the web when you need facts beyond what you read, and say where they \
-         came from. Be honest about what isn't known. Never read out web addresses. Begin your reply with an acting \
-         direction in square brackets for the voice, e.g. [thoughtfully].",
+         came from. Be honest about what isn't known. Never read out web addresses. Begin what you say with an acting \
+         direction in square brackets for the voice, e.g. [thoughtfully].\n\n\
+         If they want to go deeper or off on a tangent (\"tell me more about...\", \"what's the history of...\", \
+         \"go down that rabbit hole\"), give a short answer now and set \"dive\" to a short title for a fuller segment \
+         you'll make about it next; otherwise leave it empty.\n\n\
+         Reply with JSON only: {{\"say\": \"[direction] what you say\", \"links\": [{{\"title\": \"...\", \"url\": \"...\", \
+         \"site\": \"...\"}}] (the best pages you found or used, if any), \"dive\": \"\"}}",
         today(),
         others.join("; ")
     );
     let mut turns: Vec<crate::llm::Turn> = q.history.iter().map(|t| (t.role.clone(), t.content.clone())).collect();
     turns.push(("user".into(), q.question.clone()));
-    let spoken = crate::llm::chat_web(state, &system, &turns).await?;
+    let reply = crate::llm::chat_web(state, &system, &turns).await?;
+    #[derive(Deserialize, Default)]
+    struct Reply {
+        #[serde(default)]
+        say: String,
+        #[serde(default)]
+        links: Vec<SourceLink>,
+        #[serde(default)]
+        dive: String,
+    }
+    let r: Reply = json_in(&reply, '{', '}').unwrap_or_else(|_| Reply { say: reply.clone(), ..Default::default() });
+    let spoken = if r.say.trim().is_empty() { reply.clone() } else { r.say.trim().to_string() };
+    let links: Vec<SourceLink> = r.links.into_iter().filter(|l| l.url.starts_with("http")).take(8).collect();
+    let mut detour_key = None;
+    if !r.dive.trim().is_empty() && !s.hosts.is_empty() {
+        let key = format!("d{}", chrono::Utc::now().timestamp_millis());
+        let seg = Segment { key: key.clone(), title: r.dive.trim().to_string(), kind: "detour".into(), sources: links.clone(), writing: true, lines: vec![] };
+        let after = ep.segments.get(q.segment).map(|s| s.key.clone());
+        start_detour(state, &q.episode, after, seg, q.question.clone(), context.clone(), s.clone()).await?;
+        detour_key = Some(key);
+    }
     let audio = match &host {
         Some(h) => match perform(state, &spoken, h).await {
             Ok(mp3) => Some(format!("data:audio/mpeg;base64,{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, mp3))),
@@ -677,7 +710,107 @@ pub async fn answer(state: &State, q: PodcastAsk) -> anyhow::Result<PodcastAnswe
         },
         None => None,
     };
-    Ok(PodcastAnswer { speaker, text: strip_directions(&spoken), spoken, audio })
+    Ok(PodcastAnswer { speaker, text: strip_directions(&spoken), spoken, audio, links, detour: detour_key })
+}
+
+/// A detour: a fuller segment on something the listener wanted to dig into, researched on the
+/// web, put in right after the part they were listening to, and recorded at once.
+async fn start_detour(
+    state: &State,
+    id: &str,
+    after: Option<String>,
+    seg: Segment,
+    question: String,
+    context: String,
+    s: PodcastSettings,
+) -> anyhow::Result<()> {
+    // The live episode (it may still be being made), or brought back to life for this.
+    let (live, ours) = match making(id) {
+        Some(l) => (l, false),
+        None => {
+            let mut e = load(state, id).await?;
+            e.stage = "recording".into();
+            e.doing = format!("Looking into “{}”", seg.title);
+            let l = Arc::new(Mutex::new(e));
+            MAKING.lock().unwrap().insert(id.to_string(), l.clone());
+            (l, true)
+        }
+    };
+    let key = seg.key.clone();
+    let title = seg.title.clone();
+    update(state, &live, |e| {
+        // After the part being listened to, and after any detours already queued there.
+        let mut at = after.and_then(|a| e.segments.iter().position(|x| x.key == a)).map(|p| p + 1).unwrap_or(e.segments.len());
+        while e.segments.get(at).is_some_and(|x| x.kind == "detour") {
+            at += 1;
+        }
+        e.segments.insert(at.min(e.segments.len()), seg);
+    })
+    .await;
+    let st = state.clone();
+    let id = id.to_string();
+    tokio::spawn(async move {
+        let r = async {
+            let lines = write_detour(&st, &s, &title, &question, &context).await?;
+            anyhow::ensure!(!lines.is_empty(), "nothing came of it");
+            update(&st, &live, |e| {
+                if let Some(x) = e.segments.iter_mut().find(|x| x.key == key) {
+                    x.lines = lines;
+                    x.writing = false;
+                }
+            })
+            .await;
+            record(&st, &live, &s.hosts, Some(&key)).await
+        }
+        .await;
+        if let Err(err) = &r {
+            tracing::warn!("detour “{title}”: {err:#}");
+            update(&st, &live, |e| e.segments.retain(|x| x.key != key || !x.lines.is_empty())).await;
+        }
+        if ours {
+            update(&st, &live, |e| {
+                e.segments.retain(|x| !(x.key == key && x.lines.is_empty()));
+                if let Some(x) = e.segments.iter_mut().find(|x| x.key == key) {
+                    x.writing = false;
+                }
+                e.stage = "ready".into();
+                e.doing.clear();
+            })
+            .await;
+            MAKING.lock().unwrap().remove(&id);
+        }
+    });
+    Ok(())
+}
+
+async fn write_detour(state: &State, s: &PodcastSettings, title: &str, question: &str, context: &str) -> anyhow::Result<Vec<Line>> {
+    let names: Vec<String> = s.hosts.iter().map(|h| h.name.clone()).collect();
+    let system = format!(
+        "You write a personal daily news podcast for one listener, made and voiced by AI. Today is {}. {}\n\n\
+         The listener stopped the show to go down a rabbit hole, and this is the detour: research it properly on the \
+         web first (several searches; read the best sources), then write a lively, well-informed segment of about 350 \
+         words that digs into it: background, the interesting details, what's new, what's disputed. Say where facts \
+         come from; don't make anything up. Open by picking up their question (\"So you asked about...\") and end by \
+         handing back to the show.\n\n\
+         Begin every line with an acting direction in square brackets for the voice actor.\n\n\
+         Answer with JSON only: [{{\"speaker\": one of {:?}, \"text\": \"[direction] what they say\"}}].",
+        today(),
+        hosts_blurb(s),
+        names
+    );
+    let prompt = format!("Detour: {title}\nTheir words: \"{question}\"\n\nWhere the show was:\n{context}");
+    let answer = crate::llm::chat_web(state, &system, &[("user".into(), prompt)]).await?;
+    let raw: Vec<RawLine> = json_in(&answer, '[', ']')?;
+    Ok(raw
+        .into_iter()
+        .enumerate()
+        .filter(|(_, l)| !l.text.trim().is_empty())
+        .map(|(n, l)| Line {
+            speaker: names.iter().find(|h| h.eq_ignore_ascii_case(l.speaker.trim())).cloned().unwrap_or_else(|| names[n % names.len()].clone()),
+            text: l.text.trim().to_string(),
+            ready: false,
+        })
+        .collect())
 }
 
 // ---- Routes ----
@@ -728,7 +861,7 @@ async fn record_again(AxState(s): AxState<State>, Path(id): Path<String>) -> Api
     MAKING.lock().unwrap().insert(id.clone(), live.clone());
     let hosts = settings(&s).await.hosts;
     tokio::spawn(async move {
-        let r = record(&s, &live, &hosts).await;
+        let r = record(&s, &live, &hosts, None).await;
         update(&s, &live, |e| match r {
             Ok(()) => {
                 e.stage = "ready".into();
@@ -745,8 +878,11 @@ async fn record_again(AxState(s): AxState<State>, Path(id): Path<String>) -> Api
     Ok(Json(e))
 }
 
-async fn line_audio(AxState(s): AxState<State>, Path((id, seg, line)): Path<(String, usize, usize)>) -> ApiResult<Response> {
-    let file = episode_dir(&s, &id)?.join(format!("{seg}-{line}.mp3"));
+async fn line_audio(AxState(s): AxState<State>, Path((id, key, line)): Path<(String, String, usize)>) -> ApiResult<Response> {
+    if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err(ApiError::not_found("recording"));
+    }
+    let file = episode_dir(&s, &id)?.join(format!("{key}-{line}.mp3"));
     let bytes = tokio::fs::read(file).await.map_err(|_| ApiError::not_found("recording"))?;
     Ok(([(header::CONTENT_TYPE, "audio/mpeg"), (header::CACHE_CONTROL, "max-age=86400")], bytes).into_response())
 }

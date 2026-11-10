@@ -1892,7 +1892,7 @@ html.eink .swatch-gray { background: #4a4a4c; } html.eink .swatch-dark { backgro
 .host-actions audio { height: 34px; }
 @media (max-width: 900px) {
   .brief-layout { grid-template-columns: 1fr; }
-  .brief-episodes { position: static; order: -1; }
+  .brief-episodes { position: static; }
   .brief-row { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
@@ -1908,3 +1908,18 @@ html.eink .swatch-gray { background: #4a4a4c; } html.eink .swatch-dark { backgro
   html.eink .tabs a.active { font-weight: 700; box-shadow: inset 0 3px 0 #000 !important; border-radius: 0; }
   html.eink .reader-bar .icon-button, html.eink .reader-bar .back { border-color: transparent; }
 }
+.brief-layout > *, .brief-player > *, .brief-settings > * { min-width: 0; }
+.brief-player, .brief-settings { grid-template-columns: minmax(0, 1fr); }
+.brief-ep { border-radius: var(--radius-sm); }
+.brief-ask .mic.big svg.mic-icon { width: 24px; height: 24px; flex: none; }
+.brief-story.detour { border-style: dashed; border-color: var(--accent-2); }
+.detour-tag { display: inline-block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); margin-right: 0.5rem; }
+.answer-links { list-style: none; margin: 0.4rem 0 0; padding: 0; display: grid; gap: 0.2rem; font-size: 0.85rem; }
+.answer-links a { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.answer-links .site { color: var(--muted); margin-right: 0.4rem; }
+.detour-note { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.4rem; font-size: 0.88rem; color: var(--accent); flex-wrap: wrap; }
+.detour-note .icon { width: 16px; height: 16px; }
+.brief-exchanges .message { max-width: 92%; }
+.story-sources, .answer-links { grid-template-columns: minmax(0, 1fr); }
+.story-sources li, .answer-links li { min-width: 0; }
+.brief-ep { width: 100%; justify-content: start; }

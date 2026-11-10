@@ -4,7 +4,7 @@
 
 use duet_common::{
     ChatTurn,
-    podcast::{CATALOG, Episode, EpisodeSummary, HostVoice, PodcastAnswer, PodcastAsk, PodcastHost, PodcastSettings, PodcastSource, strip_directions},
+    podcast::{CATALOG, Episode, EpisodeSummary, HostVoice, PodcastAnswer, PodcastAsk, PodcastSettings, PodcastSource, strip_directions},
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -126,8 +126,9 @@ fn lines_json(ep: &Episode) -> String {
         .enumerate()
         .flat_map(|(s, seg)| {
             let id = ep.id.clone();
+            let key = seg.key.clone();
             seg.lines.iter().enumerate().map(move |(l, line)| {
-                serde_json::json!({ "seg": s, "ready": line.ready, "url": format!("/api/podcast/episodes/{id}/audio/{s}/{l}") })
+                serde_json::json!({ "seg": s, "ready": line.ready, "url": format!("/api/podcast/episodes/{id}/audio/{key}/{l}") })
             })
         })
         .collect();
@@ -359,11 +360,19 @@ fn Player(current: RwSignal<Option<Episode>>, index: RwSignal<usize>, pstate: Rw
         exchanges.update(|x| x.push(Exchange { question: question.clone(), answer: None }));
         input.set(String::new());
         thinking.set(true);
+        let req_id = e.id.clone();
         let req = PodcastAsk { episode: e.id.clone(), segment, line, question, history };
         spawn_local(async move {
             match api::post::<_, PodcastAnswer>("/api/podcast/ask", &req).await {
                 Ok(a) => {
                     let audio = a.audio.clone();
+                    if a.detour.is_some() {
+                        // The detour's in the episode now: show it, and keep checking on it.
+                        if let Ok(new) = api::get::<Episode>(&format!("/api/podcast/episodes/{}", req_id)).await {
+                            pod_lines(&lines_json(&new));
+                            current.set(Some(new));
+                        }
+                    }
                     exchanges.update(|x| {
                         if let Some(last) = x.last_mut() {
                             last.answer = Some(a);
@@ -535,7 +544,49 @@ fn Player(current: RwSignal<Option<Episode>>, index: RwSignal<usize>, pstate: Rw
                 <div class="brief-exchanges">
                     <For each=numbered key=|(i, x)| (*i, x.answer.is_some()) let:item>
                         <div class="message mine"><small>"You"</small><p>{item.1.question.clone()}</p></div>
-                        {item.1.answer.clone().map(|a| view! { <div class="message"><small>{a.speaker.clone()}</small><p>{a.text.clone()}</p></div> })}
+                        {item.1.answer.clone().map(|a| {
+                            let detour = a.detour.clone();
+                            view! {
+                                <div class="message">
+                                    <small>{a.speaker.clone()}</small>
+                                    <p>{a.text.clone()}</p>
+                                    {(!a.links.is_empty()).then(|| view! {
+                                        <ul class="answer-links">
+                                            {a.links.iter().map(|l| view! {
+                                                <li><a href=l.url.clone() target="_blank" rel="noopener noreferrer">
+                                                    {(!l.site.is_empty()).then(|| view! { <span class="site">{l.site.clone()}</span> })}
+                                                    {if l.title.is_empty() { l.url.clone() } else { l.title.clone() }}
+                                                </a></li>
+                                            }).collect_view()}
+                                        </ul>
+                                    })}
+                                    {detour.map(|key| {
+                                        let k2 = key.clone();
+                                        let key = StoredValue::new(key);
+                                        let seg = move || key.with_value(|key| current.with(|c| c.as_ref().and_then(|e| e.segments.iter().position(|x| &x.key == key).map(|i| (i, e.segments[i].clone())))));
+                                        view! {
+                                            <div class="detour-note">
+                                                {icon(icons::SPARKLE)}
+                                                <span>{move || match seg() {
+                                                    Some((_, x)) if x.writing => format!("Digging into “{}”…", x.title),
+                                                    Some((_, x)) => format!("“{}” plays after this part", x.title),
+                                                    None => "That detour didn't work out".into(),
+                                                }}</span>
+                                                <button class="link" disabled=move || !seg().is_some_and(|(_, x)| x.lines.first().is_some_and(|l| l.ready))
+                                                    on:click=move |_| {
+                                                        let Some(e) = current.get_untracked() else { return };
+                                                        if let Some(s) = e.segments.iter().position(|x| x.key == k2) {
+                                                            if let Some(i) = flat(&e).iter().position(|(x, _)| *x == s) {
+                                                                pod_play_from(i);
+                                                            }
+                                                        }
+                                                    }>"Play it now"</button>
+                                            </div>
+                                        }
+                                    })}
+                                </div>
+                            }
+                        })}
                     </For>
                     <Show when=move || thinking.get()><p class="hint thinking"><span class="spinner small"></span>"Looking into it…"</p></Show>
                 </div>
@@ -552,7 +603,7 @@ fn Player(current: RwSignal<Option<Episode>>, index: RwSignal<usize>, pstate: Rw
                         </button>
                     </Show>
                     <input type="text" prop:value=move || input.get()
-                        placeholder=move || if mic_starting.get() { "Waiting for the microphone…" } else if recording.get() { "Listening…" } else { "Ask about what you're hearing" }
+                        placeholder=move || if mic_starting.get() { "Waiting for the microphone…" } else if recording.get() { "Listening…" } else { "Ask, or say \"tell me more about…\"" }
                         on:input=move |ev| input.set(event_target_value(&ev))/>
                 </form>
                 <label class="check"><input type="checkbox" prop:checked=move || resume_after.get() on:change=move |ev| resume_after.set(event_target_checked(&ev))/>"Carry on after the answer"</label>
@@ -569,10 +620,10 @@ fn Player(current: RwSignal<Option<Episode>>, index: RwSignal<usize>, pstate: Rw
                         let state = if seg.writing { "Being written…".to_string() } else if total > 0 && ready < total { format!("Recording {ready}/{total}") } else { String::new() };
                         let sources = seg.sources.clone();
                         view! {
-                            <li class="brief-story" class:now=move || here().is_some_and(|(x, _)| x == s) class:intro=seg.kind != "story">
+                            <li class="brief-story" class:now=move || here().is_some_and(|(x, _)| x == s) class:intro=seg.kind == "intro" || seg.kind == "outro" class:detour=seg.kind == "detour">
                                 <button class="story-head" disabled=total == 0 on:click=move |_| pod_play_from(start)>
                                     {sources.iter().find_map(|x| x.image.clone()).map(|src| view! { <img src=src alt="" loading="lazy" referrerpolicy="no-referrer"/> })}
-                                    <span class="story-title">{seg.title.clone()}</span>
+                                    <span class="story-title">{(seg.kind == "detour").then(|| view! { <span class="detour-tag">"Your detour"</span> })}{seg.title.clone()}</span>
                                     <small>{state}</small>
                                 </button>
                                 {(!sources.is_empty()).then(|| view! {
@@ -728,7 +779,11 @@ fn BriefingSettings(settings: RwSignal<Option<PodcastSettings>>) -> impl IntoVie
 
                 <section>
                     <h3>"Hosts"</h3>
-                    <p class="hint">"AI voices, made from these descriptions. One host talks to you; two talk with each other."</p>
+                    <div class="segmented">
+                        <button class:active=move || s().hosts.len() <= 1 on:click=move |_| save(Box::new(|s| s.hosts.truncate(1)))>"One host"</button>
+                        <button class:active=move || { s().hosts.len() > 1 } on:click=move |_| save(Box::new(|s| if s.hosts.len() < 2 { s.hosts.push(duet_common::podcast::second_host()) }))>"Two hosts"</button>
+                    </div>
+                    <p class="hint">"AI voices, made from these descriptions. One host talks straight to you; two talk with each other."</p>
                     {move || s().hosts.into_iter().enumerate().map(|(i, h)| {
                         let name = h.name.clone();
                         let name2 = h.name.clone();
@@ -767,9 +822,6 @@ fn BriefingSettings(settings: RwSignal<Option<PodcastSettings>>) -> impl IntoVie
                             </div>
                         }
                     }).collect_view()}
-                    <Show when=move || { s().hosts.len() < 2 }>
-                        <button on:click=move |_| save(Box::new(|s| s.hosts.push(PodcastHost { name: "Theo".into(), voice: "A man in his forties with a relaxed, dry-witted British voice, thoughtful and wry.".into() })))>"Add a second host"</button>
-                    </Show>
                 </section>
             </div>
         </Show>
