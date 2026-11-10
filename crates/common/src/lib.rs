@@ -546,7 +546,13 @@ pub struct ReaderSettings {
 }
 
 /// The reader's default typeface: book faces where the system has them.
-pub const BOOK_FONT: &str = "\"Iowan Old Style\", \"Palatino Linotype\", Palatino, \"Book Antiqua\", Georgia, serif";
+/// The book face: the classic ones where the system has them, else Literata (served with the
+/// app). Not the system's own serif: on Linux that's Liberation Serif or the like, and Chrome
+/// lays it out with hyphenation a letter off from where it draws it, so the word being read
+/// was highlighted a letter early with its last letter missing.
+pub const BOOK_FONT: &str = "\"Iowan Old Style\", \"Palatino Linotype\", Palatino, \"Book Antiqua\", Literata, Georgia, serif";
+/// What the book face was before Literata stood in for a missing Palatino (saved in settings).
+pub const OLD_BOOK_FONT: &str = "\"Iowan Old Style\", \"Palatino Linotype\", Palatino, \"Book Antiqua\", Georgia, serif";
 
 impl Default for ReaderSettings {
     fn default() -> Self {

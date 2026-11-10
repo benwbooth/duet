@@ -1980,7 +1980,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             style=move || {
             let p = prefs.get();
             // Earlier versions saved plain Georgia as the default; read that as the book faces.
-            let font = if p.font == "Georgia, serif" { duet_common::BOOK_FONT.to_string() } else { p.font.clone() };
+            let font = if p.font == "Georgia, serif" || p.font == duet_common::OLD_BOOK_FONT { duet_common::BOOK_FONT.to_string() } else { p.font.clone() };
             format!("--font-size:{}px;--line-height:{};--font:{}", font_size.get(), p.line_height, font)
         } data-theme=move || page_theme(&prefs.get().theme).to_string()>
             <header class="reader-bar">
