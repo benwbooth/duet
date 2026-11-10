@@ -86,7 +86,7 @@
               # PDF pages; libarchive's bsdtar opens CBR/CB7/CBT comics.
               wrapProgram $out/bin/duet \
                 --set-default DUET_WEB_DIR $out/share/duet/web \
-                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.calibre pkgs.ffmpeg pkgs.poppler-utils pkgs.libarchive ]}
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.calibre pkgs.ffmpeg pkgs.poppler-utils pkgs.libarchive pkgs.yt-dlp ]}
               runHook postInstall
             '';
             doCheck = false;
@@ -96,7 +96,7 @@
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ rustc cargo clippy rustfmt rust-analyzer wasm-bindgen-cli lld ffmpeg watchexec poppler-utils libarchive calibre ];
+          packages = with pkgs; [ rustc cargo clippy rustfmt rust-analyzer wasm-bindgen-cli lld ffmpeg watchexec poppler-utils libarchive calibre yt-dlp ];
         };
       });
     };
