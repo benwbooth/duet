@@ -22,6 +22,9 @@ fn page_theme(t: &str) -> &str {
     }
 }
 
+/// Books of page pictures, which the full cast reads off the page.
+const PICTURES: [&str; 5] = ["cbz", "cbr", "cb7", "cbt", "pdf"];
+
 fn readable(a: &Asset) -> bool {
     READABLE.contains(&a.format.as_str())
 }
@@ -122,7 +125,8 @@ impl Mode {
         let audio = assets.iter().any(|a| a.kind == AssetKind::Audiobook);
         // An audiobook can always be read: its text is made from the recording as you go.
         let ebook = audio || assets.iter().any(|a| a.kind == AssetKind::Ebook);
-        let text = audio || assets.iter().any(|a| a.kind == AssetKind::Ebook && readable(a));
+        // (Comics and PDFs too: their balloons and captions are read off the pages.)
+        let text = audio || assets.iter().any(|a| a.kind == AssetKind::Ebook && (readable(a) || PICTURES.contains(&a.format.as_str())));
         Mode::ALL
             .into_iter()
             .filter(|m| match m {

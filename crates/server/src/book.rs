@@ -356,6 +356,11 @@ pub fn image_pages(src: &Source, asset_id: i64, rtl: bool) -> anyhow::Result<Cha
         .collect();
     if rtl {
         each.reverse();
+        // (An odd number of pages: a blank one at the back, so the first page opens on the
+        // right, as manga does.)
+        if pages % 2 == 1 && pages > 1 {
+            each.insert(0, r#"<div class="img-page blank"></div>"#.to_string());
+        }
     }
     Ok(Chapter { index: 0, html: each.concat(), sentences: 0 })
 }

@@ -128,7 +128,7 @@ export function visibleSentence(container) {
   if (!container) return 0;
   const pager = pagerOf(container);
   // (Page pictures: the page showing, which is where a comic or PDF is kept.)
-  if (!container.querySelector(".s") && container.querySelector(".img-page")) return Math.max(0, visiblePage(container));
+  if (!container.querySelector(".s") && container.querySelector(".img-page[data-p]")) return Math.max(0, visiblePage(container));
   if (pager) return pager.firstSentence();
   for (const e of container.querySelectorAll(".s")) {
     if (e.getBoundingClientRect().bottom > 70) return Number(e.dataset.s);
@@ -3161,7 +3161,7 @@ export function visiblePage(container) {
   const book = container.closest(".bookview");
   const r = book && book.classList.contains("paged") ? book.getBoundingClientRect() : { left: 0, right: window.innerWidth, top: 0, bottom: window.innerHeight };
   let best = -1, bestLeft = Infinity;
-  for (const e of container.querySelectorAll(".img-page")) {
+  for (const e of container.querySelectorAll(".img-page[data-p]")) {
     const b = e.getBoundingClientRect();
     if (!b.width || b.right <= r.left + 4 || b.left >= r.right - 4 || b.bottom <= r.top + 4 || b.top >= r.bottom - 4) continue;
     // Facing pages: the one read first (the right one, in manga).
@@ -3174,7 +3174,7 @@ export function visiblePage(container) {
 
 // The pages on screen and either side of them.
 function pagesNear(container) {
-  const all = Array.from(container.querySelectorAll(".img-page"));
+  const all = Array.from(container.querySelectorAll(".img-page[data-p]"));
   const book = container.closest(".bookview");
   const r = book && book.classList.contains("paged") ? book.getBoundingClientRect() : { left: 0, right: window.innerWidth, top: 0, bottom: window.innerHeight };
   const near = new Set();
@@ -3204,7 +3204,7 @@ function fitTranslations(layer) {
   for (const b of layer.querySelectorAll(".bubble.tr")) {
     const span = b.firstElementChild;
     if (!span || !b.clientHeight) continue;
-    let lo = 5, hi = Math.max(6, Math.min(40, b.clientHeight * 0.6));
+    let lo = 5, hi = Math.max(6, Math.min(30, b.clientHeight * 0.45));
     for (let i = 0; i < 8; i++) {
       const mid = (lo + hi) / 2;
       span.style.fontSize = `${mid}px`;
@@ -3471,5 +3471,6 @@ export function panelOpen(container, asset, p, pages, rtl, translate, onClose) {
   window.addEventListener("keydown", panelKey, true);
   window.addEventListener("resize", panelFit);
   const now = container && container.closest(".bookview") && container.closest(".bookview").__comicNow;
+  panel.now = now || null;
   panelPage(p, 0, false).then(() => { if (now && now[0] === p) panelFollow(now[0], now[1]); });
 }
