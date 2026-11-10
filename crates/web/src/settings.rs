@@ -215,6 +215,16 @@ pub fn SettingsPage() -> impl IntoView {
             <AiSection s/>
 
             <section>
+                <h2>"Display"</h2>
+                <label class="check">
+                    <input type="checkbox" prop:checked=move || crate::eink().0.get()
+                        on:change=move |ev| crate::eink().set(event_target_checked(&ev))/>
+                    "E-ink view"
+                </label>
+                <small class="hint">"For e-ink readers: black and white, no animations or page curl, a plainer layout. Pictures and covers stay in colour, for colour e-ink screens. Remembered on this device only."</small>
+            </section>
+
+            <section>
                 <h2>"Reading"</h2>
                 <label class="field">
                     <span>"Theme"</span>

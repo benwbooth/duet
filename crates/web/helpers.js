@@ -119,7 +119,7 @@ export function highlight(container, n, scroll) {
   }
   const r = spans[0].getBoundingClientRect();
   if (r.top < 80 || r.bottom > window.innerHeight - 160) {
-    spans[0].scrollIntoView({ behavior: "smooth", block: "center" });
+    spans[0].scrollIntoView({ behavior: document.documentElement.classList.contains("eink") ? "auto" : "smooth", block: "center" });
   }
 }
 
@@ -2313,7 +2313,7 @@ class Pager {
   // The page curl runs only on the graphics card (see elementSnapshot); a browser that can't
   // do that turns pages without an animation.
   get curl() {
-    return canDrawElements && this.book.__curl !== false;
+    return canDrawElements && this.book.__curl !== false && !document.documentElement.classList.contains("eink");
   }
 
   async turn(dir, carry) {
@@ -2887,6 +2887,21 @@ export function drawWave(canvas, peaks, fraction) {
     else ctx.rect(x, (h - bh) / 2, bar, bh);
     ctx.fill();
   }
+}
+
+// E-ink display mode: black-and-white chrome, no animations (no page curl), pictures still in
+// colour. Remembered on this device; until you choose, it's on for screens that say they
+// redraw slowly (e-ink), off elsewhere.
+export function einkOn() {
+  let saved = null;
+  try { saved = localStorage.getItem("duet-eink"); } catch (_) {}
+  if (saved === "on" || saved === "off") return saved === "on";
+  return !!(window.matchMedia && matchMedia("(update: slow)").matches);
+}
+
+export function setEink(on) {
+  document.documentElement.classList.toggle("eink", on);
+  try { localStorage.setItem("duet-eink", on ? "on" : "off"); } catch (_) {}
 }
 
 // The sidebar beside the reader: hidden or shown, remembered on this device.

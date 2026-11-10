@@ -1718,3 +1718,93 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 .find-edition .action-icon { color: var(--accent); }
 /* Panels never grow wider than the screen: long names truncate instead (phones). */
 .check-modal { grid-template-columns: minmax(0, 1fr); }
+
+/* ---------------------------------------------------------------------------------------------
+   E-ink view (html.eink, switched in Settings or the reader's Aa panel, per device): black on
+   white with hard edges, nothing that moves, fades, blurs or casts a shadow, and no wood. Covers
+   and pictures keep their colour for colour e-ink screens. */
+html.eink {
+  --bg: #fff; --bg-2: #fff; --surface: #fff; --surface-2: #fff;
+  --text: #000; --muted: #333; --line: #000;
+  --accent: #000; --accent-2: #000; --accent-soft: #ddd; --accent-text: #fff;
+  --good: #000; --good-soft: #fff; --danger: #000; --now: #d4d4d4;
+  --shadow-sm: none; --shadow: none; --shadow-lg: none;
+  --glass: #fff; --glass-strong: #fff; --glass-line: #000; --blur: none;
+  --radius: 6px; --radius-sm: 4px;
+  color-scheme: light;
+}
+html.eink *, html.eink *::before, html.eink *::after {
+  animation: none !important; transition: none !important; scroll-behavior: auto !important;
+  box-shadow: none !important; text-shadow: none !important;
+  backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+}
+html.eink body { -webkit-font-smoothing: auto; }
+/* Links in running text are underlined, since they can't be told apart by colour. */
+html.eink p a, html.eink li > a, html.eink small a, html.eink .hint a { text-decoration: underline; text-underline-offset: 3px; }
+html.eink ::selection { background: #000; color: #fff; }
+html.eink :focus-visible { outline: 2px solid #000; }
+
+/* Controls: outlined, inverted when chosen. */
+html.eink button, html.eink .button, html.eink select, html.eink input, html.eink textarea { border: 1.5px solid #000; background: #fff; color: #000; }
+html.eink button.primary, html.eink .button.primary, html.eink .segmented button.active,
+html.eink .chip-button.active, html.eink .reader .editions-panel .segmented button.active { background: #000; color: #fff; border-color: #000; }
+html.eink button.primary::after, html.eink .button.primary::after { content: none; }
+html.eink button:active:not(:disabled), html.eink .button:active { transform: none; background: #000; color: #fff; }
+html.eink .segmented { border: 1.5px solid #000; background: #fff; }
+html.eink .segmented button { border: 0; }
+html.eink .progress, html.eink .cover-progress { background: #fff; border: 1px solid #000; }
+html.eink .progress > div, html.eink .cover-progress > div { background: #000; }
+html.eink .ai-tag { background: #fff; color: #000; border: 1px solid currentColor; }
+
+/* Sidebar, panels, sheets and toasts: plain white with a black rule. */
+html.eink .tabs { background: #fff; border-right: 1.5px solid #000; }
+html.eink .tabs a.active { background: #000; color: #fff; }
+html.eink .tabs a.active .icon { color: #fff; }
+html.eink .tabs a:hover:not(.active) { background: #fff; text-decoration: underline; }
+html.eink .editions-panel, html.eink .toc, html.eink .assistant, html.eink .downloads-pane, html.eink .toast,
+html.eink .check-modal, html.eink .dict-card, html.eink .settings section, html.eink .wizard-step, html.eink .banner,
+html.eink .action-card, html.eink .edition-card, html.eink .cast-card, html.eink .continue-card, html.eink .found-book {
+  background: #fff; color: #000; border: 1.5px solid #000;
+}
+html.eink .check-modal-backdrop { background: rgba(255, 255, 255, 0.7); }
+html.eink .settings small.hint { display: block; margin-top: 0.3rem; }
+
+/* Nothing tilts, lifts or spins on hover. */
+html.eink .cover-wrap, html.eink .cover-wrap .cover, html.eink .work-cover .cover, html.eink .continue-card .cover,
+html.eink .action-card, html.eink .edition-card, html.eink .cast-card, html.eink .action-icon, html.eink .avatar,
+html.eink .marks .mark, html.eink .tabs a .icon, html.eink .resume .icon, html.eink .fab, html.eink .logo,
+html.eink .chip-button { transform: none !important; }
+html.eink .work-backdrop { display: none; }
+
+/* The library: a plain shelf, no wood, flat covers on a thin black rule. */
+html.eink .bookcase-frame { background: #fff; border: 1.5px solid #000; padding: 0 0 0.6rem; border-radius: var(--radius); }
+html.eink .grid.bookcase {
+  background: repeating-linear-gradient(to bottom,
+    transparent 0, transparent calc(var(--head) + var(--cover-h)),
+    #000 calc(var(--head) + var(--cover-h)), #000 calc(var(--head) + var(--cover-h) + 2px),
+    transparent calc(var(--head) + var(--cover-h) + 2px), transparent var(--row));
+}
+html.eink .bookcase .cover-wrap::before, html.eink .bookcase .cover-wrap::after, html.eink .bookcase .cover-wrap .hinge { display: none; }
+html.eink .bookcase .cover, html.eink .cover { outline: 1px solid #000; }
+html.eink .bookcase .card .info { background: #fff; border: 1.5px solid #000; transform: translate(-50%, 0); }
+
+/* The reader: white pages and black type (or the reverse with the dark page), no table under
+   the book, no glass over it. */
+html.eink .reader[data-theme] { --page-bg: #fff; --page-text: #000; --page-muted: #444; --now: #d4d4d4; }
+html.eink .reader[data-theme="dark"], html.eink .reader[data-theme="gray"] { --page-bg: #000; --page-text: #fff; --page-muted: #bbb; --now: #555; }
+html.eink .reader.paged-mode, html.eink .reader.paged-mode[data-theme] { background: var(--page-bg); }
+html.eink .reader .bookview { background: var(--page-bg); }
+html.eink .reader-bar, html.eink .player { background: var(--page-bg); border-color: var(--page-text); }
+html.eink .reader-bar { border-bottom: 1.5px solid var(--page-text); }
+html.eink .reader-bar .icon-button, html.eink .reader-bar .back { background: transparent; border: 1.5px solid var(--page-text); color: var(--page-text); }
+html.eink ::highlight(duet-para) { background-color: transparent; }
+html.eink ::highlight(duet-word) { background-color: var(--now); color: inherit; }
+html.eink .page .s.now { background: transparent; text-decoration: underline 2px; text-underline-offset: 4px; }
+html.eink .reader .bookview { border: 1.5px solid var(--page-text); }
+html.eink .bookview.spread::after { background: var(--page-text); width: 1px; left: 50%; opacity: 1; }
+html.eink .bookview.spread .fold-copy, html.eink .edge-hint { display: none; }
+html.eink .search-box input { border: 0; }
+html.eink .swatch { border: 1.5px solid #000; }
+html.eink .swatch.active { outline: 3px solid #000; outline-offset: 2px; }
+html.eink .swatch-light { background: #fff; } html.eink .swatch-sepia { background: #f3e9d4; }
+html.eink .swatch-gray { background: #4a4a4c; } html.eink .swatch-dark { background: #000; }

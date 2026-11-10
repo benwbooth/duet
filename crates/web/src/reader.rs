@@ -1819,7 +1819,14 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                             pictures_open.set(true);
                         }>"Picture style: see and change it…"</button>
                     </Show>
-                    <Show when=paged>
+                    <div class="view-row">
+                        <span>"E-ink view"</span>
+                        <div class="segmented">
+                            <button class:active=move || crate::eink().0.get() on:click=move |_| crate::eink().set(true)>"On"</button>
+                            <button class:active=move || !crate::eink().0.get() on:click=move |_| crate::eink().set(false)>"Off"</button>
+                        </div>
+                    </div>
+                    <Show when=move || paged() && !crate::eink().0.get()>
                         <div class="view-row">
                             <span>"Page turns"</span>
                             <div class="segmented">

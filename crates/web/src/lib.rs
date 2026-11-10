@@ -78,6 +78,10 @@ extern "C" {
     fn sidebar_hidden() -> bool;
     #[wasm_bindgen(js_name = setSidebarHidden)]
     fn set_sidebar_hidden(hidden: bool);
+    #[wasm_bindgen(js_name = einkOn)]
+    fn eink_on() -> bool;
+    #[wasm_bindgen(js_name = setEink)]
+    fn set_eink(on: bool);
     #[wasm_bindgen(js_name = isFullscreen)]
     fn is_fullscreen() -> bool;
     #[wasm_bindgen(js_name = toggleFullscreen)]
@@ -455,6 +459,24 @@ pub fn icon(path: &'static str) -> impl IntoView {
     }
 }
 
+/// E-ink display mode (this device only): black-and-white chrome, no animations, pictures still
+/// in colour.
+#[derive(Clone, Copy)]
+pub struct Eink(pub RwSignal<bool>);
+
+impl Eink {
+    /// Switches it, remembers it on this device, and says so.
+    pub fn set(&self, on: bool) {
+        self.0.set(on);
+        set_eink(on);
+        toast().show(if on { "E-ink view on" } else { "E-ink view off" });
+    }
+}
+
+pub fn eink() -> Eink {
+    expect_context::<Eink>()
+}
+
 /// Whether the sidebar is tucked away while reading.
 #[derive(Clone, Copy)]
 pub struct SidebarHidden(pub RwSignal<bool>);
@@ -476,6 +498,7 @@ fn App() -> impl IntoView {
     // While reading, the sidebar can be tucked away (remembered on this device).
     let sidebar_hidden = RwSignal::new(sidebar_hidden());
     provide_context(SidebarHidden(sidebar_hidden));
+    provide_context(Eink(RwSignal::new(eink_on())));
 
     view! {
         <div class="app" class:immersive=immersive class:no-sidebar=move || immersive() && sidebar_hidden.get()>
