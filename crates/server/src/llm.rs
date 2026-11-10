@@ -28,7 +28,7 @@ pub async fn chat(state: &State, system: &str, turns: &[Turn]) -> anyhow::Result
             }
             openai_compatible(state, &ai.service_url, &ai.service_key, &ai.service_model, system, turns).await?
         }
-        "claude_cli" => claude_cli(&ai, system, turns).await?,
+        "claude_cli" => claude_cli(&ai, system, turns, false).await?,
         "codex_cli" => codex_cli(&ai, system, turns).await?,
         "gemini_cli" => gemini_cli(&ai, system, turns).await?,
         "opencode_cli" => opencode_cli(&ai, system, turns).await?,
@@ -76,6 +76,78 @@ async fn openai_compatible(
         .json()
         .await?;
     Ok(resp["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string())
+}
+
+/// Like [`chat`], but the model may search and read the web to answer, where it can (Claude
+/// Code, or Claude through the API). Other models answer from what they're given.
+pub async fn chat_web(state: &State, system: &str, turns: &[Turn]) -> anyhow::Result<String> {
+    let ai = state.settings.read().await.ai.clone();
+    let text = match ai.llm_provider.as_str() {
+        "claude_cli" => claude_cli(&ai, system, turns, true).await?,
+        "anthropic" => anthropic_web(state, &ai, system, turns).await?,
+        _ => return chat(state, system, turns).await,
+    };
+    Ok(match text.find("</think>") {
+        Some(end) => text[end + "</think>".len()..].trim().to_string(),
+        None => text.trim().to_string(),
+    })
+}
+
+/// Claude with the web search and fetch server tools. A long search can come back paused
+/// (`pause_turn`); it's sent back to carry on.
+async fn anthropic_web(state: &State, ai: &AiSettings, system: &str, turns: &[Turn]) -> anyhow::Result<String> {
+    if ai.anthropic_api_key.is_empty() {
+        bail!("Add your Anthropic API key (Settings → AI)");
+    }
+    let model = if ai.anthropic_model.is_empty() { "claude-opus-5-5" } else { &ai.anthropic_model };
+    let mut messages: Vec<serde_json::Value> =
+        turns.iter().map(|(role, content)| json!({ "role": role, "content": content })).collect();
+    for _ in 0..4 {
+        let mut body = json!({
+            "model": model,
+            "max_tokens": 16000,
+            "system": system,
+            "messages": messages,
+            "thinking": { "type": "adaptive" },
+            "output_config": { "effort": "low" },
+            "tools": [
+                { "type": "web_search_20260209", "name": "web_search", "max_uses": 5 },
+                { "type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5 },
+            ],
+        });
+        let mut req = state
+            .http
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", &ai.anthropic_api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .timeout(std::time::Duration::from_secs(600));
+        if ["claude-opus-5-5", "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5-5"].contains(&model) {
+            body["fallbacks"] = json!("default");
+            req = req.header("anthropic-beta", "server-side-fallback-2026-07-01");
+        }
+        let resp = req.json(&body).send().await.context("can't reach the Anthropic API")?;
+        let status = resp.status();
+        let v: serde_json::Value = resp.json().await.context("unexpected reply from the Anthropic API")?;
+        if !status.is_success() {
+            bail!("Anthropic API: {}", v["error"]["message"].as_str().unwrap_or(status.as_str()));
+        }
+        if v["stop_reason"] == "refusal" {
+            bail!("Claude declined to answer that");
+        }
+        if v["stop_reason"] == "pause_turn" {
+            messages.push(json!({ "role": "assistant", "content": v["content"] }));
+            continue;
+        }
+        return Ok(v["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(""));
+    }
+    bail!("the web search took too long")
 }
 
 /// Claude through the Messages API (raw HTTP: there's no official Rust SDK).
@@ -146,10 +218,15 @@ fn scratch() -> anyhow::Result<std::path::PathBuf> {
 }
 
 /// Claude Code, signed in to your Claude subscription (`claude -p`).
-async fn claude_cli(ai: &AiSettings, system: &str, turns: &[Turn]) -> anyhow::Result<String> {
+async fn claude_cli(ai: &AiSettings, system: &str, turns: &[Turn], web: bool) -> anyhow::Result<String> {
     let mut cmd = tokio::process::Command::new("claude");
-    cmd.args(["-p", "--output-format", "json", "--no-session-persistence"])
-        .args(["--disallowed-tools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"])
+    cmd.args(["-p", "--output-format", "json", "--no-session-persistence"]);
+    if web {
+        cmd.args(["--disallowed-tools", "Bash,Edit,Write,NotebookEdit"]).args(["--allowed-tools", "WebSearch,WebFetch"]);
+    } else {
+        cmd.args(["--disallowed-tools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"]);
+    }
+    cmd
         .args(["--append-system-prompt", system]);
     if !ai.cli_model.is_empty() {
         cmd.args(["--model", &ai.cli_model]);

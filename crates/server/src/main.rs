@@ -24,6 +24,7 @@ mod libgen;
 mod metadata;
 mod mirrors;
 mod llm;
+mod podcast;
 mod qbit;
 mod routes;
 mod setup;
@@ -160,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
     tokio::spawn(mirrors::refresh_loop(state.clone()));
+    tokio::spawn(podcast::daily(state.clone()));
 
     let app = routes::router(state, &args.web_dir);
     let listener = tokio::net::TcpListener::bind(args.listen).await?;

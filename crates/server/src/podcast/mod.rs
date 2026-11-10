@@ -1,0 +1,795 @@
+//! The daily briefing: every morning (or whenever you ask) the chat model reads what's new in
+//! your feeds, picks the stories worth your time, and writes a conversation about them for two
+//! AI hosts, which the local voices perform line by line. Playing starts as soon as the first
+//! line is recorded; the rest is recorded faster than it plays. You can stop and ask about
+//! what you're hearing, and the host answers (looking things up on the web when the model can).
+//!
+//! Everything lives under `data/podcast/`: `settings.json`, and one folder per episode with
+//! `episode.json`, `notes.json` (what the hosts read, for questions) and a recording per line.
+
+mod feeds;
+
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
+
+use anyhow::{Context, bail};
+use axum::{
+    Json, Router,
+    extract::{Path, State as AxState},
+    http::header,
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use duet_common::podcast::{
+    Episode, EpisodeSummary, HostVoice, Line, PodcastAnswer, PodcastAsk, PodcastSettings, Segment, SourceLink, strip_directions,
+};
+use futures_util::StreamExt;
+use serde::Deserialize;
+use serde_json::json;
+use tokio::sync::Mutex;
+
+use crate::{
+    State,
+    error::{ApiError, ApiResult},
+};
+
+pub fn routes() -> Router<State> {
+    Router::new()
+        .route("/podcast/settings", get(get_settings).put(put_settings))
+        .route("/podcast/episodes", get(list).post(start))
+        .route("/podcast/episodes/{id}", get(episode).delete(remove))
+        .route("/podcast/episodes/{id}/record", post(record_again))
+        .route("/podcast/episodes/{id}/audio/{seg}/{line}", get(line_audio))
+        .route("/podcast/ask", post(ask))
+        .route("/podcast/voices", get(voices))
+        .route("/podcast/voices/recast", post(recast))
+        .route("/podcast/voices/{name}/clip", get(clip))
+        .route("/podcast/warm", post(warm))
+}
+
+fn base(state: &State) -> PathBuf {
+    state.data_dir.join("podcast")
+}
+
+fn episode_dir(state: &State, id: &str) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'), "no such episode");
+    Ok(base(state).join("episodes").join(id))
+}
+
+async fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
+    serde_json::from_slice(&tokio::fs::read(path).await.ok()?).ok()
+}
+
+async fn write_json<T: serde::Serialize>(path: &std::path::Path, v: &T) -> anyhow::Result<()> {
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir).await?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    tokio::fs::write(&tmp, serde_json::to_vec_pretty(v)?).await?;
+    tokio::fs::rename(&tmp, path).await?;
+    Ok(())
+}
+
+pub async fn settings(state: &State) -> PodcastSettings {
+    read_json(&base(state).join("settings.json")).await.unwrap_or_default()
+}
+
+/// The voice server's name for a host's voice (its clip is `voices/<name>.wav`).
+fn voice_name(host: &str) -> String {
+    let slug: String = host.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    format!("podcast-{}", slug.trim_matches('-'))
+}
+
+// ---- Episodes being made ----
+
+/// Episodes being made right now, as the player should see them.
+static MAKING: LazyLock<std::sync::Mutex<HashMap<String, Arc<Mutex<Episode>>>>> = LazyLock::new(Default::default);
+
+fn making(id: &str) -> Option<Arc<Mutex<Episode>>> {
+    MAKING.lock().unwrap().get(id).cloned()
+}
+
+async fn load(state: &State, id: &str) -> anyhow::Result<Episode> {
+    if let Some(ep) = making(id) {
+        return Ok(ep.lock().await.clone());
+    }
+    read_json(&episode_dir(state, id)?.join("episode.json")).await.context("no such episode")
+}
+
+async fn save(state: &State, ep: &Episode) -> anyhow::Result<()> {
+    write_json(&episode_dir(state, &ep.id)?.join("episode.json"), ep).await
+}
+
+/// Changes the live episode and writes it out.
+async fn update(state: &State, ep: &Arc<Mutex<Episode>>, f: impl FnOnce(&mut Episode)) {
+    let snapshot = {
+        let mut e = ep.lock().await;
+        f(&mut e);
+        e.clone()
+    };
+    if let Err(e) = save(state, &snapshot).await {
+        tracing::warn!("saving the briefing: {e:#}");
+    }
+}
+
+/// Starts a new episode in the background and returns it as it begins.
+pub async fn begin(state: &State) -> anyhow::Result<Episode> {
+    if let Some(ep) = MAKING.lock().unwrap().values().next().cloned() {
+        // One at a time: the voices can only record one thing at once anyway.
+        if let Ok(e) = ep.try_lock() {
+            return Ok(e.clone());
+        }
+    }
+    let s = settings(state).await;
+    if !s.sources.iter().any(|s| s.enabled && !s.value.trim().is_empty()) {
+        bail!("Add some sources first");
+    }
+    let now = chrono::Local::now();
+    let ep = Episode {
+        id: now.format("%Y-%m-%d-%H%M%S").to_string(),
+        title: format!("{}", now.format("%A, %B %-d")),
+        created: chrono::Utc::now().to_rfc3339(),
+        stage: "gathering".into(),
+        doing: "Checking your sources".into(),
+        hosts: s.hosts.iter().map(|h| h.name.clone()).collect(),
+        ..Default::default()
+    };
+    save(state, &ep).await?;
+    let live = Arc::new(Mutex::new(ep.clone()));
+    MAKING.lock().unwrap().insert(ep.id.clone(), live.clone());
+    let st = state.clone();
+    tokio::spawn(async move {
+        let id = live.lock().await.id.clone();
+        if let Err(e) = make(&st, &live, &s).await {
+            tracing::warn!("briefing {id}: {e:#}");
+            update(&st, &live, |ep| {
+                ep.stage = "failed".into();
+                ep.error = Some(format!("{e:#}"));
+                ep.doing.clear();
+            })
+            .await;
+        }
+        MAKING.lock().unwrap().remove(&id);
+    });
+    Ok(ep)
+}
+
+/// A story picked for the episode.
+#[derive(Deserialize)]
+struct Pick {
+    title: String,
+    #[serde(default)]
+    items: Vec<usize>,
+}
+
+#[derive(Deserialize)]
+struct Picks {
+    #[serde(default)]
+    title: String,
+    stories: Vec<Pick>,
+}
+
+async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> anyhow::Result<()> {
+    anyhow::ensure!(!s.hosts.is_empty(), "Add a host (Briefing → Hosts)");
+    let id = ep.lock().await.id.clone();
+    let dir = episode_dir(state, &id)?;
+    // The hosts' voices are made first if they're new (that briefly needs the whole graphics
+    // card), while the feeds are read.
+    let cast = {
+        let st = state.clone();
+        let hosts = s.hosts.clone();
+        tokio::spawn(async move { cast_voices(&st, &hosts, false).await })
+    };
+
+    let (mut items, problems) = feeds::gather(state, s).await;
+    let used: HashSet<String> = read_json(&base(state).join("used.json")).await.unwrap_or_default();
+    items.retain(|i| !used.contains(&feeds::normal_url(&i.url)));
+    if items.is_empty() {
+        if problems.is_empty() {
+            bail!("Nothing new in your sources since the last episode");
+        }
+        bail!("Couldn't read your sources: {}", problems.join("; "));
+    }
+    items.truncate(400);
+
+    // Choosing.
+    let stories = ((s.minutes.max(5) as f64) / 2.5).round().clamp(3.0, 15.0) as usize;
+    update(state, ep, |e| {
+        e.stage = "choosing".into();
+        e.doing = format!("Choosing from {} posts and articles", items.len());
+    })
+    .await;
+    let picks = choose(state, s, &items, stories).await?;
+    anyhow::ensure!(!picks.stories.is_empty(), "the chat model didn't pick any stories");
+
+    let mut segments = vec![Segment { title: "Today's briefing".into(), kind: "intro".into(), writing: true, ..Default::default() }];
+    let mut chosen: Vec<Vec<feeds::Item>> = Vec::new();
+    for p in &picks.stories {
+        let its: Vec<feeds::Item> = p.items.iter().filter_map(|&i| items.get(i).cloned()).take(4).collect();
+        if its.is_empty() {
+            continue;
+        }
+        segments.push(Segment {
+            title: p.title.clone(),
+            kind: "story".into(),
+            writing: true,
+            sources: its.iter().map(source_link).collect(),
+            lines: Vec::new(),
+        });
+        chosen.push(its);
+    }
+    segments.push(Segment { title: "Sign-off".into(), kind: "outro".into(), writing: true, ..Default::default() });
+    let title = picks.title.trim().to_string();
+    update(state, ep, |e| {
+        if !title.is_empty() {
+            e.title = format!("{} · {title}", e.title);
+        }
+        e.segments = segments.clone();
+        e.stage = "reading".into();
+        e.doing = format!("Reading {} stories", chosen.len());
+    })
+    .await;
+
+    // Reading: the articles, threads and videos behind each story.
+    let mut notes: Vec<String> = vec![String::new(); chosen.len()];
+    let mut done = 0;
+    let mut jobs = Vec::new();
+    for (k, its) in chosen.clone().into_iter().enumerate() {
+        let st = state.clone();
+        let watch = s.watch_videos;
+        jobs.push(async move {
+            let mut text = Vec::new();
+            let mut images = Vec::new();
+            for it in &its {
+                let r = feeds::read(&st, it, watch).await;
+                text.push(r.text);
+                images.push((r.image, r.site));
+            }
+            (k, text.join("\n\n---\n\n"), images)
+        });
+    }
+    let mut reads = futures_util::stream::iter(jobs).buffer_unordered(4);
+    while let Some((k, text, images)) = reads.next().await {
+        notes[k] = text;
+        done += 1;
+        update(state, ep, |e| {
+            if let Some(seg) = e.segments.get_mut(k + 1) {
+                for (src, (img, site)) in seg.sources.iter_mut().zip(images) {
+                    if src.image.is_none() {
+                        src.image = img;
+                    }
+                    if let Some(site) = site.filter(|_| !src.site.contains('·')) {
+                        src.site = site;
+                    }
+                }
+            }
+            e.doing = format!("Read {done} of {} stories", notes.len());
+        })
+        .await;
+    }
+    drop(reads);
+    write_json(&dir.join("notes.json"), &notes).await?;
+    let mut all_used = used;
+    for its in &chosen {
+        all_used.extend(its.iter().map(|i| feeds::normal_url(&i.url)));
+    }
+    // (Only the last few thousand: enough to never repeat a story.)
+    let all_used: HashSet<String> = all_used.into_iter().take(5000).collect();
+    write_json(&base(state).join("used.json"), &all_used).await?;
+
+    // Writing and recording together: lines are recorded in order as their part is written.
+    update(state, ep, |e| {
+        e.stage = "writing".into();
+        e.doing = "Writing the script".into();
+    })
+    .await;
+    let _ = cast.await;
+    let recorder = {
+        let st = state.clone();
+        let ep = ep.clone();
+        let hosts = s.hosts.clone();
+        tokio::spawn(async move { record(&st, &ep, &hosts).await })
+    };
+    let titles: Vec<String> = picks.stories.iter().map(|p| p.title.clone()).collect();
+    let total = notes.len() + 2;
+    let words = (s.minutes.max(5) as usize * 155) / notes.len().max(1);
+    let mut jobs = Vec::new();
+    for k in 0..total {
+        let st = state.clone();
+        let s = s.clone();
+        let titles = titles.clone();
+        let note = if k == 0 || k == total - 1 { String::new() } else { notes[k - 1].clone() };
+        jobs.push(async move { (k, write(&st, &s, &titles, k, total, &note, words).await) });
+    }
+    let mut writes = futures_util::stream::iter(jobs).buffered(3);
+    let mut written = 0;
+    while let Some((k, lines)) = writes.next().await {
+        written += 1;
+        let lines = match lines {
+            Ok(l) if !l.is_empty() => l,
+            Ok(_) => vec![],
+            Err(e) => {
+                tracing::warn!("writing part {k} of the briefing: {e:#}");
+                vec![]
+            }
+        };
+        update(state, ep, |e| {
+            if let Some(seg) = e.segments.get_mut(k) {
+                seg.lines = lines;
+                seg.writing = false;
+            }
+            if written < total {
+                e.doing = format!("Writing the script ({written} of {total} parts)");
+            }
+        })
+        .await;
+    }
+    drop(writes);
+    update(state, ep, |e| {
+        e.stage = "recording".into();
+        e.segments.retain(|s| !s.lines.is_empty());
+    })
+    .await;
+    recorder.await??;
+    update(state, ep, |e| {
+        e.stage = "ready".into();
+        e.doing.clear();
+    })
+    .await;
+    Ok(())
+}
+
+fn source_link(i: &feeds::Item) -> SourceLink {
+    let url = if i.url.starts_with("http") { i.url.clone() } else { i.discussion.clone().unwrap_or_default() };
+    SourceLink { title: i.title.clone(), url, site: i.source.clone(), image: i.image.clone() }
+}
+
+fn today() -> String {
+    chrono::Local::now().format("%A, %B %-d, %Y").to_string()
+}
+
+fn hosts_blurb(s: &PodcastSettings) -> String {
+    let who: Vec<String> = s.hosts.iter().map(|h| format!("{} ({})", h.name, h.voice)).collect();
+    if s.hosts.len() == 1 {
+        format!("The host is {}, talking straight to the listener.", who[0])
+    } else {
+        format!("The hosts are {}. They talk with each other and the listener like old friends who've read everything.", who.join(" and "))
+    }
+}
+
+/// Pulls the JSON out of a model's answer (it may wrap it in a code fence or a sentence).
+fn json_in<T: serde::de::DeserializeOwned>(text: &str, open: char, close: char) -> anyhow::Result<T> {
+    let start = text.find(open).context("the chat model didn't answer in JSON")?;
+    let end = text.rfind(close).context("the chat model didn't answer in JSON")?;
+    serde_json::from_str(&text[start..=end]).context("the chat model's JSON didn't parse")
+}
+
+async fn choose(state: &State, s: &PodcastSettings, items: &[feeds::Item], stories: usize) -> anyhow::Result<Picks> {
+    let mut list = String::new();
+    for (k, i) in items.iter().enumerate() {
+        let mut meta = vec![i.source.clone()];
+        if let Some(sc) = i.score {
+            meta.push(format!("{sc} points"));
+        }
+        if let Some(c) = i.comments {
+            meta.push(format!("{c} comments"));
+        }
+        if i.video {
+            meta.push("video".into());
+        }
+        list.push_str(&format!("[{k}] {} ({})", i.title, meta.join(", ")));
+        if !i.text.is_empty() {
+            list.push_str(&format!(" — {}", feeds::clip(&i.text, 160)));
+        }
+        list.push('\n');
+    }
+    let interests = if s.interests.trim().is_empty() { "Not said yet: go for what's most important and most interesting.".into() } else { s.interests.clone() };
+    let system = format!(
+        "You're the producer of a personal daily news podcast for one listener, made by AI. Today is {}. \
+         From the posts and articles in the listener's own feeds, pick the {stories} stories most worth their time this \
+         morning: what matters most, what they'd most enjoy, and a mix (not all one topic). Group items that are \
+         about the same story together. Skip ads, self-promotion, duplicates and anything with nothing to say.\n\n\
+         What the listener cares about: {interests}\n\n\
+         Answer with JSON only, in running order (lead with the biggest story, end on something light): \
+         {{\"title\": \"a short, catchy name for today's episode\", \"stories\": [{{\"title\": \"a short spoken headline\", \"items\": [numbers of the items]}}]}}",
+        today()
+    );
+    let answer = crate::llm::chat(state, &system, &[("user".into(), list)]).await?;
+    json_in(&answer, '{', '}')
+}
+
+#[derive(Deserialize)]
+struct RawLine {
+    #[serde(default)]
+    speaker: String,
+    #[serde(default)]
+    text: String,
+}
+
+/// The script for one part: the intro (k = 0), a story, or the sign-off (the last).
+async fn write(state: &State, s: &PodcastSettings, titles: &[String], k: usize, total: usize, notes: &str, words: usize) -> anyhow::Result<Vec<Line>> {
+    let names: Vec<String> = s.hosts.iter().map(|h| h.name.clone()).collect();
+    let interests = if s.interests.trim().is_empty() { String::new() } else { format!("\nThe listener cares about: {}", s.interests) };
+    let system = format!(
+        "You write a personal daily news podcast for one listener, made and voiced by AI from their own feeds. Today is {}. \
+         {}{interests}\n\n\
+         Write for the ear: natural, lively spoken English with contractions, short sentences, real reactions, \
+         questions to each other, a joke where one fits, and plain explanations of anything technical. Never read out \
+         addresses or say \"link\". Say where things come from (\"a post on r/worldnews\", \"according to The Verge\", \
+         \"someone on X\"), and say plainly when something is a rumour or one person's unverified claim. Use only \
+         facts in the material given; never make up quotes, numbers or details. If the material is thin, keep it short.\n\n\
+         Begin every line with an acting direction in square brackets for the voice actor, describing how it's said, \
+         e.g. [amused], [genuinely surprised], [leaning in, conspiratorial], [warmly]. Keep the delivery varied and \
+         expressive.\n\n\
+         Answer with JSON only: an array of lines, [{{\"speaker\": one of {:?}, \"text\": \"[direction] what they say\"}}].",
+        today(),
+        hosts_blurb(s),
+        names
+    );
+    let running: String = titles.iter().enumerate().map(|(i, t)| format!("{}. {t}\n", i + 1)).collect();
+    let prompt = if k == 0 {
+        format!(
+            "Write the opening, about 90 words: hello, the day, and a quick, enticing taste of what's coming (the first \
+             three or four stories), then straight into the first story's hand-off. Mention once, lightly, that you're \
+             AI hosts putting together their feeds.\n\nToday's running order:\n{running}"
+        )
+    } else if k == total - 1 {
+        format!("Write the sign-off, about 50 words: a warm, quick goodbye that wishes them a good day (no summary of every story).\n\nToday's stories were:\n{running}")
+    } else {
+        let story = &titles[k - 1];
+        let prev = if k >= 2 { format!("The story before was \"{}\" (don't greet the listener; pick up from there).", titles[k - 2]) } else { "This follows straight on from the opening.".into() };
+        let next = titles.get(k).map(|t| format!("End with a quick, natural hand-off towards the next story, \"{t}\".")).unwrap_or_else(|| "This is the last story before the sign-off.".into());
+        format!(
+            "Write story {k} of {}: \"{story}\". About {words} words. {prev} {next}\n\n\
+             Tell the listener what happened and why it matters, what people are saying (the best comments are fair game), \
+             and anything surprising.\n\nThe material:\n\"\"\"\n{notes}\n\"\"\"",
+            total - 2
+        )
+    };
+    let answer = crate::llm::chat(state, &system, &[("user".into(), prompt)]).await?;
+    let raw: Vec<RawLine> = json_in(&answer, '[', ']')?;
+    let mut out = Vec::new();
+    for (n, l) in raw.into_iter().enumerate() {
+        if l.text.trim().is_empty() {
+            continue;
+        }
+        let speaker = names
+            .iter()
+            .find(|h| h.eq_ignore_ascii_case(l.speaker.trim()))
+            .cloned()
+            .unwrap_or_else(|| names[n % names.len()].clone());
+        out.push(Line { speaker, text: l.text.trim().to_string(), ready: false });
+    }
+    Ok(out)
+}
+
+/// Makes the hosts' voices from their descriptions (`replace`: again, though they exist).
+async fn cast_voices(state: &State, hosts: &[duet_common::podcast::PodcastHost], replace: bool) -> anyhow::Result<()> {
+    let voices_dir = state.data_dir.join("voices");
+    let wanted: Vec<_> = hosts
+        .iter()
+        .filter(|h| replace || !voices_dir.join(format!("{}.wav", voice_name(&h.name))).exists())
+        .map(|h| json!({ "voice": voice_name(&h.name), "instructions": h.voice, "replace": replace }))
+        .collect();
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    let tts = state.settings.read().await.ai.tts_url.clone();
+    state
+        .http
+        .post(format!("{}/voices", tts.trim_end_matches('/')))
+        .json(&json!({ "voices": wanted }))
+        .timeout(Duration::from_secs(1800))
+        .send()
+        .await
+        .context("the voice server isn't running (Settings → Voices)")?
+        .error_for_status()?;
+    Ok(())
+}
+
+/// One line, performed in its host's voice.
+async fn perform(state: &State, text: &str, host: &duet_common::podcast::PodcastHost) -> anyhow::Result<Vec<u8>> {
+    let ai = state.settings.read().await.ai.clone();
+    let body = json!({ "model": ai.tts_model, "input": text, "voice": voice_name(&host.name), "instructions": host.voice, "response_format": "mp3" });
+    let mut last = None;
+    for _ in 0..2 {
+        match state
+            .http
+            .post(format!("{}/audio/speech", ai.tts_url.trim_end_matches('/')))
+            .bearer_auth(&ai.llm_api_key)
+            .json(&body)
+            .timeout(Duration::from_secs(600))
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+        {
+            Ok(r) => return Ok(r.bytes().await?.to_vec()),
+            Err(e) => last = Some(e),
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+    Err(anyhow::Error::from(last.unwrap())).context("the voice server isn't answering (Settings → Voices)")
+}
+
+/// Records every line in order, waiting for each part to be written. Returns once everything
+/// written has been recorded and nothing's still being written.
+async fn record(state: &State, ep: &Arc<Mutex<Episode>>, hosts: &[duet_common::podcast::PodcastHost]) -> anyhow::Result<()> {
+    let id = ep.lock().await.id.clone();
+    let dir = episode_dir(state, &id)?;
+    let mut failures = 0;
+    let mut seg = 0;
+    loop {
+        // The next part, once it's written.
+        let (lines, count, still_writing) = {
+            let e = ep.lock().await;
+            match e.segments.get(seg) {
+                None => (Vec::new(), e.segments.len(), false),
+                Some(s) => (s.lines.clone(), e.segments.len(), s.writing),
+            }
+        };
+        if seg >= count {
+            return Ok(());
+        }
+        if still_writing {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            continue;
+        }
+        let title = ep.lock().await.segments[seg].title.clone();
+        for (n, line) in lines.iter().enumerate() {
+            let file = dir.join(format!("{seg}-{n}.mp3"));
+            if line.ready && file.exists() {
+                continue;
+            }
+            {
+                let mut e = ep.lock().await;
+                if e.stage == "recording" || e.stage == "writing" {
+                    e.doing = format!("Recording “{}”", title);
+                }
+            }
+            let host = hosts.iter().find(|h| h.name == line.speaker).unwrap_or(&hosts[0]);
+            match perform(state, &line.text, host).await {
+                Ok(mp3) => {
+                    tokio::fs::write(&file, mp3).await?;
+                    update(state, ep, |e| {
+                        if let Some(l) = e.segments.get_mut(seg).and_then(|s| s.lines.get_mut(n)) {
+                            l.ready = true;
+                        }
+                    })
+                    .await;
+                }
+                Err(e) => {
+                    failures += 1;
+                    if failures >= 3 {
+                        return Err(e);
+                    }
+                    tracing::warn!("recording a briefing line: {e:#}");
+                }
+            }
+        }
+        // (Segments with no lines are dropped once writing ends; the indexes then shift, so
+        // look the segment up again by title.)
+        let e = ep.lock().await;
+        seg = e.segments.iter().position(|s| s.title == title).map(|p| p + 1).unwrap_or(seg + 1);
+    }
+}
+
+// ---- The morning episode ----
+
+/// Makes the day's episode at the time set, if there isn't one yet. (Not more than a few hours
+/// late: if the computer was off all morning, it waits for you to ask.)
+pub async fn daily(state: State) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        let s = settings(&state).await;
+        let Ok(at) = chrono::NaiveTime::parse_from_str(s.daily_at.trim(), "%H:%M") else { continue };
+        let now = chrono::Local::now();
+        let late = now.time().signed_duration_since(at);
+        if late < chrono::Duration::zero() || late > chrono::Duration::hours(4) {
+            continue;
+        }
+        if !s.sources.iter().any(|s| s.enabled) || !MAKING.lock().unwrap().is_empty() {
+            continue;
+        }
+        let day = now.format("%Y-%m-%d").to_string();
+        if summaries(&state).await.iter().any(|e| e.id.starts_with(&day)) {
+            continue;
+        }
+        tracing::info!("making the morning briefing");
+        if let Err(e) = begin(&state).await {
+            tracing::warn!("morning briefing: {e:#}");
+        }
+    }
+}
+
+async fn summaries(state: &State) -> Vec<EpisodeSummary> {
+    let mut out = Vec::new();
+    let Ok(mut dirs) = tokio::fs::read_dir(base(state).join("episodes")).await else { return out };
+    while let Ok(Some(d)) = dirs.next_entry().await {
+        let id = d.file_name().to_string_lossy().to_string();
+        if let Ok(e) = load(state, &id).await {
+            out.push(EpisodeSummary {
+                stories: e.segments.iter().filter(|s| s.kind == "story").count(),
+                id: e.id,
+                title: e.title,
+                created: e.created,
+                stage: e.stage,
+            });
+        }
+    }
+    out.sort_by(|a, b| b.id.cmp(&a.id));
+    out
+}
+
+// ---- Questions while listening ----
+
+pub async fn answer(state: &State, q: PodcastAsk) -> anyhow::Result<PodcastAnswer> {
+    let s = settings(state).await;
+    let ep = load(state, &q.episode).await?;
+    let notes: Vec<String> = read_json(&episode_dir(state, &q.episode)?.join("notes.json")).await.unwrap_or_default();
+    let seg = ep.segments.get(q.segment);
+    let speaker = seg
+        .and_then(|s| s.lines.get(q.line))
+        .map(|l| l.speaker.clone())
+        .or_else(|| s.hosts.first().map(|h| h.name.clone()))
+        .unwrap_or_else(|| "Host".into());
+    let host = s.hosts.iter().find(|h| h.name == speaker).cloned();
+    let mut context = String::new();
+    if let Some(seg) = seg {
+        context.push_str(&format!("You're in the middle of the part about \"{}\".", seg.title));
+        let said: Vec<String> = seg.lines.iter().take(q.line + 1).map(|l| format!("{}: {}", l.speaker, strip_directions(&l.text))).collect();
+        if !said.is_empty() {
+            context.push_str(&format!("\nWhat's been said so far in it:\n{}", said.join("\n")));
+        }
+        if seg.kind == "story" {
+            let k = ep.segments.iter().take(q.segment).filter(|s| s.kind == "story").count();
+            if let Some(n) = notes.get(k) {
+                context.push_str(&format!("\n\nWhat you read for it:\n\"\"\"\n{}\n\"\"\"", feeds::clip(n, 12000)));
+            }
+            let srcs: Vec<String> = seg.sources.iter().map(|s| format!("{} ({}) {}", s.title, s.site, s.url)).collect();
+            context.push_str(&format!("\nSources: {}", srcs.join("; ")));
+        }
+    }
+    let others: Vec<String> = ep.segments.iter().filter(|s| s.kind == "story").map(|s| s.title.clone()).collect();
+    let system = format!(
+        "You are {speaker}, an AI host of the listener's personal daily news podcast (made from their own feeds), and \
+         they've just paused it to ask you something. Today is {}. Today's stories: {}.\n\n{context}\n\n\
+         Answer the way you'd talk on the show: conversational, clear and brief (two to five spoken sentences unless \
+         they ask for more). Look things up on the web when you need facts beyond what you read, and say where they \
+         came from. Be honest about what isn't known. Never read out web addresses. Begin your reply with an acting \
+         direction in square brackets for the voice, e.g. [thoughtfully].",
+        today(),
+        others.join("; ")
+    );
+    let mut turns: Vec<crate::llm::Turn> = q.history.iter().map(|t| (t.role.clone(), t.content.clone())).collect();
+    turns.push(("user".into(), q.question.clone()));
+    let spoken = crate::llm::chat_web(state, &system, &turns).await?;
+    let audio = match &host {
+        Some(h) => match perform(state, &spoken, h).await {
+            Ok(mp3) => Some(format!("data:audio/mpeg;base64,{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, mp3))),
+            Err(e) => {
+                tracing::warn!("speaking the answer: {e:#}");
+                None
+            }
+        },
+        None => None,
+    };
+    Ok(PodcastAnswer { speaker, text: strip_directions(&spoken), spoken, audio })
+}
+
+// ---- Routes ----
+
+fn bad_gateway(e: anyhow::Error) -> ApiError {
+    ApiError(axum::http::StatusCode::BAD_GATEWAY, format!("{e:#}"))
+}
+
+async fn get_settings(AxState(s): AxState<State>) -> Json<PodcastSettings> {
+    Json(settings(&s).await)
+}
+
+async fn put_settings(AxState(s): AxState<State>, Json(new): Json<PodcastSettings>) -> ApiResult<Json<PodcastSettings>> {
+    write_json(&base(&s).join("settings.json"), &new).await?;
+    Ok(Json(new))
+}
+
+async fn list(AxState(s): AxState<State>) -> Json<Vec<EpisodeSummary>> {
+    Json(summaries(&s).await)
+}
+
+async fn start(AxState(s): AxState<State>) -> ApiResult<Json<Episode>> {
+    Ok(Json(begin(&s).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?))
+}
+
+async fn episode(AxState(s): AxState<State>, Path(id): Path<String>) -> ApiResult<Json<Episode>> {
+    load(&s, &id).await.map(Json).map_err(|_| ApiError::not_found("episode"))
+}
+
+async fn remove(AxState(s): AxState<State>, Path(id): Path<String>) -> ApiResult<()> {
+    if making(&id).is_some() {
+        return Err(ApiError::bad_request("That episode is still being made"));
+    }
+    tokio::fs::remove_dir_all(episode_dir(&s, &id)?).await?;
+    Ok(())
+}
+
+/// Records any lines that didn't get recorded (the voices weren't running, say).
+async fn record_again(AxState(s): AxState<State>, Path(id): Path<String>) -> ApiResult<Json<Episode>> {
+    if making(&id).is_some() {
+        return Err(ApiError::bad_request("That episode is still being made"));
+    }
+    let mut e = load(&s, &id).await.map_err(|_| ApiError::not_found("episode"))?;
+    e.stage = "recording".into();
+    e.error = None;
+    e.doing = "Recording".into();
+    let live = Arc::new(Mutex::new(e.clone()));
+    MAKING.lock().unwrap().insert(id.clone(), live.clone());
+    let hosts = settings(&s).await.hosts;
+    tokio::spawn(async move {
+        let r = record(&s, &live, &hosts).await;
+        update(&s, &live, |e| match r {
+            Ok(()) => {
+                e.stage = "ready".into();
+                e.doing.clear();
+            }
+            Err(err) => {
+                e.stage = "failed".into();
+                e.error = Some(format!("{err:#}"));
+            }
+        })
+        .await;
+        MAKING.lock().unwrap().remove(&id);
+    });
+    Ok(Json(e))
+}
+
+async fn line_audio(AxState(s): AxState<State>, Path((id, seg, line)): Path<(String, usize, usize)>) -> ApiResult<Response> {
+    let file = episode_dir(&s, &id)?.join(format!("{seg}-{line}.mp3"));
+    let bytes = tokio::fs::read(file).await.map_err(|_| ApiError::not_found("recording"))?;
+    Ok(([(header::CONTENT_TYPE, "audio/mpeg"), (header::CACHE_CONTROL, "max-age=86400")], bytes).into_response())
+}
+
+async fn ask(AxState(s): AxState<State>, Json(q): Json<PodcastAsk>) -> ApiResult<Json<PodcastAnswer>> {
+    Ok(Json(answer(&s, q).await.map_err(bad_gateway)?))
+}
+
+async fn voices(AxState(s): AxState<State>) -> Json<Vec<HostVoice>> {
+    let dir = s.data_dir.join("voices");
+    Json(
+        settings(&s)
+            .await
+            .hosts
+            .into_iter()
+            .map(|h| HostVoice { clip: dir.join(format!("{}.wav", voice_name(&h.name))).exists(), name: h.name, voice: h.voice })
+            .collect(),
+    )
+}
+
+#[derive(Deserialize)]
+struct Recast {
+    name: String,
+}
+
+/// Makes a host's voice again from their (changed) description.
+async fn recast(AxState(s): AxState<State>, Json(r): Json<Recast>) -> ApiResult<()> {
+    let hosts = settings(&s).await.hosts;
+    let host = hosts.into_iter().find(|h| h.name == r.name).ok_or_else(|| ApiError::not_found("host"))?;
+    cast_voices(&s, &[host], true).await.map_err(bad_gateway)?;
+    Ok(())
+}
+
+async fn clip(AxState(s): AxState<State>, Path(name): Path<String>) -> ApiResult<Response> {
+    let bytes = tokio::fs::read(s.data_dir.join("voices").join(format!("{}.wav", voice_name(&name))))
+        .await
+        .map_err(|_| ApiError::not_found("voice"))?;
+    Ok(([(header::CONTENT_TYPE, "audio/wav"), (header::CACHE_CONTROL, "no-cache")], bytes).into_response())
+}
+
+/// The player is open: have the performer loaded and kept loaded.
+async fn warm(AxState(s): AxState<State>) -> Json<serde_json::Value> {
+    let tts = s.settings.read().await.ai.tts_url.clone();
+    let _ = s.http.post(format!("{}/warm", tts.trim_end_matches('/'))).json(&json!({})).timeout(Duration::from_secs(5)).send().await;
+    Json(json!({ "ok": true }))
+}
