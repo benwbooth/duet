@@ -1935,6 +1935,16 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         scroll_to.set(Some(0));
         chapter.set(c);
         toc_open.set(false);
+        // Reading along with the audiobook: the recording goes there too (where the sync has the
+        // chapter's start, or the track named after it). Left where it was, it pulled the page
+        // straight back to the chapter it was reading.
+        if mode.get_untracked() == Mode::ReadAudiobook {
+            if let Some((tr, secs)) = guess(c, 0, 0) {
+                live_near.set(None);
+                crate::stop_browsing(book.get_untracked().map(|b| (*b).clone().into()));
+                go_play(tr, secs, playing.get_untracked());
+            }
+        }
     };
 
     view! {
