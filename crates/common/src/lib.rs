@@ -461,6 +461,14 @@ pub struct AiSettings {
     pub auto_start_voices: bool,
     /// Unload voice and speech models after this many idle minutes (0: keep them loaded).
     pub voice_idle_minutes: f64,
+    /// Reading comics (speech balloons, captions, who says what, panels): "local" (a vision
+    /// model on an OpenAI-compatible or Ollama server, below) or "chat" (the chat model above,
+    /// when it can see pictures: Claude, OpenAI, Claude Code, Codex).
+    pub vision_provider: String,
+    pub vision_url: String,
+    pub vision_model: String,
+    /// The language comics in other languages are translated into, for reading and listening.
+    pub translate_to: String,
 }
 
 impl Default for AiSettings {
@@ -490,6 +498,10 @@ impl Default for AiSettings {
             device: "auto".into(),
             auto_start_voices: true,
             voice_idle_minutes: 5.0,
+            vision_provider: "local".into(),
+            vision_url: "http://localhost:11434/v1".into(),
+            vision_model: "qwen3-vl:8b".into(),
+            translate_to: "English".into(),
         }
     }
 }

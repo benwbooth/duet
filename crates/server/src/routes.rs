@@ -52,6 +52,8 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assets/{id}/chapters/{n}", get(chapter))
         .route("/assets/{id}/res/{*path}", get(resource))
         .route("/assets/{id}/pages/{n}", get(page_image))
+        .route("/assets/{id}/comic", get(comic_info).put(put_comic_info))
+        .route("/assets/{id}/comic/{n}", get(comic_page))
         .route("/assets/{id}/locate", get(locate))
         .route("/assets/{id}/tracks/{n}", get(track))
         .route("/assets/{id}/tracks/{n}/peaks", get(track_peaks))
@@ -271,7 +273,40 @@ async fn chapter(AxState(s): AxState<State>, Path((id, n)): Path<(i64, usize)>) 
         crate::audiotext::ensure_chapter(&s, &a, n).await?;
     }
     let src = book::source(&a, &s.data_dir);
+    if matches!(src, book::Source::Comic(_) | book::Source::Pdf(_)) {
+        // (Manga is laid out to turn right to left.)
+        let rtl = crate::comic::info(&s, id).await.rtl;
+        return Ok(Json(tokio::task::spawn_blocking(move || book::image_pages(&src, id, rtl)).await??));
+    }
     Ok(Json(tokio::task::spawn_blocking(move || book::chapter(&src, id, n)).await??))
+}
+
+/// How a comic is read (right to left, translated) and how many pages it has.
+async fn comic_info(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Json<serde_json::Value>> {
+    asset_or_404(&s, id).await?;
+    let info = crate::comic::info(&s, id).await;
+    let ai = s.settings.read().await.ai.clone();
+    Ok(Json(serde_json::json!({
+        "rtl": info.rtl, "translate": info.translate, "language": info.language, "pages": crate::comic::pages(&s, id).await,
+        "translate_to": ai.translate_to,
+    })))
+}
+
+#[derive(Deserialize)]
+struct ComicChoice {
+    rtl: Option<bool>,
+    translate: Option<bool>,
+}
+
+async fn put_comic_info(AxState(s): AxState<State>, Path(id): Path<i64>, Json(c): Json<ComicChoice>) -> ApiResult<Json<crate::comic::Info>> {
+    asset_or_404(&s, id).await?;
+    Ok(Json(crate::comic::set_info(&s, id, c.rtl, c.translate).await?))
+}
+
+/// One comic page's balloons, captions and panels (read off the page the first time).
+async fn comic_page(AxState(s): AxState<State>, Path((id, n)): Path<(i64, usize)>) -> ApiResult<Json<serde_json::Value>> {
+    asset_or_404(&s, id).await?;
+    Ok(Json(crate::comic::for_reader(&s, id, n).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?))
 }
 
 async fn resource(AxState(s): AxState<State>, Path((id, path)): Path<(i64, String)>) -> ApiResult<Response> {

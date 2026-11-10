@@ -8,6 +8,7 @@ mod audiobookbay;
 mod audiotext;
 mod book;
 mod cast;
+mod comic;
 mod db;
 mod dev;
 mod dict;

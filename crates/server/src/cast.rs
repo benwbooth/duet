@@ -217,7 +217,38 @@ async fn write_json<T: Serialize>(path: &PathBuf, v: &T) -> anyhow::Result<()> {
 
 /// The chat model directs one chapter: speakers and directions, and descriptions of new characters
 /// (and of the narrator, the first time).
-async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &str, author: &str, sentences: &[String], cast: &mut Cast, say: &mut Say, narration: &mut Say, ahead: bool) -> anyhow::Result<Script> {
+/// Said to the director of a comic, where each line is a balloon with a note on it.
+const COMIC_DIRECTION: &str = " This book is a comic: each numbered line is one balloon, caption or sound \
+    effect, in reading order, and the note in square brackets after it says what it is and who the artwork \
+    shows speaking (a name, or how they look). Every speech or thought balloon has a speaker and never goes to \
+    the narrator: work out which character it is from the note, the conversation and the known list (someone \
+    described the same way is the same character; once their name is known, use it). Thought balloons are the \
+    character's inner voice: direct them as thinking to themselves, close and hushed. Captions are the \
+    narrator's. Sound effects are the narrator's too, performed as sounds with relish, never read flatly. The \
+    notes are not part of the text: never put them in \"say\".";
+
+/// A chapter's sentences (for a comic, a page's balloons and captions, read off the page the
+/// first time).
+async fn sentences_of(state: &State, asset: i64, chapter: usize) -> anyhow::Result<Vec<String>> {
+    let a = db::asset(&state.db, asset).await?.context("no such book")?;
+    if crate::comic::is_pages(&a, state) {
+        return Ok(crate::comic::script(state, asset, chapter).await?.0);
+    }
+    let src = book::source(&a, &state.data_dir);
+    tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, chapter)).await?
+}
+
+/// How many "chapters" the full cast goes through: a comic's are its pages.
+async fn chapter_count(state: &State, asset: i64) -> Option<usize> {
+    let a = db::asset(&state.db, asset).await.ok()??;
+    let comic = crate::comic::is_pages(&a, state);
+    let src = book::source(&a, &state.data_dir);
+    let l = tokio::task::spawn_blocking(move || book::layout(&src)).await.ok()?.ok()?;
+    Some(if comic { l.pages } else { l.chapters })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &str, author: &str, sentences: &[String], notes: &[String], cast: &mut Cast, say: &mut Say, narration: &mut Say, ahead: bool) -> anyhow::Result<Script> {
     let mut script = Script::new();
     let parts = sentences.len().div_ceil(CHUNK).max(1);
     for start in (part * CHUNK..sentences.len()).step_by(CHUNK).take(1) {
@@ -226,9 +257,16 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
             status(asset, what, 0, 0);
         }
         let part = &sentences[start..(start + CHUNK).min(sentences.len())];
-        let numbered: String = part.iter().enumerate().map(|(i, s)| format!("{}: {s}\n", start + i)).collect();
+        let numbered: String = part
+            .iter()
+            .enumerate()
+            .map(|(i, s)| match notes.get(start + i) {
+                Some(note) => format!("{}: {s}   [{note}]\n", start + i),
+                None => format!("{}: {s}\n", start + i),
+            })
+            .collect();
         let known: String = cast.characters.iter().map(|(n, d)| format!("- {n}: {d}\n")).collect();
-        let system = "You are the director of a full-cast audiobook. For each numbered sentence containing quoted \
+        let mut system = "You are the director of a full-cast audiobook. For each numbered sentence containing quoted \
             speech, name the character speaking and give an acting direction for how the line is delivered. \
             The voices are actors who play exactly what the direction says and fall flat without one, so \
             direct boldly: real, vivid emotion every time, never 'neutral' or 'calm' unless the moment truly is. \
@@ -262,13 +300,16 @@ async fn direct(state: &State, asset: i64, chapter: usize, part: usize, title: &
             \"narration\": {\"<sentence number>\": \"<direction>\"}. Pitch the energy to the book's audience (a \
             children's book is told with warmth, wonder, playfulness and lively variety, as a favourite \
             storyteller would; a thriller with tension; a comedy with relish), follow the mood of each moment \
-            (hushed for suspense, quick for excitement, wry for a joke), and never flat or dry.";
+            (hushed for suspense, quick for excitement, wry for a joke), and never flat or dry.".to_string();
+        if !notes.is_empty() {
+            system.push_str(COMIC_DIRECTION);
+        }
         let ask_narrator = if cast.narrator.is_empty() { "\nAlso describe the narrator's voice." } else { "" };
         let user = format!(
             "Book: {title} by {author}\nKnown characters:\n{}{ask_narrator}\n\nSentences:\n{numbered}",
             if known.is_empty() { "(none yet)\n" } else { &known }
         );
-        let reply = json_in(&crate::llm::chat(state, system, &[("user".into(), user)]).await?)?;
+        let reply = json_in(&crate::llm::chat(state, &system, &[("user".into(), user)]).await?)?;
         let mut new_names = Vec::new();
         if let Some(new) = reply["new_characters"].as_object() {
             for (n, d) in new {
@@ -494,7 +535,19 @@ pub async fn recast(state: &State, asset: i64) -> anyhow::Result<()> {
     let a = db::asset(&state.db, asset).await?.context("no such book")?;
     let w = db::work_detail(&state.db, a.work_id).await?.context("no such book")?;
     let src = book::source(&a, &state.data_dir);
+    let comic = crate::comic::is_pages(&a, state);
+    let mut comic_text = String::new();
+    if comic {
+        for p in 0..40 {
+            if let Some(t) = crate::comic::cached(state, asset, p).await {
+                comic_text.extend(t.lines.iter().map(|l| format!("{} ", l.text)));
+            }
+        }
+    }
     let text = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        if comic {
+            return Ok(comic_text);
+        }
         let mut out = String::new();
         for c in 0..40 {
             let Ok(s) = book::chapter_sentences(&src, asset, c) else { break };
@@ -717,7 +770,9 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
     let a = db::asset(&state.db, asset).await?.context("no such book")?;
     let w = db::work_detail(&state.db, a.work_id).await?.context("no such book")?;
     let (mut say, mut narration) = (Say::new(), Say::new());
-    let script = match direct(state, asset, chapter, part, &w.title, w.author.as_deref().unwrap_or(""), sentences, &mut cast, &mut say, &mut narration, ahead).await {
+    // A comic's balloons come with notes on what each is and who the art shows saying it.
+    let notes = if crate::comic::is_pages(&a, state) { crate::comic::script(state, asset, chapter).await.map(|s| s.1).unwrap_or_default() } else { Vec::new() };
+    let script = match direct(state, asset, chapter, part, &w.title, w.author.as_deref().unwrap_or(""), sentences, &notes, &mut cast, &mut say, &mut narration, ahead).await {
         Ok(s) => {
             write_json(&base.join(format!("say-{chapter}-{part}.json")), &say).await.ok();
             write_json(&base.join(format!("narration-{chapter}-{part}.json")), &narration).await.ok();
@@ -794,9 +849,7 @@ pub async fn words(state: &State, asset: i64, chapter: usize, n: usize) -> anyho
     }
     let mp3 = base.join(format!("{chapter}-{n}.mp3"));
     anyhow::ensure!(tokio::fs::try_exists(&mp3).await.unwrap_or(false), "not performed yet");
-    let a = db::asset(&state.db, asset).await?.context("no such book")?;
-    let src = book::source(&a, &state.data_dir);
-    let sentences = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, chapter)).await??;
+    let sentences = sentences_of(state, asset, chapter).await?;
     let text = sentences.get(n).cloned().context("no such sentence")?;
     let tts = state.settings.read().await.ai.tts_url.clone();
     let v: serde_json::Value = state
@@ -840,20 +893,17 @@ fn direct_ahead(state: &State, asset: i64, chapter: usize) {
     tokio::spawn(async move {
         let base = dir(&state, asset);
         // From here to the end of the book, then the beginning.
-        let chapters = match db::asset(&state.db, asset).await {
-            Ok(Some(a)) => {
-                let src = book::source(&a, &state.data_dir);
-                tokio::task::spawn_blocking(move || book::layout(&src).map(|l| l.chapters)).await.ok().and_then(Result::ok).unwrap_or(chapter + 3)
-            }
-            _ => chapter + 3,
-        };
+        let chapters = chapter_count(&state, asset).await.unwrap_or(chapter + 3);
+        let comic = matches!(db::asset(&state.db, asset).await, Ok(Some(a)) if crate::comic::is_pages(&a, &state));
         let title = crate::activity::title(&state, asset).await;
         let key = format!("cast-direct:{asset}");
-        for (k, c) in (chapter..chapters).chain(0..chapter).enumerate() {
-            crate::activity::set(&key, "AI full cast", &title, format!("Directing chapter {} (who says what, and how)", c + 1), k as u32, chapters as u32);
-            let Ok(Some(a)) = db::asset(&state.db, asset).await else { break };
-            let src = book::source(&a, &state.data_dir);
-            let Ok(Ok(sentences)) = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, c)).await else { break };
+        // (A comic's pages are read off the page first, on the graphics card: only a few
+        // pages ahead of the listener, not the whole book.)
+        let order: Vec<usize> = if comic { (chapter..chapters.min(chapter + 6)).collect() } else { (chapter..chapters).chain(0..chapter).collect() };
+        let what = if comic { "page" } else { "chapter" };
+        for (k, c) in order.into_iter().enumerate() {
+            crate::activity::set(&key, "AI full cast", &title, format!("Directing {what} {} (who says what, and how)", c + 1), k as u32, chapters as u32);
+            let Ok(sentences) = sentences_of(&state, asset, c).await else { break };
             for part in 0..sentences.len().div_ceil(CHUNK) {
                 let done = base.join(format!("script-{c}-{part}.json")).exists() || base.join(format!("script-{c}.json")).exists();
                 if !done {
@@ -883,10 +933,10 @@ fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
     let state = state.clone();
     tokio::spawn(async move {
         let moved = || LISTENER.lock().unwrap().get(&asset).map(|e| e.2) != Some(generation);
-        for c in chapter..chapter + 2 {
-            let Ok(Some(a)) = db::asset(&state.db, asset).await else { return };
-            let src = book::source(&a, &state.data_dir);
-            let Ok(Ok(sentences)) = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, c)).await else { return };
+        // (A comic page has only a few lines: a few pages ahead.)
+        let comic = matches!(db::asset(&state.db, asset).await, Ok(Some(a)) if crate::comic::is_pages(&a, &state));
+        for c in chapter..chapter + if comic { 4 } else { 2 } {
+            let Ok(sentences) = sentences_of(&state, asset, c).await else { return };
             let from = if c == chapter { n } else { 0 };
             let title = crate::activity::title(&state, asset).await;
             let key = format!("cast-perform:{asset}");
@@ -958,8 +1008,7 @@ async fn perform(state: &State, asset: i64, chapter: usize, n: usize, urgent: bo
     if a.format == "transcript" {
         crate::audiotext::ensure_chapter(state, &a, chapter).await?;
     }
-    let src = book::source(&a, &state.data_dir);
-    let sentences = tokio::task::spawn_blocking(move || book::chapter_sentences(&src, asset, chapter)).await??;
+    let sentences = sentences_of(state, asset, chapter).await?;
     let printed = sentences.get(n).cloned().context("no such sentence")?;
     let plain = !printed.contains(['“', '”', '"']) && open_quote_before(&sentences, n).is_none() && !printed.chars().any(|c| c.is_ascii_digit());
     let base = dir(state, asset);

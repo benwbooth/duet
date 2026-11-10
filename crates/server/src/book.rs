@@ -40,6 +40,8 @@ pub fn source(asset: &Asset, data_dir: &Path) -> Source {
         return Source::Transcript(path);
     }
     match ext_of(&path).as_str() {
+        // (A comic sold as an EPUB, a picture a page, reads as a comic.)
+        "epub" if images::epub_comic_pages(&path).is_some() => Source::Comic(path),
         "epub" => Source::Epub(path),
         "txt" | "md" => Source::Text(path),
         "html" | "htm" | "xhtml" => Source::Html(path),
@@ -150,7 +152,7 @@ fn escape(s: &str) -> String {
 }
 
 /// Resolves `href` relative to the chapter at `base`, both paths inside the book.
-fn resolve(base: &str, href: &str) -> String {
+pub(crate) fn resolve(base: &str, href: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     let base_dir = Path::new(base).parent().unwrap_or(Path::new(""));
     for c in base_dir.join(href).components() {
@@ -338,24 +340,29 @@ fn wrap_sentences(body: &NodeRef) -> Vec<String> {
     sentences
 }
 
-/// Page-image books are one "chapter" of page images, one per page of the book.
-fn image_pages(src: &Source, asset_id: i64) -> anyhow::Result<Chapter> {
+/// Page-image books are one "chapter" of page images, one per page of the book. `rtl`: manga,
+/// laid out last page first, so pages turn right to left (each keeps its own number, `data-p`).
+pub fn image_pages(src: &Source, asset_id: i64, rtl: bool) -> anyhow::Result<Chapter> {
     let pages = layout(src)?.pages;
     // PDFs are rendered to a size; comics are served as they are.
     let query = if matches!(src, Source::Pdf(_)) { "?w=1400" } else { "" };
-    let mut html = String::new();
-    for n in 0..pages {
-        html.push_str(&format!(
-            r#"<div class="img-page"><img src="/api/assets/{asset_id}/pages/{n}{query}" alt="Page {}" loading="lazy" decoding="async"></div>"#,
-            n + 1
-        ));
+    let mut each: Vec<String> = (0..pages)
+        .map(|n| {
+            format!(
+                r#"<div class="img-page" data-p="{n}"><img src="/api/assets/{asset_id}/pages/{n}{query}" alt="Page {}" loading="lazy" decoding="async"></div>"#,
+                n + 1
+            )
+        })
+        .collect();
+    if rtl {
+        each.reverse();
     }
-    Ok(Chapter { index: 0, html, sentences: 0 })
+    Ok(Chapter { index: 0, html: each.concat(), sentences: 0 })
 }
 
 pub fn chapter(src: &Source, asset_id: i64, index: usize) -> anyhow::Result<Chapter> {
     if matches!(src, Source::Pdf(_) | Source::Comic(_)) {
-        return image_pages(src, asset_id);
+        return image_pages(src, asset_id, false);
     }
     let body = chapter_dom(src, asset_id, index)?;
     let sentences = wrap_sentences(&body);
