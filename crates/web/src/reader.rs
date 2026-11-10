@@ -359,6 +359,9 @@ struct Picture {
     sentence: usize,
     caption: String,
     ready: bool,
+    /// Being drawn again: the old one's showing meanwhile.
+    #[serde(default)]
+    redrawing: bool,
     url: String,
 }
 
@@ -389,8 +392,10 @@ fn with_pictures(html: &str, pictures: &[Picture]) -> String {
     for (block, p) in kept.into_iter().rev() {
         let caption = p.caption.replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;");
         let figure = format!(
-            r#"<figure class="illus" data-for="{}"><span class="illus-in"><img src="{}" alt="{caption}" width="1216" height="832" loading="eager" decoding="async"><span class="illus-cap">{caption}</span></span></figure>"#,
-            p.sentence, p.url
+            r#"<figure class="illus{}" data-for="{}"><span class="illus-in"><img src="{}" alt="{caption}" width="1216" height="832" loading="eager" decoding="async"><span class="illus-cap">{caption}</span></span></figure>"#,
+            if p.redrawing { " redrawing" } else { "" },
+            p.sentence,
+            p.url
         );
         out.insert_str(block, &figure);
     }
@@ -2584,10 +2589,10 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                             for _ in 0..150 {
                                 gloo_timers::future::TimeoutFuture::new(4000).await;
                                 let Ok(list) = api::get::<Vec<Picture>>(&format!("/api/assets/{}/illustrations/{c}?near={sent}", e.id)).await else { continue };
-                                if let Some(p) = list.iter().find(|p| p.sentence == sent && p.ready) {
+                                if let Some(p) = list.iter().find(|p| p.sentence == sent && p.ready && !p.redrawing) {
                                     if let Some(f) = fig() {
                                         if let Some(img) = f.query_selector("img").ok().flatten() {
-                                            let _ = img.set_attribute("src", &format!("{}?v={}", p.url, js_sys::Date::now() as u64));
+                                            let _ = img.set_attribute("src", &p.url);
                                         }
                                         let _ = f.class_list().remove_1("redrawing");
                                     }

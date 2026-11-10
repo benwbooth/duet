@@ -384,7 +384,8 @@ async fn illus_redraw(AxState(s): AxState<State>, Path((id, chapter, i)): Path<(
 
 async fn illus_image(AxState(s): AxState<State>, Path((id, chapter, file)): Path<(i64, usize, String)>) -> ApiResult<Response> {
     let i: usize = file.strip_suffix(".png").and_then(|n| n.parse().ok()).ok_or_else(|| ApiError::not_found("picture"))?;
-    let bytes = tokio::fs::read(crate::illustrate::image_path(&s, id, chapter, i)).await.map_err(|_| ApiError::not_found("picture"))?;
+    let path = crate::illustrate::shown_path(&s, id, chapter, i).ok_or_else(|| ApiError::not_found("picture"))?;
+    let bytes = tokio::fs::read(path).await.map_err(|_| ApiError::not_found("picture"))?;
     Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-cache")], bytes).into_response())
 }
 

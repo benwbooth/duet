@@ -108,7 +108,7 @@ def reaper():
             if models and now - last_used["qwen"] > limit:
                 print("unloading the voice design models (idle)", flush=True)
                 unload_qwen()
-            if drawing_now() and now - last_used.get("drawing", now) > 180:
+            if drawing_now() and now - last_used.get("drawing", now) > 300:
                 print("stopping the picture drawing (idle)", flush=True)
                 stop_drawing()
             if fish.proc and now - last_used["fish"] > limit:

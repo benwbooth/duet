@@ -65,6 +65,16 @@ pub fn image_path(state: &State, asset: i64, chapter: usize, i: usize) -> PathBu
     dir(state, asset).join(format!("{chapter}-{i}.png"))
 }
 
+/// The picture being drawn again: the old one, kept showing until the new one's ready.
+pub fn previous_path(state: &State, asset: i64, chapter: usize, i: usize) -> PathBuf {
+    dir(state, asset).join(format!("{chapter}-{i}.prev.png"))
+}
+
+/// The picture to show: the drawn one, else the one it's replacing while it's drawn again.
+pub fn shown_path(state: &State, asset: i64, chapter: usize, i: usize) -> Option<PathBuf> {
+    [image_path(state, asset, chapter, i), previous_path(state, asset, chapter, i)].into_iter().find(|p| p.exists())
+}
+
 async fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf) -> Option<T> {
     serde_json::from_slice(&tokio::fs::read(path).await.ok()?).ok()
 }
@@ -304,11 +314,21 @@ pub async fn chapter(state: &State, asset: i64, chapter: usize, near: Option<usi
         .enumerate()
         .filter(|(i, _)| show(*i))
         .map(|(i, s)| {
+            let (now, prev) = (image_path(state, asset, chapter, i), previous_path(state, asset, chapter, i));
+            let drawn = now.exists();
+            if drawn && prev.exists() {
+                let _ = std::fs::remove_file(&prev);
+            }
+            let shown = if drawn { Some(now) } else { prev.exists().then_some(prev) };
+            // (Which version, so a picture drawn again isn't shown from the browser's cache.)
+            let v = shown.as_ref().and_then(|p| p.metadata().ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
             json!({
                 "sentence": s.sentence,
                 "caption": s.caption,
-                "ready": image_path(state, asset, chapter, i).exists(),
-                "url": format!("/api/assets/{asset}/illustrations/{chapter}/{i}.png"),
+                "ready": shown.is_some(),
+                // (Still showing the old one while the new one's drawn.)
+                "redrawing": !drawn && shown.is_some(),
+                "url": format!("/api/assets/{asset}/illustrations/{chapter}/{i}.png?v={v}"),
             })
         })
         .collect();
@@ -334,7 +354,8 @@ pub async fn redraw(state: &State, asset: i64, chapter: usize, i: usize) -> anyh
     scene.seed = scene.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 1;
     let sentence = scene.sentence;
     write_json(&path, &scenes).await?;
-    let _ = tokio::fs::remove_file(image_path(state, asset, chapter, i)).await;
+    // (The old one stays on show until the new one's drawn.)
+    let _ = tokio::fs::rename(image_path(state, asset, chapter, i), previous_path(state, asset, chapter, i)).await;
     // (The reader "at" the picture, so it's the nearest one left to draw.)
     READER.lock().unwrap().insert(asset, (chapter, sentence));
     ahead(state, asset);
@@ -375,9 +396,10 @@ async fn rethink(state: &State, asset: i64, chapter: usize, old: &Scene) -> anyh
     Ok(Scene { scene, characters: names(&reply["characters"]), places: names(&reply["places"]), ..old.clone() })
 }
 
-/// Pictures drawn at a time: few enough that the drawing turns to wherever the reader has got
-/// to soon after they move (loading the model again each time costs a few seconds).
-const BATCH: usize = 4;
+/// Pictures asked for at a time: one, so the drawing turns to wherever the reader has got to
+/// (or a picture they asked to have drawn again) as soon as the picture in hand is done. (The
+/// drawing process stays loaded between them.)
+const BATCH: usize = 1;
 
 fn ahead(state: &State, asset: i64) {
     if !DRAWING.lock().unwrap().insert(asset) {
