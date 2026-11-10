@@ -284,6 +284,22 @@ pub async fn chapter(state: &State, asset: i64, chapter: usize, near: Option<usi
     json!(list)
 }
 
+/// One picture drawn again (the reader didn't like it): the same scene with a new seed, kept in
+/// the plan so it stays, and drawn before anything else.
+pub async fn redraw(state: &State, asset: i64, chapter: usize, i: usize) -> anyhow::Result<()> {
+    let path = dir(state, asset).join(format!("plan-{chapter}.json"));
+    let mut scenes: Vec<Scene> = read_json(&path).await.context("no pictures planned for this chapter")?;
+    let scene = scenes.get_mut(i).context("no such picture")?;
+    scene.seed = scene.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 1;
+    let sentence = scene.sentence;
+    write_json(&path, &scenes).await?;
+    let _ = tokio::fs::remove_file(image_path(state, asset, chapter, i)).await;
+    // (The reader "at" the picture, so it's the nearest one left to draw.)
+    READER.lock().unwrap().insert(asset, (chapter, sentence));
+    ahead(state, asset);
+    Ok(())
+}
+
 /// Pictures drawn at a time: few enough that the drawing turns to wherever the reader has got
 /// to soon after they move (loading the model again each time costs a few seconds).
 const BATCH: usize = 4;

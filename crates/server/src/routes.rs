@@ -65,6 +65,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assets/{id}/illustrations/portrait/{name}", get(illus_portrait))
         .route("/assets/{id}/illustrations/{chapter}", get(illus_chapter))
         .route("/assets/{id}/illustrations/{chapter}/{file}", get(illus_image))
+        .route("/assets/{id}/illustrations/{chapter}/{i}/redraw", post(illus_redraw))
         .route("/assets/{id}/cast/voice", post(cast_voice))
         .route("/assets/{id}/cast/clip/{voice}", get(cast_clip))
         .route("/cast/warm", post(cast_warm))
@@ -373,6 +374,12 @@ struct Near {
 
 async fn illus_chapter(AxState(s): AxState<State>, Path((id, chapter)): Path<(i64, usize)>, Query(q): Query<Near>) -> Json<serde_json::Value> {
     Json(crate::illustrate::chapter(&s, id, chapter, q.near).await)
+}
+
+/// Draws one picture again (a right-click on it): a new take on the same scene, drawn first.
+async fn illus_redraw(AxState(s): AxState<State>, Path((id, chapter, i)): Path<(i64, usize, usize)>) -> ApiResult<Json<serde_json::Value>> {
+    crate::illustrate::redraw(&s, id, chapter, i).await.map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn illus_image(AxState(s): AxState<State>, Path((id, chapter, file)): Path<(i64, usize, String)>) -> ApiResult<Response> {

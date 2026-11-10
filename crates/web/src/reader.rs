@@ -1845,11 +1845,29 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
 
     // Right-click on the page: look up, explain or ask about the words there, or play from them.
     let menu = RwSignal::new(None::<(f64, f64, String, Option<(usize, usize)>)>);
+    // A drawn picture right-clicked: (x, y, its chapter, its number in the chapter, its sentence).
+    let pic_menu = RwSignal::new(None::<(f64, f64, usize, usize, usize)>);
     let assist = RwSignal::new(None::<(String, bool)>);
     // The dictionary card: where it shows, the word, and the sentence it's in.
     let dict = RwSignal::new(None::<(f64, f64, String, Option<String>)>);
     let on_context = move |ev: web_sys::MouseEvent| {
         ev.prevent_default();
+        // A drawn picture: its own menu (draw it again).
+        let fig = ev.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()).and_then(|el| el.closest("figure.illus").ok().flatten());
+        if let Some(fig) = fig {
+            let src = fig.query_selector("img").ok().flatten().and_then(|i| i.get_attribute("src")).unwrap_or_default();
+            // (…/illustrations/{chapter}/{i}.png)
+            let mut parts = src.split('?').next().unwrap_or("").rsplit('/');
+            let i = parts.next().and_then(|f| f.strip_suffix(".png")).and_then(|n| n.parse::<usize>().ok());
+            let c = parts.next().and_then(|n| n.parse::<usize>().ok());
+            let sent = fig.get_attribute("data-for").and_then(|v| v.parse::<usize>().ok());
+            if let (Some(c), Some(i), Some(sent)) = (c, i, sent) {
+                let w = window().inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(1000.0);
+                let h = window().inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(800.0);
+                pic_menu.set(Some(((ev.client_x() as f64).min(w - 250.0).max(8.0), (ev.client_y() as f64).min(h - 120.0).max(8.0), c, i, sent)));
+                return;
+            }
+        }
         // The sentence first (selecting the word below would hide it).
         let n = ev
             .target()
@@ -1874,7 +1892,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     };
     // Any click or key elsewhere closes it.
     let close_menu = Closure::<dyn Fn(web_sys::Event)>::new(move |ev: web_sys::Event| {
-        if menu.get_untracked().is_none() && dict.get_untracked().is_none() {
+        if menu.get_untracked().is_none() && dict.get_untracked().is_none() && pic_menu.get_untracked().is_none() {
             return;
         }
         let inside = ev
@@ -1884,6 +1902,7 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         if !inside {
             menu.set(None);
             dict.set(None);
+            pic_menu.set(None);
         }
     });
     for kind in ["pointerdown", "keydown", "wheel"] {
@@ -2542,6 +2561,45 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
                     }
                 })}
             </Show>
+            {move || pic_menu.get().map(|(x, y, c, i, sent)| view! {
+                <div class="context-menu" style=format!("left:{x}px;top:{y}px") on:contextmenu=|ev| ev.prevent_default()>
+                    <button on:click=move |_| {
+                        pic_menu.set(None);
+                        let Some(e) = ebook.get_untracked() else { return };
+                        // Dimmed while it's drawn again, then swapped for the new one.
+                        let fig = move || page.get_untracked().and_then(|el| el.query_selector(&format!("figure.illus[data-for=\"{sent}\"]")).ok().flatten());
+                        if let Some(f) = fig() {
+                            let _ = f.class_list().add_1("redrawing");
+                        }
+                        spawn_local(async move {
+                            if let Err(err) = api::post::<_, serde_json::Value>(&format!("/api/assets/{}/illustrations/{c}/{i}/redraw", e.id), &()).await {
+                                toast.show(format!("Couldn't draw it again: {}", err.0));
+                                if let Some(f) = fig() {
+                                    let _ = f.class_list().remove_1("redrawing");
+                                }
+                                return;
+                            }
+                            toast.show("Drawing that picture again…".to_string());
+                            // (Asked after every few seconds, for up to ten minutes.)
+                            for _ in 0..150 {
+                                gloo_timers::future::TimeoutFuture::new(4000).await;
+                                let Ok(list) = api::get::<Vec<Picture>>(&format!("/api/assets/{}/illustrations/{c}?near={sent}", e.id)).await else { continue };
+                                if let Some(p) = list.iter().find(|p| p.sentence == sent && p.ready) {
+                                    if let Some(f) = fig() {
+                                        if let Some(img) = f.query_selector("img").ok().flatten() {
+                                            let _ = img.set_attribute("src", &format!("{}?v={}", p.url, js_sys::Date::now() as u64));
+                                        }
+                                        let _ = f.class_list().remove_1("redrawing");
+                                    }
+                                    return;
+                                }
+                            }
+                        });
+                    }>
+                        <span>"Draw this picture again"</span><small>"a new take on the same scene"</small>
+                    </button>
+                </div>
+            })}
             {move || dict.get().map(|(x, y, word, context)| view! { <DictCard x y word context dict assist/> })}
             <Assistant id work audio playing position request=assist dict/>
         </div>

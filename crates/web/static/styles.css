@@ -1626,6 +1626,9 @@ button, .transport { -webkit-user-select: none; user-select: none; }
 .cast-busy { color: var(--muted); font-size: 0.82rem; margin-right: auto; }
 
 /* AI pictures in the text: a whole picture, never split between columns or pages */
+/* A picture being drawn again: dimmed, with a gentle pulse, until the new one arrives. */
+.page figure.illus.redrawing img { opacity: 0.35; animation: illus-redraw 1.6s ease-in-out infinite alternate; }
+@keyframes illus-redraw { from { opacity: 0.25; } to { opacity: 0.5; } }
 .page figure.illus { margin: 0.6em 0 1em; text-align: center; break-inside: avoid; page-break-inside: avoid; }
 .page figure.illus img { display: block; margin: 0 auto; width: auto; height: auto; max-width: 100%;
   max-height: calc(var(--col-h, 70vh) * 0.36); border-radius: 3px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18); }
