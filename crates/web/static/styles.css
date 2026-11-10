@@ -1830,3 +1830,73 @@ html.eink .swatch { border: 1.5px solid #000; }
 html.eink .swatch.active { outline: 3px solid #000; outline-offset: 2px; }
 html.eink .swatch-light { background: #fff; } html.eink .swatch-sepia { background: #f3e9d4; }
 html.eink .swatch-gray { background: #4a4a4c; } html.eink .swatch-dark { background: #000; }
+
+/* ---- Daily briefing ------------------------------------------------------------------------ */
+.briefing { max-width: 1180px; }
+.brief-layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 1.4rem; align-items: start; }
+.brief-empty { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 2rem; text-align: center; }
+.brief-episodes { display: grid; gap: 0.4rem; position: sticky; top: 1rem; }
+.brief-episodes h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 1rem 0 0.2rem; font-family: var(--sans); }
+.brief-ep { display: grid; justify-items: start; text-align: left; gap: 0.1rem; background: transparent; border-color: transparent; box-shadow: none; }
+.brief-ep.active { background: var(--surface); border-color: var(--line); }
+.brief-ep .ep-title { font-weight: 500; }
+.brief-ep small { color: var(--muted); }
+.brief-player { display: grid; gap: 1rem; }
+.brief-now { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.3rem 1.4rem; display: grid; gap: 0.9rem; }
+.brief-title small { color: var(--muted); }
+.brief-title h2 { margin: 0.1rem 0 0; font-size: 1.5rem; }
+.brief-making { display: flex; gap: 0.5rem; align-items: center; color: var(--muted); margin: 0; }
+.brief-error { color: var(--danger); margin: 0; }
+.brief-caption { min-height: 5.5rem; }
+.brief-caption .speaker { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); font-weight: 600; }
+.brief-caption p { font-family: var(--serif); font-size: 1.25rem; line-height: 1.45; margin: 0.2rem 0 0; }
+.brief-bar { position: relative; height: 6px; border-radius: 3px; background: var(--bg-2); overflow: hidden; }
+.brief-bar .recorded { position: absolute; inset: 0 auto 0 0; background: var(--accent-soft); transition: width 0.4s; }
+.brief-bar .played { position: absolute; inset: 0 auto 0 0; background: var(--accent); transition: width 0.4s; }
+.brief-controls { display: flex; align-items: center; justify-content: center; gap: 0.6rem; }
+.brief-controls .icon-button .icon { width: 22px; height: 22px; }
+.brief-play { width: 64px; height: 64px; border-radius: 50%; padding: 0; justify-content: center; }
+.brief-play svg { width: 30px; height: 30px; }
+.brief-rate { width: auto; margin-left: 0.6rem; }
+.brief-ask { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 0.8rem 1rem; }
+.brief-exchanges { display: flex; flex-direction: column; gap: 0.5rem; }
+.brief-exchanges:empty { display: none; }
+.brief-ask form { display: flex; gap: 0.6rem; align-items: center; margin-top: 0.4rem; }
+.brief-ask form input { flex: 1; }
+.mic.big { width: 52px; height: 52px; border-radius: 50%; min-height: 0; flex: none; }
+.mic.big .mic-icon { width: 24px; height: 24px; }
+.mic.big:not(.recording) { box-shadow: 0 0 0 calc(var(--level, 0) * 10px) var(--accent-soft); }
+.brief-stories { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; counter-reset: story; }
+.brief-story { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.brief-story.now { border-color: var(--accent-2); box-shadow: 0 0 0 2px var(--accent-soft); }
+.brief-story.intro { background: transparent; }
+.story-head { display: flex; align-items: center; gap: 0.8rem; width: 100%; text-align: left; border: 0; border-radius: 0; box-shadow: none; background: transparent; padding: 0.6rem 0.8rem; }
+.story-head img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; flex: none; background: var(--bg-2); }
+.story-title { flex: 1; font-weight: 500; }
+.story-head small { color: var(--muted); }
+.story-sources { list-style: none; margin: 0; padding: 0 0.8rem 0.6rem; display: grid; gap: 0.25rem; font-size: 0.88rem; }
+.story-sources a { color: var(--text); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.story-sources .site { color: var(--accent); margin-right: 0.45rem; font-size: 0.8rem; }
+.brief-settings h4 { margin: 1rem 0 0.4rem; font-family: var(--sans); font-size: 0.85rem; color: var(--muted); }
+.brief-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.brief-sources { list-style: none; margin: 0.4rem 0; padding: 0; display: grid; gap: 0.1rem; }
+.brief-sources li { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.brief-sources .check { margin: 0.2rem 0; min-width: 0; }
+.brief-sources .kind { font-size: 0.75rem; padding: 0.05rem 0.45rem; border-radius: 6px; background: var(--bg-2); color: var(--muted); }
+.brief-add { display: flex; gap: 0.5rem; }
+.brief-add select { width: auto; }
+.brief-add input { flex: 1; min-width: 0; }
+.brief-host { display: grid; gap: 0.4rem; padding: 0.8rem 0; border-bottom: 1px solid var(--line); }
+.brief-host .host-name { font-weight: 600; max-width: 14rem; }
+.host-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+.host-actions audio { height: 34px; }
+@media (max-width: 900px) {
+  .brief-layout { grid-template-columns: 1fr; }
+  .brief-episodes { position: static; order: -1; }
+  .brief-row { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .brief-now { padding: 1rem; }
+  .brief-caption p { font-size: 1.1rem; }
+  .brief-controls { gap: 0.3rem; }
+}

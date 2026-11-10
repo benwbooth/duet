@@ -1,0 +1,800 @@
+//! The daily briefing: today's AI-made podcast from your feeds, with the stories and their
+//! sources, a player that keeps going with the screen off, and the microphone for asking about
+//! what you're hearing. Its sources and hosts are set up here too.
+
+use duet_common::{
+    ChatTurn,
+    podcast::{CATALOG, Episode, EpisodeSummary, HostVoice, PodcastAnswer, PodcastAsk, PodcastHost, PodcastSettings, PodcastSource, strip_directions},
+};
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+use wasm_bindgen::prelude::*;
+
+use crate::{api, icon, icons, toast};
+
+#[wasm_bindgen(inline_js = r#"
+let audio = null, lines = [], idx = 0, want = false, cbIndex = null, cbState = null, rate = 1, answer = null;
+function state(s) { if (cbState) cbState(s); }
+function load() {
+  const l = lines[idx];
+  if (!l) { want = false; state("ended"); return; }
+  if (!l.ready) { state("waiting"); return; }
+  if (!audio.src.endsWith(l.url)) audio.src = l.url;
+  audio.playbackRate = rate;
+  if (cbIndex) cbIndex(idx);
+  if (want) audio.play().catch(() => state("paused"));
+  // The next line, ready before it's needed.
+  const n = lines[idx + 1];
+  if (n && n.ready) fetch(n.url).catch(() => {});
+}
+export function podInit(onIndex, onState) {
+  if (!audio) {
+    audio = new Audio();
+    audio.preload = "auto";
+    audio.addEventListener("ended", () => { idx += 1; load(); });
+    audio.addEventListener("playing", () => state("playing"));
+    audio.addEventListener("pause", () => { if (!audio.ended) state("paused"); });
+    audio.addEventListener("waiting", () => state("waiting"));
+  }
+  cbIndex = onIndex; cbState = onState;
+  if ("mediaSession" in navigator) {
+    const ms = navigator.mediaSession;
+    ms.setActionHandler("play", () => podResume());
+    ms.setActionHandler("pause", () => podPause());
+    ms.setActionHandler("nexttrack", () => podJump(1));
+    ms.setActionHandler("previoustrack", () => podJump(-1));
+    try { ms.setActionHandler("seekforward", () => podStep(1)); ms.setActionHandler("seekbackward", () => podStep(-1)); } catch (_) {}
+  }
+}
+export function podLines(json) {
+  const was = lines[idx];
+  lines = JSON.parse(json);
+  if (want && was && !was.ready && lines[idx] && lines[idx].ready) load();
+}
+export function podPlayFrom(i) { idx = Math.max(0, i); want = true; load(); }
+export function podPause() { want = false; if (audio) audio.pause(); state("paused"); }
+export function podResume() { want = true; if (audio && audio.src && lines[idx] && audio.src.endsWith(lines[idx].url)) audio.play().catch(() => {}); else load(); }
+export function podPlaying() { return want; }
+export function podStep(d) { idx = Math.min(Math.max(0, idx + d), lines.length - 1); load(); }
+// The start of the next (or this / the previous) story.
+export function podJump(d) {
+  const seg = lines[idx] ? lines[idx].seg : 0;
+  let target = idx;
+  if (d > 0) { target = lines.findIndex((l) => l.seg > seg); if (target < 0) return; }
+  else {
+    const start = lines.findIndex((l) => l.seg === seg);
+    const into = audio && audio.currentTime > 3;
+    if (idx === start && !into) { const prev = lines.findIndex((l) => l.seg === seg - 1); target = prev < 0 ? 0 : prev; }
+    else target = start;
+  }
+  idx = target; load();
+}
+export function podRate(r) { rate = r; if (audio) audio.playbackRate = r; }
+export function podStop() { want = false; if (audio) { audio.pause(); audio.removeAttribute("src"); } lines = []; idx = 0; if (answer) answer.pause(); }
+export function podMeta(title, artist) {
+  if ("mediaSession" in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title, artist, album: "Daily briefing" });
+}
+export function podSay(url, onEnd) {
+  if (answer) answer.pause();
+  answer = new Audio(url);
+  answer.addEventListener("ended", () => onEnd());
+  answer.play().catch(() => onEnd());
+}
+export function podSaved(key) { try { return parseInt(localStorage.getItem("duet-brief-" + key) || "0", 10) || 0; } catch (_) { return 0; } }
+export function podSave(key, i) { try { localStorage.setItem("duet-brief-" + key, String(i)); } catch (_) {} }
+"#)]
+extern "C" {
+    #[wasm_bindgen(js_name = podInit)]
+    fn pod_init(on_index: &js_sys::Function, on_state: &js_sys::Function);
+    #[wasm_bindgen(js_name = podLines)]
+    fn pod_lines(json: &str);
+    #[wasm_bindgen(js_name = podPlayFrom)]
+    fn pod_play_from(i: usize);
+    #[wasm_bindgen(js_name = podPause)]
+    fn pod_pause();
+    #[wasm_bindgen(js_name = podResume)]
+    fn pod_resume();
+    #[wasm_bindgen(js_name = podPlaying)]
+    fn pod_playing() -> bool;
+    #[wasm_bindgen(js_name = podStep)]
+    fn pod_step(d: i32);
+    #[wasm_bindgen(js_name = podJump)]
+    fn pod_jump(d: i32);
+    #[wasm_bindgen(js_name = podRate)]
+    fn pod_rate(r: f64);
+    #[wasm_bindgen(js_name = podStop)]
+    fn pod_stop();
+    #[wasm_bindgen(js_name = podMeta)]
+    fn pod_meta(title: &str, artist: &str);
+    #[wasm_bindgen(js_name = podSay)]
+    fn pod_say(url: &str, on_end: &js_sys::Function);
+    #[wasm_bindgen(js_name = podSaved)]
+    fn pod_saved(key: &str) -> usize;
+    #[wasm_bindgen(js_name = podSave)]
+    fn pod_save(key: &str, i: usize);
+}
+
+/// Every line in order, as the player plays them: (segment, line).
+fn flat(ep: &Episode) -> Vec<(usize, usize)> {
+    ep.segments.iter().enumerate().flat_map(|(s, seg)| (0..seg.lines.len()).map(move |l| (s, l))).collect()
+}
+
+fn lines_json(ep: &Episode) -> String {
+    let v: Vec<serde_json::Value> = ep
+        .segments
+        .iter()
+        .enumerate()
+        .flat_map(|(s, seg)| {
+            let id = ep.id.clone();
+            seg.lines.iter().enumerate().map(move |(l, line)| {
+                serde_json::json!({ "seg": s, "ready": line.ready, "url": format!("/api/podcast/episodes/{id}/audio/{s}/{l}") })
+            })
+        })
+        .collect();
+    serde_json::to_string(&v).unwrap_or_default()
+}
+
+fn stage_text(ep: &Episode) -> String {
+    if !ep.doing.is_empty() {
+        return ep.doing.clone();
+    }
+    match ep.stage.as_str() {
+        "gathering" => "Checking your sources",
+        "choosing" => "Choosing the stories",
+        "reading" => "Reading the stories",
+        "writing" => "Writing the script",
+        "recording" => "Recording",
+        _ => "",
+    }
+    .into()
+}
+
+#[derive(Clone, PartialEq)]
+struct Exchange {
+    question: String,
+    answer: Option<PodcastAnswer>,
+}
+
+#[component]
+pub fn Briefing() -> impl IntoView {
+    let toast = toast();
+    let tab = RwSignal::new("listen");
+    let episodes = RwSignal::new(Vec::<EpisodeSummary>::new());
+    let current = RwSignal::new(None::<Episode>);
+    let settings = RwSignal::new(None::<PodcastSettings>);
+    let starting = RwSignal::new(false);
+    // Where the player is (an index into `flat`) and what it's doing.
+    let index = RwSignal::new(0usize);
+    let pstate = RwSignal::new(String::from("paused"));
+    let rate = RwSignal::new(1.0f64);
+
+    let on_index = Closure::<dyn Fn(f64)>::new(move |i: f64| {
+        let i = i as usize;
+        index.set(i);
+        if let Some(ep) = current.get_untracked() {
+            pod_save(&ep.id, i);
+            if let Some((s, _)) = flat(&ep).get(i) {
+                pod_meta(&ep.segments[*s].title, &format!("Daily briefing · {}", ep.title));
+            }
+        }
+    })
+    .into_js_value();
+    let on_state = Closure::<dyn Fn(String)>::new(move |s: String| pstate.set(s)).into_js_value();
+    pod_init(on_index.unchecked_ref(), on_state.unchecked_ref());
+    on_cleanup(pod_stop);
+    // The voices loaded and kept loaded while the briefing's open.
+    spawn_local(async {
+        let _ = api::post::<_, serde_json::Value>("/api/podcast/warm", &()).await;
+    });
+
+    let open_episode = move |id: String| {
+        spawn_local(async move {
+            match api::get::<Episode>(&format!("/api/podcast/episodes/{id}")).await {
+                Ok(ep) => {
+                    pod_stop();
+                    pod_lines(&lines_json(&ep));
+                    let saved = pod_saved(&ep.id).min(flat(&ep).len().saturating_sub(1));
+                    index.set(saved);
+                    current.set(Some(ep));
+                }
+                Err(e) => toast.show(e.0),
+            }
+        });
+    };
+    let refresh_list = move |open_latest: bool| {
+        spawn_local(async move {
+            if let Ok(list) = api::get::<Vec<EpisodeSummary>>("/api/podcast/episodes").await {
+                if open_latest {
+                    if let Some(first) = list.first() {
+                        open_episode(first.id.clone());
+                    }
+                }
+                episodes.set(list);
+            }
+        });
+    };
+    refresh_list(true);
+    spawn_local(async move {
+        if let Ok(s) = api::get::<PodcastSettings>("/api/podcast/settings").await {
+            settings.set(Some(s));
+        }
+    });
+
+    // While an episode is being made, it's checked every couple of seconds.
+    let alive = StoredValue::new(true);
+    on_cleanup(move || alive.set_value(false));
+    spawn_local(async move {
+        loop {
+            gloo_timers::future::TimeoutFuture::new(2000).await;
+            if !alive.try_get_value().unwrap_or(false) {
+                break;
+            }
+            let Some(ep) = current.get_untracked() else { continue };
+            if ep.finished() {
+                continue;
+            }
+            if let Ok(new) = api::get::<Episode>(&format!("/api/podcast/episodes/{}", ep.id)).await {
+                if new != ep {
+                    pod_lines(&lines_json(&new));
+                    let done = new.finished();
+                    current.set(Some(new));
+                    if done {
+                        refresh_list(false);
+                    }
+                }
+            }
+        }
+    });
+
+    let make = move |_| {
+        if starting.get_untracked() {
+            return;
+        }
+        starting.set(true);
+        spawn_local(async move {
+            match api::post::<_, Episode>("/api/podcast/episodes", &()).await {
+                Ok(ep) => {
+                    pod_stop();
+                    pod_lines(&lines_json(&ep));
+                    index.set(0);
+                    current.set(Some(ep));
+                    refresh_list(false);
+                }
+                Err(e) => toast.show(e.0),
+            }
+            starting.set(false);
+        });
+    };
+
+    view! {
+        <div class="briefing">
+            <header class="page-head">
+                <div class="titles">
+                    <h1>"Daily briefing " {crate::ai_tag()}</h1>
+                    <p class="subtitle">"A podcast made for you each morning from your feeds, by AI: written by the chat model, voiced by AI hosts."</p>
+                </div>
+                <div class="segmented">
+                    <button class:active=move || tab.get() == "listen" on:click=move |_| tab.set("listen")>"Listen"</button>
+                    <button class:active=move || tab.get() == "sources" on:click=move |_| tab.set("sources")>"Sources & hosts"</button>
+                </div>
+            </header>
+            <Show when=move || tab.get() == "listen" fallback=move || view! { <BriefingSettings settings/> }>
+                <div class="brief-layout">
+                    <div class="brief-main">
+                        {move || match current.get() {
+                            None => view! {
+                                <div class="brief-empty">
+                                    <p>"No episodes yet. Pick your sources and what you care about, then make the first one."</p>
+                                    <button class="primary" on:click=make disabled=move || starting.get()>{icon(icons::SPARKLE)}"Make today's briefing"</button>
+                                </div>
+                            }.into_any(),
+                            Some(_) => view! { <Player current index pstate rate/> }.into_any(),
+                        }}
+                    </div>
+                    <aside class="brief-episodes">
+                        <button class="primary" on:click=make disabled=move || starting.get()>
+                            {move || if starting.get() { view! { <span class="spinner small"></span> }.into_any() } else { icon(icons::SPARKLE).into_any() }}
+                            "New episode now"
+                        </button>
+                        <h3>"Episodes"</h3>
+                        <For each=move || episodes.get() key=|e| (e.id.clone(), e.stage.clone()) let:e>
+                            {
+                                let id = e.id.clone();
+                                let id2 = e.id.clone();
+                                let making = !matches!(e.stage.as_str(), "ready" | "failed");
+                                view! {
+                                    <button class="brief-ep" class:active=move || current.with(|c| c.as_ref().is_some_and(|c| c.id == id2))
+                                        on:click=move |_| open_episode(id.clone())>
+                                        <span class="ep-title">{e.title.clone()}</span>
+                                        <small>{if making { "Being made…".to_string() } else if e.stage == "failed" { "Didn't finish".into() } else { format!("{} stories", e.stories) }}</small>
+                                    </button>
+                                }
+                            }
+                        </For>
+                    </aside>
+                </div>
+            </Show>
+        </div>
+    }
+}
+
+#[component]
+fn Player(current: RwSignal<Option<Episode>>, index: RwSignal<usize>, pstate: RwSignal<String>, rate: RwSignal<f64>) -> impl IntoView {
+    let toast = toast();
+    let ep = move || current.get().unwrap_or_default();
+    let here = move || current.with(|c| c.as_ref().and_then(|e| flat(e).get(index.get()).copied()));
+    let playing = move || matches!(pstate.get().as_str(), "playing" | "waiting");
+
+    // Questions.
+    let exchanges = RwSignal::new(Vec::<Exchange>::new());
+    let input = RwSignal::new(String::new());
+    let recording = RwSignal::new(false);
+    let mic_starting = RwSignal::new(false);
+    let mic_level = RwSignal::new(0.0f64);
+    let thinking = RwSignal::new(false);
+    let resume_after = RwSignal::new(true);
+    let was_playing = StoredValue::new(false);
+
+    let ask = move |question: String| {
+        let question = question.trim().to_string();
+        if question.is_empty() {
+            return;
+        }
+        let Some(e) = current.get_untracked() else { return };
+        let (segment, line) = flat(&e).get(index.get_untracked()).copied().unwrap_or((0, 0));
+        let history: Vec<ChatTurn> = exchanges
+            .get_untracked()
+            .iter()
+            .rev()
+            .take(6)
+            .rev()
+            .flat_map(|x| {
+                let mut t = vec![ChatTurn { role: "user".into(), content: x.question.clone() }];
+                if let Some(a) = &x.answer {
+                    t.push(ChatTurn { role: "assistant".into(), content: a.spoken.clone() });
+                }
+                t
+            })
+            .collect();
+        exchanges.update(|x| x.push(Exchange { question: question.clone(), answer: None }));
+        input.set(String::new());
+        thinking.set(true);
+        let req = PodcastAsk { episode: e.id.clone(), segment, line, question, history };
+        spawn_local(async move {
+            match api::post::<_, PodcastAnswer>("/api/podcast/ask", &req).await {
+                Ok(a) => {
+                    let audio = a.audio.clone();
+                    exchanges.update(|x| {
+                        if let Some(last) = x.last_mut() {
+                            last.answer = Some(a);
+                        }
+                    });
+                    thinking.set(false);
+                    let resume = move || {
+                        if resume_after.get_untracked() && was_playing.get_value() {
+                            pod_resume();
+                        }
+                    };
+                    match audio {
+                        Some(url) => {
+                            let done = Closure::once_into_js(resume);
+                            pod_say(&url, done.unchecked_ref());
+                        }
+                        None => resume(),
+                    }
+                }
+                Err(err) => {
+                    toast.show(err.0);
+                    exchanges.update(|x| {
+                        x.pop();
+                    });
+                    thinking.set(false);
+                }
+            }
+        });
+    };
+
+    let mic = move |_| {
+        if recording.get_untracked() {
+            recording.set(false);
+            spawn_local(async move {
+                match crate::stop_recording().await {
+                    Ok(text) => {
+                        let text = text.as_string().unwrap_or_default();
+                        if text.trim().is_empty() {
+                            toast.show("Didn't catch any words. Is the right microphone selected?");
+                            if resume_after.get_untracked() && was_playing.get_value() {
+                                pod_resume();
+                            }
+                        } else {
+                            ask(text);
+                        }
+                    }
+                    Err(e) => toast.show(format!("Couldn't transcribe: {e:?}")),
+                }
+            });
+            return;
+        }
+        if mic_starting.get_untracked() {
+            return;
+        }
+        // Stop the show while you ask.
+        was_playing.set_value(pod_playing());
+        pod_pause();
+        mic_starting.set(true);
+        input.set(String::new());
+        let on_partial = Closure::<dyn Fn(JsValue)>::new(move |t: JsValue| {
+            if recording.get_untracked() {
+                input.set(t.as_string().unwrap_or_default());
+            }
+        })
+        .into_js_value();
+        let on_level = Closure::<dyn Fn(f64)>::new(move |l: f64| mic_level.set(l)).into_js_value();
+        spawn_local(async move {
+            let started = crate::start_recording(on_partial.unchecked_ref(), on_level.unchecked_ref()).await;
+            mic_starting.set(false);
+            match started {
+                Ok(_) => recording.set(true),
+                Err(e) => toast.show(format!("Microphone unavailable: {e:?}")),
+            }
+        });
+    };
+
+    let play_pause = move |_| {
+        if playing() {
+            pod_pause();
+        } else if pstate.get_untracked() == "ended" {
+            pod_play_from(0);
+        } else {
+            pod_play_from(index.get_untracked());
+        }
+    };
+    let record_again = move |_| {
+        let Some(e) = current.get_untracked() else { return };
+        spawn_local(async move {
+            match api::post::<_, Episode>(&format!("/api/podcast/episodes/{}/record", e.id), &()).await {
+                Ok(ep) => current.set(Some(ep)),
+                Err(err) => toast.show(err.0),
+            }
+        });
+    };
+
+    let progress = move || {
+        current.with(|c| {
+            let Some(e) = c else { return (0, 0, 0) };
+            let all = flat(e);
+            let ready = e.segments.iter().flat_map(|s| &s.lines).filter(|l| l.ready).count();
+            (index.get().min(all.len()), ready, all.len())
+        })
+    };
+
+    let numbered = move || exchanges.get().into_iter().enumerate().collect::<Vec<(usize, Exchange)>>();
+
+    view! {
+        <section class="brief-player">
+            <div class="brief-now">
+                <div class="brief-title">
+                    <small>{move || ep().title}</small>
+                    <h2>{move || here().and_then(|(s, _)| current.with(|c| c.as_ref().map(|e| e.segments[s].title.clone()))).unwrap_or_else(|| "Getting today's stories".into())}</h2>
+                </div>
+                <Show when=move || !ep().finished()>
+                    <p class="brief-making"><span class="spinner small"></span>{move || stage_text(&ep())}</p>
+                </Show>
+                <Show when=move || ep().error.is_some()>
+                    <p class="brief-error">
+                        {move || ep().error.unwrap_or_default()}
+                        <Show when=move || ep().segments.iter().any(|s| s.lines.iter().any(|l| !l.ready))>
+                            " "<button class="link" on:click=record_again>"Record the rest"</button>
+                        </Show>
+                    </p>
+                </Show>
+                <div class="brief-caption" aria-live="polite">
+                    {move || here().and_then(|(s, l)| current.with(|c| c.as_ref().map(|e| e.segments[s].lines[l].clone()))).map(|line| view! {
+                        <span class="speaker">{line.speaker.clone()}</span>
+                        <p>{strip_directions(&line.text)}</p>
+                    })}
+                    <Show when=move || pstate.get() == "waiting">
+                        <p class="hint"><span class="spinner small"></span>"Waiting for the hosts to record this…"</p>
+                    </Show>
+                </div>
+                <div class="brief-bar" title=move || { let (_, ready, total) = progress(); format!("{ready} of {total} lines recorded") }>
+                    <div class="recorded" style:width=move || { let (_, r, t) = progress(); format!("{:.1}%", if t == 0 { 0.0 } else { r as f64 * 100.0 / t as f64 }) }></div>
+                    <div class="played" style:width=move || { let (i, _, t) = progress(); format!("{:.1}%", if t == 0 { 0.0 } else { i as f64 * 100.0 / t as f64 }) }></div>
+                </div>
+                <div class="brief-controls">
+                    <button class="icon-button" title="Previous story" aria-label="Previous story" on:click=move |_| pod_jump(-1)>
+                        <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="M6 5v14M18 5 9 12l9 7z" fill="currentColor" stroke="none"/></svg>
+                    </button>
+                    <button class="icon-button" title="Back a line" aria-label="Back a line" on:click=move |_| pod_step(-1)>
+                        <svg viewBox="0 0 24 24" class="icon" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 8 0 1 0 2.4-5.7L4 8.5M4 4v4.5h4.5"/></svg>
+                    </button>
+                    <button class="brief-play primary" aria-label=move || if playing() { "Pause" } else { "Play" } on:click=play_pause>
+                        {move || if playing() {
+                            view! { <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"/></svg> }.into_any()
+                        } else {
+                            view! { <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg> }.into_any()
+                        }}
+                    </button>
+                    <button class="icon-button" title="Forward a line" aria-label="Forward a line" on:click=move |_| pod_step(1)>
+                        <svg viewBox="0 0 24 24" class="icon" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 1 1-2.4-5.7L20 8.5M20 4v4.5h-4.5"/></svg>
+                    </button>
+                    <button class="icon-button" title="Next story" aria-label="Next story" on:click=move |_| pod_jump(1)>
+                        <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="M18 5v14M6 5l9 7-9 7z" fill="currentColor" stroke="none"/></svg>
+                    </button>
+                    <select class="brief-rate" title="Speed" on:change=move |ev| {
+                        let r = event_target_value(&ev).parse().unwrap_or(1.0);
+                        rate.set(r);
+                        pod_rate(r);
+                    }>
+                        {[0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0].map(|r| view! { <option value=r.to_string() selected=move || rate.get() == r>{format!("{r}×")}</option> })}
+                    </select>
+                </div>
+            </div>
+
+            <div class="brief-ask">
+                <div class="brief-exchanges">
+                    <For each=numbered key=|(i, x)| (*i, x.answer.is_some()) let:item>
+                        <div class="message mine"><small>"You"</small><p>{item.1.question.clone()}</p></div>
+                        {item.1.answer.clone().map(|a| view! { <div class="message"><small>{a.speaker.clone()}</small><p>{a.text.clone()}</p></div> })}
+                    </For>
+                    <Show when=move || thinking.get()><p class="hint thinking"><span class="spinner small"></span>"Looking into it…"</p></Show>
+                </div>
+                <form on:submit=move |ev| { ev.prevent_default(); was_playing.set_value(pod_playing()); pod_pause(); ask(input.get_untracked()) }>
+                    <Show when=crate::mic_supported>
+                        <button type="button" class="mic big" class:recording=move || recording.get() class:starting=move || mic_starting.get() on:click=mic
+                            style:--level=move || format!("{:.2}", if recording.get() { mic_level.get() } else { 0.0 })
+                            title=move || if recording.get() { "Stop and ask" } else { "Pause and ask a question" } aria-label="Ask a question">
+                            {move || if recording.get() {
+                                view! { <svg viewBox="0 0 24 24" aria-hidden="true" class="mic-icon"><rect x="7" y="7" width="10" height="10" rx="2.5" class="fill"/></svg> }.into_any()
+                            } else {
+                                view! { <svg viewBox="0 0 24 24" aria-hidden="true" class="mic-icon"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></svg> }.into_any()
+                            }}
+                        </button>
+                    </Show>
+                    <input type="text" prop:value=move || input.get()
+                        placeholder=move || if mic_starting.get() { "Waiting for the microphone…" } else if recording.get() { "Listening…" } else { "Ask about what you're hearing" }
+                        on:input=move |ev| input.set(event_target_value(&ev))/>
+                </form>
+                <label class="check"><input type="checkbox" prop:checked=move || resume_after.get() on:change=move |ev| resume_after.set(event_target_checked(&ev))/>"Carry on after the answer"</label>
+            </div>
+
+            <ol class="brief-stories">
+                {move || {
+                    let e = ep();
+                    let all = flat(&e);
+                    e.segments.iter().enumerate().map(|(s, seg)| {
+                        let start = all.iter().position(|(x, _)| *x == s).unwrap_or(0);
+                        let ready = seg.lines.iter().filter(|l| l.ready).count();
+                        let total = seg.lines.len();
+                        let state = if seg.writing { "Being written…".to_string() } else if total > 0 && ready < total { format!("Recording {ready}/{total}") } else { String::new() };
+                        let sources = seg.sources.clone();
+                        view! {
+                            <li class="brief-story" class:now=move || here().is_some_and(|(x, _)| x == s) class:intro=seg.kind != "story">
+                                <button class="story-head" disabled=total == 0 on:click=move |_| pod_play_from(start)>
+                                    {sources.iter().find_map(|x| x.image.clone()).map(|src| view! { <img src=src alt="" loading="lazy" referrerpolicy="no-referrer"/> })}
+                                    <span class="story-title">{seg.title.clone()}</span>
+                                    <small>{state}</small>
+                                </button>
+                                {(!sources.is_empty()).then(|| view! {
+                                    <ul class="story-sources">
+                                        {sources.into_iter().map(|x| view! {
+                                            <li><a href=x.url.clone() target="_blank" rel="noopener noreferrer"><span class="site">{x.site.clone()}</span>{x.title.clone()}</a></li>
+                                        }).collect_view()}
+                                    </ul>
+                                })}
+                            </li>
+                        }
+                    }).collect_view()
+                }}
+            </ol>
+        </section>
+    }
+}
+
+/// Sources, interests, length, the morning time, and the hosts. Saved as you change them.
+#[component]
+fn BriefingSettings(settings: RwSignal<Option<PodcastSettings>>) -> impl IntoView {
+    let toast = toast();
+    let voices = RwSignal::new(Vec::<HostVoice>::new());
+    let recasting = RwSignal::new(None::<String>);
+    let load_voices = move || {
+        spawn_local(async move {
+            if let Ok(v) = api::get::<Vec<HostVoice>>("/api/podcast/voices").await {
+                voices.set(v);
+            }
+        })
+    };
+    load_voices();
+    let save = move |f: Box<dyn FnOnce(&mut PodcastSettings)>| {
+        let Some(mut s) = settings.get_untracked() else { return };
+        f(&mut s);
+        settings.set(Some(s.clone()));
+        spawn_local(async move {
+            match api::put::<_, PodcastSettings>("/api/podcast/settings", &s).await {
+                Ok(_) => toast.show("Saved"),
+                Err(e) => toast.show(e.0),
+            }
+        });
+    };
+    let new_kind = RwSignal::new(String::from("reddit"));
+    let new_value = RwSignal::new(String::new());
+    let add = move || {
+        let value = new_value.get_untracked().trim().to_string();
+        if value.is_empty() {
+            return;
+        }
+        let kind = new_kind.get_untracked();
+        save(Box::new(move |s| s.sources.push(PodcastSource { kind, value, enabled: true })));
+        new_value.set(String::new());
+    };
+    let s = move || settings.get().unwrap_or_default();
+    let has = move |kind: &str, value: &str| s().sources.iter().any(|x| x.kind == kind && x.value == value);
+
+    view! {
+        <Show when=move || settings.get().is_some() fallback=|| view! { <p class="hint"><span class="spinner small"></span>"Loading…"</p> }>
+            <div class="settings brief-settings">
+                <section>
+                    <h3>"What you care about"</h3>
+                    <label class="field">
+                        <span>"Interests"</span>
+                        <textarea rows="4" placeholder="e.g. AI and open source, Rust, space, the Linux desktop, US and UK politics, climate; skip sports and celebrity gossip"
+                            prop:value=move || s().interests
+                            on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| s.interests = v)) }></textarea>
+                        <small>"The producer uses this to pick stories from everything in your sources, and the hosts to decide how deep to go."</small>
+                    </label>
+                    <div class="brief-row">
+                        <label class="field">
+                            <span>"Length (minutes)"</span>
+                            <input type="number" min="5" max="60" step="5" prop:value=move || s().minutes.to_string()
+                                on:change=move |ev| { let v = event_target_value(&ev).parse().unwrap_or(20); save(Box::new(move |s| s.minutes = v)) }/>
+                        </label>
+                        <label class="field">
+                            <span>"Ready every morning at"</span>
+                            <input type="time" prop:value=move || s().daily_at
+                                on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| s.daily_at = v)) }/>
+                            <small>"Leave empty to only make one when you ask."</small>
+                        </label>
+                    </div>
+                    <label class="check"><input type="checkbox" prop:checked=move || s().watch_videos
+                        on:change=move |ev| { let v = event_target_checked(&ev); save(Box::new(move |s| s.watch_videos = v)) }/>
+                        "Listen to videos and reels (needs yt-dlp), so the hosts can cover what's said in them"</label>
+                </section>
+
+                <section>
+                    <h3>"Your sources"</h3>
+                    <ul class="brief-sources">
+                        {move || s().sources.into_iter().enumerate().map(|(i, src)| {
+                            let label = source_label(&src);
+                            view! {
+                                <li>
+                                    <label class="check"><input type="checkbox" prop:checked=src.enabled
+                                        on:change=move |ev| { let v = event_target_checked(&ev); save(Box::new(move |s| if let Some(x) = s.sources.get_mut(i) { x.enabled = v })) }/>
+                                        <span class="kind">{kind_name(&src.kind)}</span>{label}</label>
+                                    <button class="icon-button" aria-label="Remove" title="Remove" on:click=move |_| save(Box::new(move |s| { if i < s.sources.len() { s.sources.remove(i); } }))>"×"</button>
+                                </li>
+                            }
+                        }).collect_view()}
+                    </ul>
+                    <form class="brief-add" on:submit=move |ev| { ev.prevent_default(); add() }>
+                        <select on:change=move |ev| new_kind.set(event_target_value(&ev)) prop:value=move || new_kind.get()>
+                            {KINDS.map(|(k, name, _)| view! { <option value=k>{name}</option> })}
+                        </select>
+                        <input type="text" prop:value=move || new_value.get() on:input=move |ev| new_value.set(event_target_value(&ev))
+                            placeholder=move || KINDS.iter().find(|k| k.0 == new_kind.get()).map(|k| k.2).unwrap_or("")/>
+                        <button type="submit">"Add"</button>
+                    </form>
+                    <p class="hint">{move || match new_kind.get().as_str() {
+                        "reddit" => "A subreddit's name, or your private front-page feed address from reddit.com/prefs/feeds (the RSS link) for everything you follow.",
+                        "x" => "An account, \"home\" for your timeline, or list/<id>. X has no free feeds, so this goes through RSSHub (set below; your timeline needs your X login in RSSHub's settings).",
+                        "instagram" => "An account. Goes through RSSHub (set below). Reels are listened to.",
+                        "bluesky" => "A handle, like someone.bsky.social.",
+                        "mastodon" => "@name@instance, or #tag@instance for a hashtag.",
+                        "youtube" => "A channel's @handle, address or id. Videos are listened to.",
+                        "lobsters" => "hottest, newest, or a tag like rust.",
+                        "hackernews" => "best, frontpage, newest, ask or show.",
+                        _ => "Any RSS or Atom feed address: blogs, newsletters, news sites.",
+                    }}</p>
+                    <label class="field">
+                        <span>"RSSHub address (for X and Instagram)"</span>
+                        <input type="url" placeholder="http://localhost:1200" prop:value=move || s().rsshub_url
+                            on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| s.rsshub_url = v)) }/>
+                        <small>"A self-hosted RSSHub (docker run -p 1200:1200 diygod/rsshub) turns X and Instagram accounts into feeds."</small>
+                    </label>
+                </section>
+
+                <section>
+                    <h3>"More sources"</h3>
+                    <p class="hint">"Major news, tech and science sites and the aggregators. Switch on as many as you like: the producer picks from all of them by your interests."</p>
+                    {["Aggregators", "News", "Tech", "Science"].map(|cat| view! {
+                        <h4>{cat}</h4>
+                        <div class="chips">
+                            {CATALOG.iter().filter(|c| c.category == cat).map(|c| {
+                                let (kind, value) = (c.kind, c.value);
+                                view! {
+                                    <button class="chip-button" class:active=move || has(kind, value) on:click=move |_| {
+                                        save(Box::new(move |s| {
+                                            if let Some(i) = s.sources.iter().position(|x| x.kind == kind && x.value == value) {
+                                                s.sources.remove(i);
+                                            } else {
+                                                s.sources.push(PodcastSource { kind: kind.into(), value: value.into(), enabled: true });
+                                            }
+                                        }))
+                                    }>{c.name}</button>
+                                }
+                            }).collect_view()}
+                        </div>
+                    })}
+                </section>
+
+                <section>
+                    <h3>"Hosts"</h3>
+                    <p class="hint">"AI voices, made from these descriptions. One host talks to you; two talk with each other."</p>
+                    {move || s().hosts.into_iter().enumerate().map(|(i, h)| {
+                        let name = h.name.clone();
+                        let name2 = h.name.clone();
+                        let name3 = h.name.clone();
+                        let name4 = h.name.clone();
+                        let clip = move || voices.get().iter().any(|v| v.name == name && v.clip);
+                        view! {
+                            <div class="brief-host">
+                                <input type="text" class="host-name" prop:value=h.name.clone() aria-label="Name"
+                                    on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| if let Some(x) = s.hosts.get_mut(i) { x.name = v })) }/>
+                                <textarea rows="2" prop:value=h.voice.clone() aria-label="How the voice sounds"
+                                    on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| if let Some(x) = s.hosts.get_mut(i) { x.voice = v })) }></textarea>
+                                <div class="host-actions">
+                                    <Show when=clip.clone() fallback=|| view! { <small class="hint">"Voice not made yet (it's made with the first episode)"</small> }>
+                                        <audio controls preload="none" src=format!("/api/podcast/voices/{}/clip", name2)></audio>
+                                    </Show>
+                                    <button disabled=move || recasting.get().is_some() on:click={
+                                        let name = name3.clone();
+                                        move |_| {
+                                            let name = name.clone();
+                                            recasting.set(Some(name.clone()));
+                                            spawn_local(async move {
+                                                match api::post::<_, ()>("/api/podcast/voices/recast", &serde_json::json!({ "name": name })).await {
+                                                    Ok(()) => toast.show("New voice made"),
+                                                    Err(e) => toast.show(e.0),
+                                                }
+                                                recasting.set(None);
+                                                load_voices();
+                                            });
+                                        }
+                                    }>{move || if recasting.get().as_deref() == Some(name4.as_str()) { "Making the voice…" } else { "Make the voice again" }}</button>
+                                    <Show when=move || { s().hosts.len() > 1 }>
+                                        <button class="link" on:click=move |_| save(Box::new(move |s| { if i < s.hosts.len() { s.hosts.remove(i); } }))>"Remove"</button>
+                                    </Show>
+                                </div>
+                            </div>
+                        }
+                    }).collect_view()}
+                    <Show when=move || { s().hosts.len() < 2 }>
+                        <button on:click=move |_| save(Box::new(|s| s.hosts.push(PodcastHost { name: "Theo".into(), voice: "A man in his forties with a relaxed, dry-witted British voice, thoughtful and wry.".into() })))>"Add a second host"</button>
+                    </Show>
+                </section>
+            </div>
+        </Show>
+    }
+}
+
+const KINDS: [(&str, &str, &str); 9] = [
+    ("reddit", "Reddit", "subreddit, or your front-page feed address"),
+    ("x", "X", "account, home, or list/<id>"),
+    ("instagram", "Instagram", "account"),
+    ("bluesky", "Bluesky", "handle.bsky.social"),
+    ("mastodon", "Mastodon", "@name@instance or #tag@instance"),
+    ("youtube", "YouTube", "@channel"),
+    ("hackernews", "Hacker News", "best"),
+    ("lobsters", "Lobsters", "hottest, or a tag"),
+    ("feed", "RSS / website", "https://example.com/feed.xml"),
+];
+
+fn kind_name(kind: &str) -> &'static str {
+    KINDS.iter().find(|k| k.0 == kind).map(|k| k.1).unwrap_or("Feed")
+}
+
+fn source_label(s: &PodcastSource) -> String {
+    if let Some(c) = CATALOG.iter().find(|c| c.kind == s.kind && c.value == s.value) {
+        return c.name.to_string();
+    }
+    s.value.clone()
+}
