@@ -1,5 +1,25 @@
 # Downloading from Anna's Archive and Audiobook Bay
 
+## Anna's Archive torrents: shards, not the tar
+
+Verified against the live `/torrents/` listing and the actual `.torrent`
+files (the `small_file` URLs download anonymously):
+
+- **Per-file shards** (`annas_archive_data__aacid__<collection>__<ts>--<next>.torrent`,
+  download path `/dyn/small_file/torrents/managed_by_aa/annas_archive_data__aacid/…`):
+  multi-file torrents (tens of thousands of entries), each file a bare
+  `aacid__…` id. The AACID's collection + timestamp name the exact shard,
+  so duet derives the shard URL arithmetically — no catalog needed — adds
+  it to qBittorrent, and selects only that one file. Search cards carry the
+  shard link too when present, and it wins over the derived URL.
+- **Range dumps** (`pilimi-zlib2-…​.torrent` and friends): single-file
+  multi-hundred-GB `.tar` archives. qBittorrent can't partially fetch one
+  file out of those (no per-piece selection API), so duet never touches
+  them — they exist for whole-collection seeding, not single books.
+- **Same MD5, LibGen's mirror**: Anna's Archive and LibGen key files by
+  MD5, so duet tries `libgen.li/ads.php?md5=…` first for every record —
+  no session, key, or browser when LibGen has the file.
+
 ## Anna's Archive: why there is no single giant torrent to search
 
 Anna's Archive's "ultimate unified list" of preservation torrents (https://annas-archive.org/torrents)
@@ -96,6 +116,51 @@ whichever mirror you pick.
 
 Tip: a book's page on the Anna's Archive site ends in its MD5. Paste that page's URL into
 LibGen search or into your own qBittorrent client to get the same file another way.
+
+## Remote browser (solves the check when Discover needs a human)
+
+Anna's Archive challenges server-side searches (DDoS-Guard, currently with
+a manual checkbox no headless solver can click), so duet drives a real
+Firefox through the `selenium` sidecar (same pattern as the avistaz
+project: shares pia's network, so it browses from the VPN IP):
+
+1. Search in Discover as normal. duet tries plain HTTP first (works with a
+   member key or a fresh session), else drives the selenium Firefox to the
+   search URL.
+2. If the manual check is up, duet pops that Firefox's screen in a modal.
+   Click the checkbox there, then press **I've solved it — retry search**.
+   The same browser keeps its session, so the retry loads results with no
+   further clicks — and later searches skip the modal until the session
+   expires.
+3. Downloads use the keyless shard torrent (AACID → shard URL derived
+   arithmetically), so the human click is the only manual step.
+
+Setup (home-services repo):
+
+```bash
+cd ~/src/home-services
+docker compose up -d selenium
+```
+
+Settings → Free sources: Selenium WebDriver address
+(`http://localhost:8191`-style default `http://localhost:4444`) and screen
+address (default built from duet's own host, port 7900). One search at a
+time goes through it — deliberately gentle.
+
+Notes:
+
+- The old `aa-browser` sidecar and cookie harvest remain as fallback but
+  are no longer part of the flow; they'll be removed once selenium has
+  proven itself.
+- Keep automated traffic off banned sites while a ban is active — even the
+  proxy IP can get banned by hammering. The browser is for hands, not bots:
+  one page at a time.
+- Fresh VPN IP: `docker compose restart pia-vpn` reconnects (usually a new
+  exit IP), but it drops the shared network namespace — restart the
+  dependents after (`qbittorrent-vpn slskd prowlarr vpn-proxy aa-browser
+  selenium`), otherwise they sit running with no network.
+  Verify with the proxy:
+  `curl -x http://127.0.0.1:8888 https://api.ipify.org`.
 
 ## Legal note
 

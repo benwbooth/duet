@@ -1,0 +1,133 @@
+# Example stack for duet: VPN + qBittorrent + proxy + remote Firefox + duet.
+#
+# This is a starting point, not the supported layout (that stays in
+# home-services). Everything secret comes from your shell environment or a
+# `.env` file next to this file — there are no secrets in here. Copy
+# `.env.example` to `.env` and fill it in, then `docker compose -f
+# docker-compose.example.yaml up -d`.
+#
+# Pattern: every service that must egress via the VPN shares the `vpn`
+# container's network namespace (`network_mode: service:vpn`), exactly like
+# the avistaz/home-services setup. Ports are published once, on `vpn`.
+# duet itself runs on the LAN and reaches qBittorrent and the proxy through
+# those published ports.
+
+name: duet-example
+
+services:
+  vpn:
+    # Any VPN container works here (Gluetun shown as an example).
+    # WireGuard or OpenVPN, PIA/Mullvad/AirVPN — your choice.
+    image: qmcgaw/gluetun:latest
+    container_name: duet_example_vpn
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    ports:
+      - ${DUET_ADDR:-127.0.0.1}:8484:8484 # duet UI (published by the duet service below)
+      - ${DUET_ADDR:-127.0.0.1}:8080:8080 # qBittorrent WebUI
+      - ${DUET_ADDR:-127.0.0.1}:8888:8888 # vpn-proxy: duet's Settings → Proxy URL
+      - ${DUET_ADDR:-127.0.0.1}:3001:3000 # aa-browser remote Firefox (KasmVNC screen the human solves checks in)
+      - ${DUET_ADDR:-127.0.0.1}:4444:4444 # geckodriver (duet drives that same Firefox)
+    environment:
+      # --- VPN credentials: all from the environment, never committed. ---
+      - VPN_SERVICE_PROVIDER=${VPN_PROVIDER:-pia}
+      - OPENVPN_USER=${OPENVPN_USER:?set OPENVPN_USER in .env}
+      - OPENVPN_PASSWORD=${OPENVPN_PASSWORD:?set OPENVPN_PASSWORD in .env}
+      - SERVER_REGIONS=${VPN_REGIONS:-}
+    restart: unless-stopped
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    network_mode: service:vpn
+    depends_on:
+      vpn:
+        condition: service_started
+        restart: true
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-America/Los_Angeles}
+      - WEBUI_PORT=8080
+    volumes:
+      - qbittorrent-config:/config
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads
+    restart: unless-stopped
+
+  vpn-proxy:
+    # Tiny forward proxy so duet's Discover searches egress via the VPN.
+    # Any small proxy image works; keep it LAN-only.
+    image: databay/fast-proxy:latest
+    network_mode: service:vpn
+    depends_on:
+      vpn:
+        condition: service_started
+        restart: true
+    command: ["-port", "8888", "-allow", "127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"]
+    restart: unless-stopped
+
+  aa-browser:
+    # Remote Firefox on the VPN for bot-walled sites (Anna's Archive check).
+    # Fallback for checks FlareSolverr can't solve on its own; goes away
+    # once FlareSolverr proves itself.
+    image: lscr.io/linuxserver/firefox:latest
+    network_mode: service:vpn
+    depends_on:
+      vpn:
+        condition: service_started
+        restart: true
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-America/Los_Angeles}
+      - TITLE=Anna's Archive browser
+      # Firefox opens straight at Anna's Archive (the autostart runs
+      # `/usr/bin/firefox ${FIREFOX_CLI}`). The URL is an env var because
+      # mirrors rotate — keep it matching duet's Anna's Archive mirror.
+      - FIREFOX_CLI=${AA_START_URL:-https://annas-archive.gl}
+    volumes:
+      - ${BROWSER_INBOX_DIR:-./browser-inbox}:/config/Downloads
+      # Whole profile so duet harvests the solved bot-check session
+      # (Settings → Browser profile folder); the Downloads mount above
+      # still applies on top of it.
+      - ${BROWSER_PROFILE_DIR:-./browser-profile}:/config
+    restart: unless-stopped
+
+  geckodriver:
+    # Speaks WebDriver to aa-browser's Firefox (which runs with --marionette)
+    # so duet can drive its searches: same KasmVNC screen the human sees,
+    # one browser for both.
+    image: instrumentisto/geckodriver:latest
+    network_mode: service:vpn
+    depends_on:
+      vpn:
+        condition: service_started
+        restart: true
+      aa-browser:
+        condition: service_started
+    command: ["--host", "0.0.0.0", "--port", "4444", "--connect-existing", "--marionette-host", "127.0.0.1", "--marionette-port", "2828"]
+    restart: unless-stopped
+
+  duet:
+    # duet itself stays on the LAN (not inside the VPN netns): it reaches
+    # qBittorrent at http://<host>:8080 and searches via the proxy at
+    # http://<host>:8888. The published ports on `vpn` above make both
+    # reachable. Build from this repo:
+    #   docker build -f Dockerfile.example -t duet:local .
+    image: duet:local
+    ports:
+      - ${DUET_ADDR:-127.0.0.1}:8484:8484
+    environment:
+      - DUET_LISTEN=0.0.0.0:8484
+      - DUET_DATA_DIR=/data
+    volumes:
+      - duet-data:/data
+      # Same folder the browser saves to, so duet's inbox watcher imports it.
+      - ${BROWSER_INBOX_DIR:-./browser-inbox}:/inbox:ro
+      - ${DOWNLOADS_DIR:-./downloads}:${DOWNLOADS_DIR:-./downloads}
+    restart: unless-stopped
+
+volumes:
+  qbittorrent-config:
+  duet-data:
