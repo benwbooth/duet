@@ -16,6 +16,12 @@ Two jobs, two models:
       --engine fish  Fish Audio Drama 3 or S2-Pro through a fish-speech API server (best acting;
                      honours inline directions like "[whispering, close to tears] Don't go.")
       --engine qwen  Qwen3-TTS Base (lighter; directions are stripped)
+    A request can pick another engine for its line ("engine": "vibevoice" or "chatterbox"):
+    workers/clone_voice.py, run in that engine's own environment beside the voices folder
+    (vibevoice-venv, chatterbox-venv), clones the same reference clip. One big model has the
+    card at a time: starting one stops the others.
+  * A real recording instead of a designed voice: /v1/voices with "sample" (a file or URL) cuts
+    up to about 20 seconds of its speech into voices/<name>.wav, with what's said in it.
 
 A fish-speech checkpoint usually wants the whole GPU, so with --fish-dir this server runs
 fish-speech's api_server itself and stops it while VoiceDesign is casting. With only
@@ -72,7 +78,7 @@ def free_gpu():
         pass
 
 
-last_used = {"qwen": 0.0, "fish": 0.0, "whisper": 0.0}
+last_used = {"qwen": 0.0, "fish": 0.0, "whisper": 0.0, "vibevoice": 0.0, "chatterbox": 0.0}
 
 
 def touch(what):
@@ -115,6 +121,10 @@ def reaper():
             if fish.proc and now - last_used["fish"] > limit:
                 print("stopping Fish Audio (idle)", flush=True)
                 fish.stop()
+            for name, c in cloners.items():
+                if c.running() and now - last_used[name] > limit:
+                    print(f"stopping {name} (idle)", flush=True)
+                    c.stop()
         with listen_lock:
             if whisper and now - last_used["whisper"] > limit:
                 print("unloading speech recognition (idle)", flush=True)
@@ -142,6 +152,7 @@ def qwen_gpu(kind):
     """A Qwen3-TTS checkpoint, stopping our Fish first: they can't share the card."""
     if args.engine == "fish" and args.fish_dir:
         fish.stop()
+    stop_cloners()
     return qwen(kind)
 
 
@@ -191,6 +202,7 @@ class Fish:
         # designer, the picture drawing, speech recognition and the aligner, and Ollama's chat
         # model), or it runs out of memory while starting.
         stop_drawing()
+        stop_cloners()
         free_ollama()
         unload_qwen()
         with listen_lock:
@@ -288,6 +300,98 @@ class Fish:
 fish = Fish()
 
 
+class Cloner:
+    """VibeVoice or Chatterbox, in its own environment (workers/clone_voice.py), started on the
+    first line asked of it and kept running until idle or the card's wanted."""
+
+    def __init__(self, name):
+        self.name = name
+        self.proc = None
+
+    def python(self):
+        return getattr(args, f"{self.name}_python")
+
+    def available(self):
+        return os.path.exists(self.python())
+
+    def running(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def start(self):
+        if self.running():
+            return
+        if not self.available():
+            raise RuntimeError(f"{self.name} isn't set up ({self.python()} is missing)")
+        # The whole card for it: Fish, the designers, the pictures, the other cloner, Ollama.
+        fish.stop()
+        stop_drawing()
+        stop_cloners(keep=self.name)
+        unload_qwen()
+        free_ollama()
+        free_gpu()
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clone_voice.py")
+        cmd = [self.python(), script, "--engine", self.name]
+        model = getattr(args, f"{self.name}_model")
+        if model:
+            cmd += ["--model", model]
+        print("starting", " ".join(cmd), flush=True)
+        env = dict(os.environ)
+        env.setdefault("PYTHONUNBUFFERED", "1")
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1, env=env)
+        for line in self.proc.stdout:
+            if line.startswith("{") and json.loads(line).get("ready"):
+                return
+        self.proc = None
+        raise RuntimeError(f"{self.name} exited while loading")
+
+    def stop(self):
+        if self.running():
+            self.proc.terminate()
+            try:
+                self.proc.wait(30)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        self.proc = None
+        free_gpu()
+
+    def tts(self, text, ref_wav):
+        import tempfile
+
+        import soundfile as sf
+
+        touch(self.name)
+        self.start()
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            out = f.name
+        try:
+            self.proc.stdin.write(json.dumps({"text": text, "ref": ref_wav, "out": out}) + "\n")
+            self.proc.stdin.flush()
+            for line in self.proc.stdout:
+                if not line.startswith("{"):
+                    continue
+                msg = json.loads(line)
+                if "error" in msg:
+                    raise RuntimeError(f"{self.name}: {msg['error']}")
+                print(f"{self.name}: {msg['audio']:.1f} s of speech in {msg['seconds']:.1f} s", flush=True)
+                touch(self.name)
+                wav, sr = sf.read(out, dtype="float32")
+                return (wav.mean(axis=1) if wav.ndim > 1 else wav), sr
+            self.proc = None
+            raise RuntimeError(f"{self.name} stopped")
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(out)
+
+
+cloners = {"vibevoice": Cloner("vibevoice"), "chatterbox": Cloner("chatterbox")}
+
+
+def stop_cloners(keep=None):
+    for name, c in cloners.items():
+        if name != keep:
+            c.stop()
+
+
 def slug(name):
     return re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-") or "voice"
 
@@ -306,6 +410,7 @@ def design(voice, desc, language):
         stop_drawing()
         if args.engine == "fish" and args.fish_dir:
             fish.stop()  # the designers need the card
+        stop_cloners()
         unload_qwen()
         job = json.dumps({"description": desc, "text": REFERENCE_LINE, "out": wav_path})
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "design_voice.py")
@@ -349,13 +454,58 @@ def reference(voice, description, language):
     return wav_path, ref_text
 
 
+def from_sample(voice, sample):
+    """A voice's reference clip from a real recording (a file or a URL): mono 24 kHz, its
+    leading silence trimmed, cut after the last whole sentence within about 20 seconds, and
+    what's said in it (Fish needs the words of its reference)."""
+    import numpy as np
+    import soundfile as sf
+
+    from common import whisper as load_whisper
+
+    os.makedirs(args.voices, exist_ok=True)
+    wav_path = os.path.join(args.voices, slug(voice) + ".wav")
+    r = subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", os.path.expanduser(sample), "-t", "60",
+         "-af", "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.1,loudnorm=I=-20:TP=-2",
+         "-f", "f32le", "-ac", "1", "-ar", "24000", "pipe:1"],
+        capture_output=True,
+    )
+    if r.returncode != 0 or not r.stdout:
+        raise RuntimeError(f"couldn't read the voice sample: {r.stderr.decode(errors='replace')[-300:]}")
+    audio = np.frombuffer(r.stdout, dtype="float32")
+    # (16 kHz for Whisper.)
+    heard = np.interp(np.arange(0, len(audio), 1.5), np.arange(len(audio)), audio).astype("float32")
+    with listen_lock:
+        touch("whisper")
+        model, _ = load_whisper(args.listen_model, "cpu" if args.listen_cpu else "cuda")
+        segments = list(model.transcribe(heard, vad_filter=True, language="en")[0])
+    if not segments:
+        raise RuntimeError("no speech heard in the voice sample")
+    # Whole segments up to about 20 s (at least the first).
+    keep = [segments[0]]
+    for seg in segments[1:]:
+        if seg.end > 22:
+            break
+        keep.append(seg)
+    end = min(keep[-1].end + 0.25, len(audio) / 24000, 30.0)
+    clip = audio[: int(end * 24000)]
+    text = " ".join(seg.text.strip() for seg in keep).strip()
+    sf.write(wav_path, clip, 24000)
+    with open(wav_path[:-4] + ".json", "w") as f:
+        json.dump({"name": voice, "sample": sample, "text": text, "engine": "sample", "seconds": round(end, 2)}, f)
+    print(f"{voice}: {end:.1f} s from {sample}", flush=True)
+
+
 # When Fish can't start (a broken install), Qwen3-TTS reads instead until this time.
 fish_broken_until = 0.0
 
 
-def synthesize(text, voice, description, language):
+def synthesize(text, voice, description, language, engine=None):
     global fish_broken_until
     ref_wav, ref_text = reference(voice, description, language)
+    if engine in cloners:
+        return cloners[engine].tts(text, ref_wav)
     if args.engine == "fish" and time.time() >= fish_broken_until:
         try:
             return fish.tts(text, ref_wav, ref_text)
@@ -747,6 +897,7 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/v1/shutdown", "/shutdown"):
                 self.reply(200, b'{"ok":true}', "application/json")
                 fish.stop()
+                stop_cloners()
                 threading.Thread(target=lambda: os._exit(0), daemon=True).start()
                 return
             if path in ("/v1/illustrate", "/illustrate"):
@@ -755,6 +906,7 @@ class Handler(BaseHTTPRequestHandler):
                 with lock:
                     if args.engine == "fish" and args.fish_dir:
                         fish.stop()
+                    stop_cloners()
                     unload_qwen()
                     # (Speech recognition stays: it's small, and the reader's audio is lined up
                     # with it while the pictures pause.)
@@ -774,7 +926,10 @@ class Handler(BaseHTTPRequestHandler):
                                 old = os.path.join(args.voices, slug(v["voice"]) + ext)
                                 if os.path.exists(old):
                                     os.replace(old, old + ".old")
-                        reference(v["voice"], v.get("instructions"), language)
+                        if v.get("sample"):
+                            from_sample(v["voice"], v["sample"])
+                        else:
+                            reference(v["voice"], v.get("instructions"), language)
                 return self.reply(200, b'{"ok":true}', "application/json")
             if path in ("/v1/audio/script", "/audio/script"):
                 # Several voices in one clip (a sentence with dialogue and narration), for the live full cast.
@@ -783,7 +938,7 @@ class Handler(BaseHTTPRequestHandler):
                 out, rate = [], None
                 with lock:
                     for p in body.get("pieces", []):
-                        wav, sr = synthesize(p["input"], p.get("voice", "narrator"), p.get("instructions"), language)
+                        wav, sr = synthesize(p["input"], p.get("voice", "narrator"), p.get("instructions"), language, p.get("engine", body.get("engine")))
                         wav = np.asarray(wav, dtype="float32")
                         if rate is None:
                             rate = sr
@@ -798,7 +953,7 @@ class Handler(BaseHTTPRequestHandler):
             if path not in ("/v1/audio/speech", "/audio/speech"):
                 return self.send_error(404)
             with lock:  # one generation at a time on the GPU
-                wav, sr = synthesize(body["input"], body.get("voice", "narrator"), body.get("instructions"), language)
+                wav, sr = synthesize(body["input"], body.get("voice", "narrator"), body.get("instructions"), language, body.get("engine"))
             data, mime = encode(wav, sr, body.get("response_format", "mp3"))
             self.reply(200, data, mime)
         except Exception as e:  # report to the client instead of dropping the connection
@@ -832,6 +987,10 @@ def main():
     ap.add_argument("--design-python", default="", help="python of the voice designer environment (default: design-venv beside --voices)")
     ap.add_argument("--base-model", default="Qwen/Qwen3-TTS-12Hz-1.7B-Base")
     ap.add_argument("--custom-model", default="", help="Qwen3-TTS CustomVoice, to allow its built-in speaker names")
+    ap.add_argument("--vibevoice-python", default="", help="python of the VibeVoice environment (default: vibevoice-venv beside --voices)")
+    ap.add_argument("--vibevoice-model", default="", help="default microsoft/VibeVoice-1.5B")
+    ap.add_argument("--chatterbox-python", default="", help="python of the Chatterbox environment (default: chatterbox-venv beside --voices)")
+    ap.add_argument("--chatterbox-model", default="")
     ap.add_argument("--idle-minutes", type=float, default=5, help="unload models unused for this long (0: never)")
     ap.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     ap.add_argument("--no-free-ollama", dest="free_ollama", action="store_false",
@@ -839,6 +998,9 @@ def main():
     args = ap.parse_args()
     if not args.design_python:
         args.design_python = os.path.join(os.path.dirname(os.path.abspath(args.voices)), "design-venv", "bin", "python")
+    for name in ("vibevoice", "chatterbox"):
+        if not getattr(args, f"{name}_python"):
+            setattr(args, f"{name}_python", os.path.join(os.path.dirname(os.path.abspath(args.voices)), f"{name}-venv", "bin", "python"))
     print(f"duet TTS ({args.engine}) on http://{args.host}:{args.port}/v1", flush=True)
     threading.Thread(target=reaper, daemon=True).start()
 
@@ -846,6 +1008,7 @@ def main():
     
     def stop(signum, frame):
         fish.stop()
+        stop_cloners()
         os._exit(0)
 
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):

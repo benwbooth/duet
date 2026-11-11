@@ -49,6 +49,8 @@ pub fn routes() -> Router<State> {
         .route("/podcast/voices", get(voices))
         .route("/podcast/voices/recast", post(recast))
         .route("/podcast/voices/{name}/clip", get(clip))
+        // (A voice recording can be a few megabytes.)
+        .route("/podcast/voices/{name}/sample", post(upload_sample).layer(axum::extract::DefaultBodyLimit::max(64 << 20)))
         .route("/podcast/warm", post(warm))
         .route("/podcast/browser/login", post(browser_login))
         .route("/podcast/browser/check", post(browser_check))
@@ -223,7 +225,7 @@ async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> a
     // being made: that needs the whole card.)
     crate::cast::cast_open();
     let voices_dir = state.data_dir.join("voices");
-    if s.hosts.iter().all(|h| voices_dir.join(format!("{}.wav", voice_name(&h.name))).exists()) {
+    if s.hosts.iter().all(|h| h.engine == "fish" && voices_dir.join(format!("{}.wav", voice_name(&h.name))).exists()) {
         let st = state.clone();
         tokio::spawn(async move {
             let tts = st.settings.read().await.ai.tts_url.clone();
@@ -583,14 +585,27 @@ async fn write(state: &State, s: &PodcastSettings, titles: &[String], k: usize, 
     Ok(out)
 }
 
-/// Makes the hosts' voices from their descriptions (`replace`: again, though they exist).
+/// The recording a host's voice clip was cut from ("" for one made from a description).
+async fn clip_sample(state: &State, host: &str) -> String {
+    read_json::<serde_json::Value>(&state.data_dir.join("voices").join(format!("{}.json", voice_name(host))))
+        .await
+        .and_then(|m| m["sample"].as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Makes the hosts' voices: from their recording when they have one, otherwise from their
+/// description (`replace`: again, though they exist). A voice whose recording has changed (or
+/// gone) since its clip was made is made again.
 async fn cast_voices(state: &State, hosts: &[duet_common::podcast::PodcastHost], replace: bool) -> anyhow::Result<()> {
     let voices_dir = state.data_dir.join("voices");
-    let wanted: Vec<_> = hosts
-        .iter()
-        .filter(|h| replace || !voices_dir.join(format!("{}.wav", voice_name(&h.name))).exists())
-        .map(|h| json!({ "voice": voice_name(&h.name), "instructions": h.voice, "replace": replace }))
-        .collect();
+    let mut wanted = Vec::new();
+    for h in hosts {
+        let sample = h.sample.trim();
+        let stale = !voices_dir.join(format!("{}.wav", voice_name(&h.name))).exists() || clip_sample(state, &h.name).await != sample;
+        if replace || stale {
+            wanted.push(json!({ "voice": voice_name(&h.name), "instructions": h.voice, "sample": sample, "replace": true }));
+        }
+    }
     if wanted.is_empty() {
         return Ok(());
     }
@@ -613,7 +628,7 @@ async fn perform(state: &State, text: &str, host: &duet_common::podcast::Podcast
     // reload recompiles for minutes).
     crate::cast::cast_open();
     let ai = state.settings.read().await.ai.clone();
-    let body = json!({ "model": ai.tts_model, "input": text, "voice": voice_name(&host.name), "instructions": host.voice, "response_format": "mp3" });
+    let body = json!({ "model": ai.tts_model, "input": text, "voice": voice_name(&host.name), "instructions": host.voice, "engine": host.engine, "response_format": "mp3" });
     let mut last = None;
     for _ in 0..2 {
         match state
@@ -1033,6 +1048,35 @@ async fn clip(AxState(s): AxState<State>, Path(name): Path<String>) -> ApiResult
         .await
         .map_err(|_| ApiError::not_found("voice"))?;
     Ok(([(header::CONTENT_TYPE, "audio/wav"), (header::CACHE_CONTROL, "no-cache")], bytes).into_response())
+}
+
+/// A recording of a host's real voice, uploaded: kept with the briefing's files, made the
+/// host's sample, and their voice made from it.
+async fn upload_sample(AxState(s): AxState<State>, Path(name): Path<String>, headers: axum::http::HeaderMap, body: axum::body::Bytes) -> ApiResult<Json<PodcastSettings>> {
+    if body.is_empty() {
+        return Err(ApiError::bad_request("no recording"));
+    }
+    let mut settings = settings(&s).await;
+    let i = settings.hosts.iter().position(|h| h.name == name).ok_or_else(|| ApiError::not_found("host"))?;
+    let ext = match headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("") {
+        t if t.contains("mpeg") || t.contains("mp3") => "mp3",
+        t if t.contains("wav") => "wav",
+        t if t.contains("ogg") || t.contains("opus") => "ogg",
+        t if t.contains("flac") => "flac",
+        t if t.contains("webm") => "webm",
+        t if t.contains("mp4") || t.contains("m4a") || t.contains("aac") => "m4a",
+        _ => "audio",
+    };
+    let dir = base(&s).join("samples");
+    tokio::fs::create_dir_all(&dir).await.map_err(|e| bad_gateway(e.into()))?;
+    // A new name each time, so a new recording always counts as a change.
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let file = dir.join(format!("{}-{stamp}.{ext}", voice_name(&name)));
+    tokio::fs::write(&file, &body).await.map_err(|e| bad_gateway(e.into()))?;
+    settings.hosts[i].sample = file.to_string_lossy().into_owned();
+    write_json(&base(&s).join("settings.json"), &settings).await.map_err(bad_gateway)?;
+    cast_voices(&s, &[settings.hosts[i].clone()], true).await.map_err(bad_gateway)?;
+    Ok(Json(settings))
 }
 
 #[derive(Deserialize)]

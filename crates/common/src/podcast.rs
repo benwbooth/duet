@@ -47,6 +47,8 @@ pub fn default_host() -> PodcastHost {
                 unhurried and warm, quietly confident and wry, like a late-night public radio host or a great \
                 audiobook narrator."
             .into(),
+        engine: default_engine(),
+        sample: String::new(),
     }
 }
 
@@ -223,6 +225,8 @@ pub fn second_host() -> PodcastHost {
     PodcastHost {
         name: "Theo".into(),
         voice: "A man in his forties with a relaxed, dry-witted British voice, Southern English accent, thoughtful and wry.".into(),
+        engine: default_engine(),
+        sample: String::new(),
     }
 }
 
@@ -231,7 +235,22 @@ pub struct PodcastHost {
     pub name: String,
     /// How the voice sounds, in words: VoiceDesign makes the voice from it.
     pub voice: String,
+    /// What performs the lines, cloning the voice: "fish" (Fish Audio S2-Pro, which takes acting
+    /// directions), "vibevoice" (long-form, podcast-like) or "chatterbox".
+    #[serde(default = "default_engine")]
+    pub engine: String,
+    /// A real recording of the voice (a file on the server or a URL), used instead of making one
+    /// from the description. Empty: made from the description.
+    #[serde(default)]
+    pub sample: String,
 }
+
+fn default_engine() -> String {
+    "fish".into()
+}
+
+/// The engines a host can be performed by: (value, label).
+pub const ENGINES: [(&str, &str); 3] = [("fish", "Fish Audio"), ("vibevoice", "VibeVoice"), ("chatterbox", "Chatterbox")];
 
 /// An episode as the player sees it. Lines get their recordings one by one, so playing can
 /// start as soon as the first is ready.

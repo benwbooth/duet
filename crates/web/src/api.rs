@@ -51,6 +51,16 @@ pub async fn put<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> ApiR
     send("PUT", url, body).await
 }
 
+/// Sends a file as the request body (its type as the Content-Type).
+pub async fn upload<T: DeserializeOwned>(url: &str, file: web_sys::File) -> ApiResult<T> {
+    let mime = file.type_();
+    let req = Request::post(url)
+        .header("Content-Type", if mime.is_empty() { "application/octet-stream" } else { &mime })
+        .body(file)
+        .map_err(|e| ApiError(e.to_string()))?;
+    decode(req.send().await.map_err(|e| ApiError(e.to_string()))?).await
+}
+
 pub async fn remove(url: &str) -> ApiResult<()> {
     decode(Request::delete(url).send().await.map_err(|e| ApiError(e.to_string()))?).await
 }

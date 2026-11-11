@@ -842,19 +842,97 @@ fn BriefingSettings(settings: RwSignal<Option<PodcastSettings>>) -> impl IntoVie
                         <button class:active=move || s().hosts.len() <= 1 on:click=move |_| save(Box::new(|s| s.hosts.truncate(1)))>"One host"</button>
                         <button class:active=move || { s().hosts.len() > 1 } on:click=move |_| save(Box::new(|s| if s.hosts.len() < 2 { s.hosts.push(duet_common::podcast::second_host()) }))>"Two hosts"</button>
                     </div>
-                    <p class="hint">"AI voices, made from these descriptions. One host talks straight to you; two talk with each other."</p>
+                    <p class="hint">"AI voices, made from these descriptions, or cloned from a real recording (10–30 seconds of one person talking clearly: your own voice, or a public-domain narrator), which sounds the most natural. One host talks straight to you; two talk with each other."</p>
                     {move || s().hosts.into_iter().enumerate().map(|(i, h)| {
                         let name = h.name.clone();
                         let name2 = h.name.clone();
                         let name3 = h.name.clone();
                         let name4 = h.name.clone();
                         let clip = move || voices.get().iter().any(|v| v.name == name && v.clip);
+                        let engine = h.engine.clone();
+                        let sample = h.sample.clone();
+                        let uploaded = !sample.is_empty() && !sample.contains("://");
+                        // A new recording (or none): saved, then the voice made from it.
+                        let set_sample = {
+                            let name = h.name.clone();
+                            move |v: String| {
+                                let Some(mut st) = settings.get_untracked() else { return };
+                                if let Some(x) = st.hosts.get_mut(i) {
+                                    x.sample = v.trim().to_string();
+                                }
+                                settings.set(Some(st.clone()));
+                                let name = name.clone();
+                                recasting.set(Some(name.clone()));
+                                spawn_local(async move {
+                                    let r = match api::put::<_, PodcastSettings>("/api/podcast/settings", &st).await {
+                                        Ok(_) => api::post::<_, ()>("/api/podcast/voices/recast", &serde_json::json!({ "name": name })).await,
+                                        Err(e) => Err(e),
+                                    };
+                                    match r {
+                                        Ok(()) => toast.show("New voice made"),
+                                        Err(e) => toast.show(e.0),
+                                    }
+                                    recasting.set(None);
+                                    load_voices();
+                                });
+                            }
+                        };
+                        let set_sample2 = set_sample.clone();
+                        let upload = {
+                            let name = h.name.clone();
+                            move |ev: leptos::ev::Event| {
+                                let input: web_sys::HtmlInputElement = event_target(&ev);
+                                let Some(file) = input.files().and_then(|f| f.get(0)) else { return };
+                                input.set_value("");
+                                let name = name.clone();
+                                recasting.set(Some(name.clone()));
+                                spawn_local(async move {
+                                    match api::upload::<PodcastSettings>(&format!("/api/podcast/voices/{}/sample", js_sys::encode_uri_component(&name)), file).await {
+                                        Ok(st) => {
+                                            settings.set(Some(st));
+                                            toast.show("New voice made from your recording");
+                                        }
+                                        Err(e) => toast.show(e.0),
+                                    }
+                                    recasting.set(None);
+                                    load_voices();
+                                });
+                            }
+                        };
                         view! {
                             <div class="brief-host">
                                 <input type="text" class="host-name" prop:value=h.name.clone() aria-label="Name"
                                     on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| if let Some(x) = s.hosts.get_mut(i) { x.name = v })) }/>
                                 <textarea rows="2" prop:value=h.voice.clone() aria-label="How the voice sounds"
                                     on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| if let Some(x) = s.hosts.get_mut(i) { x.voice = v })) }></textarea>
+                                <div class="host-voice">
+                                    <label class="field">
+                                        <span>"Engine"</span>
+                                        <select on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| if let Some(x) = s.hosts.get_mut(i) { x.engine = v })) }>
+                                            {duet_common::podcast::ENGINES.iter().map(|(v, label)| view! { <option value=*v selected=engine == *v>{*label}</option> }).collect_view()}
+                                        </select>
+                                    </label>
+                                    <div class="field">
+                                        <span>"Voice sample"</span>
+                                        <div class="sample-input">
+                                            {if uploaded {
+                                                view! {
+                                                    <span class="sample-chip">"Your recording"</span>
+                                                    <button class="link" disabled=move || recasting.get().is_some() on:click=move |_| set_sample2(String::new())>"Remove"</button>
+                                                }.into_any()
+                                            } else {
+                                                view! {
+                                                    <input type="url" placeholder="Paste a link to a recording…" prop:value=sample.clone()
+                                                        on:change=move |ev| set_sample(event_target_value(&ev))/>
+                                                }.into_any()
+                                            }}
+                                            <label class="button upload" class:disabled=move || recasting.get().is_some()>
+                                                "Upload"
+                                                <input type="file" accept="audio/*,video/*" hidden on:change=upload/>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
                                 <div class="host-actions">
                                     <Show when=clip.clone() fallback=|| view! { <small class="hint">"Voice not made yet (it's made with the first episode)"</small> }>
                                         <audio controls preload="none" src=format!("/api/podcast/voices/{}/clip", name2)></audio>

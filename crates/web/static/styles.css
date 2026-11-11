@@ -1897,6 +1897,14 @@ html.eink .swatch-gray { background: #4a4a4c; } html.eink .swatch-dark { backgro
 .brief-add input { flex: 1; min-width: 0; }
 .brief-host { display: grid; gap: 0.4rem; padding: 0.8rem 0; border-bottom: 1px solid var(--line); }
 .brief-host .host-name { font-weight: 600; max-width: 14rem; }
+.host-voice { display: grid; grid-template-columns: minmax(9rem, 12rem) 1fr; gap: 0.8rem; align-items: start; }
+.host-voice .field { margin: 0; }
+.sample-input { display: flex; gap: 0.5rem; align-items: center; min-width: 0; }
+.sample-input input { flex: 1; min-width: 0; }
+.sample-input .upload { flex: none; cursor: pointer; }
+.sample-input .upload.disabled { opacity: 0.5; pointer-events: none; }
+.sample-chip { flex: 1; padding: 0.45rem 0.75rem; border-radius: 999px; background: var(--chip, rgba(150, 90, 40, 0.1)); font-size: 0.9rem; }
+@media (max-width: 560px) { .host-voice { grid-template-columns: 1fr; } }
 .host-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
 .host-actions audio { height: 34px; }
 @media (max-width: 900px) {
