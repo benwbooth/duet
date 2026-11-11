@@ -1041,6 +1041,43 @@ fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
     });
 }
 
+/// How many lines are performed ahead of time from where the reader will start.
+const OPENING: usize = 40;
+
+/// The full cast got ready in the background, before anyone presses play: the whole book directed
+/// from here on (as when reading), everyone near here given a voice, and the first lines from
+/// here performed, so playing starts at once. Shown in the jobs pane.
+pub fn prepare(state: &State, asset: i64, chapter: usize, sentence: usize) {
+    direct_ahead(state, asset, chapter);
+    let state = state.clone();
+    tokio::spawn(async move {
+        let title = crate::activity::title(&state, asset).await;
+        let key = format!("cast-prepare:{asset}");
+        let Ok(sentences) = sentences_of(&state, asset, chapter).await else { return };
+        // (A position past the chapter's end, from another edition: its start.)
+        let from = if sentence < sentences.len() { sentence } else { 0 };
+        let to = (from + OPENING).min(sentences.len());
+        crate::activity::set(&key, "AI full cast", &title, format!("Getting chapter {} ready to play (directing and casting)", chapter + 1), 0, (to - from) as u32);
+        match prepared(&state, asset, chapter, from, &sentences, true).await {
+            Ok((script, cast)) => {
+                if let Err(e) = ensure_voices(&state, asset, &script, &cast).await {
+                    tracing::warn!("preparing the full cast: {e:#}");
+                }
+            }
+            Err(e) => tracing::warn!("preparing the full cast: {e:#}"),
+        }
+        for k in from..to {
+            crate::activity::set(&key, "AI full cast", &title, format!("Getting chapter {} ready to play", chapter + 1), (k - from) as u32, (to - from) as u32);
+            if let Err(e) = perform(&state, asset, chapter, k, false).await {
+                tracing::warn!("preparing the full cast ({chapter}, {k}): {e:#}");
+                break;
+            }
+        }
+        idle(asset);
+        crate::activity::clear(&key);
+    });
+}
+
 /// One sentence, performed: MP3 bytes, from the cache when it's been performed before. Asking
 /// for one also sets the performer working ahead from it.
 /// When the full cast was last asked for a line (any book).

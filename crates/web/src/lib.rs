@@ -1041,6 +1041,9 @@ fn WorkPage(id: i64) -> impl IntoView {
                         .filter(|j| j.work_id == id && (j.status == "queued" || j.status == "running")).collect();
                     let busy = move |k: JobKind| running.iter().any(|j| j.kind == k);
                     let (has_e, has_a) = (!ebooks.is_empty(), !audio.is_empty());
+                    let cast_asset = reader::Mode::available(&w.assets).iter().any(|m| m.cast())
+                        .then(|| w.default_ebook.filter(|d| ebooks.iter().any(|a| a.id == *d)).or_else(|| reader::pick_ebook(&w.assets).map(|a| a.id)))
+                        .flatten();
                     let action = if has_e && has_a { "Read & listen" } else if has_a { "Listen" } else { "Read" };
                     let progress = w.position.as_ref().map(|p| p.fraction).filter(|f| *f > 0.0);
                     let cover_url = w.cover_url.clone();
@@ -1162,6 +1165,34 @@ fn WorkPage(id: i64) -> impl IntoView {
                                         </a>
                                     }).collect_view()}
                                 </div>
+                                // The full cast got ready ahead of time, from where you left off: directed,
+                                // voiced and its first lines performed, so it plays at once when you open it.
+                                {cast_asset.map(|e| {
+                                    let preparing = RwSignal::new(false);
+                                    view! {
+                                        <div class="action-cards">
+                                            <div class="action-card">
+                                                <div class="action-icon">{icon(icons::SPARKLE)}</div>
+                                                <div class="action-text">
+                                                    <strong>"Get the full cast ready" {ai_tag()}</strong>
+                                                    <p>"Directs the book, makes everyone's AI voices and performs the first lines from where you left off, in the background, so the full cast plays straight away. Progress shows in the jobs pane."</p>
+                                                </div>
+                                                <button disabled=move || preparing.get() on:click=move |_| {
+                                                    preparing.set(true);
+                                                    spawn_local(async move {
+                                                        match api::post::<_, serde_json::Value>(&format!("/api/assets/{e}/cast/prepare"), &serde_json::json!({})).await {
+                                                            Ok(_) => toast.show("Getting the full cast ready"),
+                                                            Err(err) => {
+                                                                toast.show(err.0);
+                                                                preparing.set(false);
+                                                            }
+                                                        }
+                                                    });
+                                                }>{move || if preparing.get() { "Started" } else { "Get ready" }}</button>
+                                            </div>
+                                        </div>
+                                    }
+                                })}
                             </section>
 
                             {(has_e && !readable && !ebooks.iter().any(|a| ["pdf", "cbz", "cbr", "cb7", "cbt"].contains(&a.format.as_str()))).then(|| view! {

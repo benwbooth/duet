@@ -156,7 +156,7 @@ impl Mode {
 
 /// The edition to read: an original EPUB or text first, then a generated one, then PDF, then
 /// anything (shown as needing conversion).
-fn pick_ebook(assets: &[Asset]) -> Option<Asset> {
+pub(crate) fn pick_ebook(assets: &[Asset]) -> Option<Asset> {
     let ebooks = || assets.iter().filter(|a| a.kind == AssetKind::Ebook);
     ebooks()
         .find(|a| readable(a) && a.origin != "generated")

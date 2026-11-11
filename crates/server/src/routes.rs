@@ -60,6 +60,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assets/{id}/cast/{chapter}/{n}", get(cast_sentence))
         .route("/assets/{id}/cast/status", get(cast_status))
         .route("/assets/{id}/cast/recast", post(cast_recast))
+        .route("/assets/{id}/cast/prepare", post(cast_prepare))
         .route("/assets/{id}/cast/members", get(cast_members))
         .route("/assets/{id}/illustrations/style", get(illus_style).put(put_illus_style))
         .route("/assets/{id}/illustrations/portrait/{name}", get(illus_portrait))
@@ -418,6 +419,18 @@ async fn put_illus_style(AxState(s): AxState<State>, Path(id): Path<i64>, Json(b
 }
 
 /// The full cast, with what each voice was made from.
+/// Gets the full cast ready in the background, from where the book was left (or its start):
+/// directed, cast, and its first lines performed, so pressing play there starts at once.
+async fn cast_prepare(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Json<serde_json::Value>> {
+    let a = asset_or_404(&s, id).await?;
+    let (chapter, sentence) = match db::get_position(&s.db, a.work_id).await.ok().flatten() {
+        Some(p) => (p.chapter, p.sentence),
+        None => (0, 0),
+    };
+    crate::cast::prepare(&s, id, chapter, sentence);
+    Ok(Json(serde_json::json!({ "ok": true, "chapter": chapter })))
+}
+
 async fn cast_members(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<serde_json::Value> {
     Json(crate::cast::members(&s, id).await)
 }
