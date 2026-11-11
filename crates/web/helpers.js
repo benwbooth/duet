@@ -171,6 +171,30 @@ export function playDataUrl(url) {
   new Audio(url).play();
 }
 
+// The companion's answer, a sentence or two at a time: each part resolves when it has finished
+// playing (or was stopped), so the next one, fetched meanwhile, follows straight on.
+let answerAudio = null;
+export function playAnswerPart(url) {
+  stopAnswer();
+  const a = new Audio(url);
+  answerAudio = a;
+  return new Promise((resolve) => {
+    const done = () => { if (answerAudio === a) answerAudio = null; resolve(); };
+    a.addEventListener("ended", done);
+    a.addEventListener("error", done);
+    a.addEventListener("pause", done);
+    a.play().catch(done);
+  });
+}
+
+export function stopAnswer() {
+  if (answerAudio) {
+    const a = answerAudio;
+    answerAudio = null;
+    a.pause();
+  }
+}
+
 export function formatTime(secs) {
   secs = Math.max(0, Math.floor(secs));
   const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;

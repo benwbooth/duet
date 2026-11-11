@@ -65,7 +65,49 @@ DIRECTION = re.compile(r"\[[^\]]*\]\s*")
 
 args = None
 models = {}
-lock = threading.Lock()
+
+
+class Turns:
+    """The card, one generation at a time, with a way to the front of the queue: what someone
+    is waiting on right now (the reading companion's answer, trying a voice) goes next, ahead
+    of the full cast's lines for further on. (With a plain Lock the full cast's steady stream
+    of lines kept taking the card while an answer waited behind them.)"""
+
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.held = False
+        self.urgent_waiting = 0
+
+    def __enter__(self):
+        with self.cond:
+            while self.held or self.urgent_waiting:
+                self.cond.wait()
+            self.held = True
+        return self
+
+    def __exit__(self, *exc):
+        with self.cond:
+            self.held = False
+            self.cond.notify_all()
+        return False
+
+    @contextlib.contextmanager
+    def first(self):
+        with self.cond:
+            self.urgent_waiting += 1
+            try:
+                while self.held:
+                    self.cond.wait()
+            finally:
+                self.urgent_waiting -= 1
+            self.held = True
+        try:
+            yield
+        finally:
+            self.__exit__()
+
+
+lock = Turns()
 
 
 def free_gpu():
@@ -1018,7 +1060,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, data, mime)
             if path not in ("/v1/audio/speech", "/audio/speech"):
                 return self.send_error(404)
-            with lock:  # one generation at a time on the GPU
+            # One generation at a time on the GPU; someone waiting on this one goes first.
+            with (lock.first() if body.get("priority") else lock):
                 wav, sr = synthesize(body["input"], body.get("voice", "narrator"), body.get("instructions"), language, body.get("engine"))
             data, mime = encode(wav, sr, body.get("response_format", "mp3"))
             self.reply(200, data, mime)

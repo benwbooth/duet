@@ -9,6 +9,11 @@ use serde_json::json;
 
 use crate::{State, book, db};
 
+/// Answers are read aloud as soon as they're shown, so they're asked for short and plain: a
+/// long Markdown answer took a minute and a half to perform, asterisks and all.
+const SPOKEN: &str = "Answers are read aloud, so keep them short: two to four sentences unless the reader asks \
+                      for more, in plain spoken prose with no Markdown, lists, headings or asterisks.";
+
 /// How much of the book before the reader's position goes into the prompt.
 const CONTEXT_SENTENCES: usize = 80;
 
@@ -48,11 +53,13 @@ pub async fn transcribe(state: &State, audio: Vec<u8>, filename: String, mime: S
 
 pub async fn speak(state: &State, text: &str, voice: &str, instructions: Option<&str>) -> anyhow::Result<String> {
     let ai = state.settings.read().await.ai.clone();
-    let mut body = json!({ "model": ai.tts_model, "input": text, "voice": voice, "response_format": "mp3" });
+    // Someone is waiting to hear this: it goes ahead of the full cast's lines for further on.
+    let mut body = json!({ "model": ai.tts_model, "input": for_speech(text), "voice": voice, "response_format": "mp3", "priority": true });
     // Voice-design TTS servers (Qwen3-TTS VoiceDesign, VoxCPM...) can build a voice from this.
     if let Some(i) = instructions.filter(|i| !i.is_empty()) {
         body["instructions"] = json!(i);
     }
+    let began = std::time::Instant::now();
     let bytes = state
         .http
         .post(format!("{}/audio/speech", ai.tts_url.trim_end_matches('/')))
@@ -64,6 +71,7 @@ pub async fn speak(state: &State, text: &str, voice: &str, instructions: Option<
         .error_for_status()?
         .bytes()
         .await?;
+    tracing::info!("companion voice: {} characters in {:.1}s", text.len(), began.elapsed().as_secs_f64());
     Ok(format!("data:audio/mpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes)))
 }
 
@@ -115,20 +123,20 @@ pub async fn ask(state: &State, req: AskRequest) -> anyhow::Result<AskReply> {
         match &persona {
             Some(c) if !c.is_narrator => system.push_str(&format!(
                 "You are {}, a character in \"{}\"{by}. {}\nStay in character and speak as {} would. You only know what has \
-                 happened up to the reader's current place in the story; never reveal later events. Begin every \
+                 happened up to the reader's current place in the story; never reveal later events. Keep replies short and spoken: a few sentences, plain words, no lists or formatting. Begin every \
                  reply with a short acting direction in square brackets describing how you say it, e.g. \
                  [warily, keeping my voice low].",
                 c.name, w.title, c.description, c.name
             )),
             Some(_) => system.push_str(&format!(
                 "You are the narrator of \"{}\"{by}. Answer in the narrator's voice and style, without revealing anything \
-                 beyond the reader's current place in the story.",
+                 beyond the reader's current place in the story. {SPOKEN}",
                 w.title
             )),
             None => system.push_str(&format!(
                 "You are a reading companion for \"{}\"{by}. Answer questions about the book, explain references, and \
-                 define words as they are used in the passage. Be concise: answers are read aloud. Never spoil events \
-                 beyond the reader's current place unless they explicitly ask for spoilers.",
+                 define words as they are used in the passage. Never spoil events beyond the reader's current place \
+                 unless they explicitly ask for spoilers. {SPOKEN}",
                 w.title
             )),
         }
@@ -136,11 +144,13 @@ pub async fn ask(state: &State, req: AskRequest) -> anyhow::Result<AskReply> {
             system.push_str(&format!("\n\nThe reader has just read this passage:\n\"\"\"\n{context}\n\"\"\""));
         }
     } else {
-        system.push_str("You are a helpful reading companion. Be concise: answers are read aloud.");
+        system.push_str(&format!("You are a helpful reading companion. {SPOKEN}"));
     }
     let mut turns: Vec<crate::llm::Turn> = req.history.iter().map(|t| (t.role.clone(), t.content.clone())).collect();
     turns.push(("user".into(), req.question.clone()));
-    let mut answer = crate::llm::chat(state, &system, &turns).await?;
+    let began = std::time::Instant::now();
+    let mut answer = for_speech(&crate::llm::chat(state, &system, &turns).await?);
+    tracing::info!("companion answer ({}): {:.1}s", ai.llm_provider, began.elapsed().as_secs_f64());
     // Characters open with an acting direction ("[wry, a little tired]") for the voice engine;
     // it's spoken, not shown.
     let spoken = answer.clone();
@@ -203,4 +213,51 @@ pub async fn list_models(http: &reqwest::Client, url: &str, key: &str) -> anyhow
         resp["data"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
     names.sort();
     Ok(names)
+}
+
+/// Markdown out of an answer that's shown as plain text and read aloud: emphasis marks,
+/// headings, bullets and code ticks go, links keep their words. A character's opening acting
+/// direction in square brackets stays.
+fn for_speech(text: &str) -> String {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let t = line.trim_start();
+        let t = t.trim_start_matches('#').trim_start();
+        let t = ["- ", "* ", "+ ", "\u{2022} "].iter().find_map(|b| t.strip_prefix(b)).unwrap_or(t);
+        // [words](link) -> words
+        let mut out = String::with_capacity(t.len());
+        let mut rest = t;
+        while let Some(open) = rest.find('[') {
+            let Some(close) = rest[open..].find("](").map(|c| open + c) else { break };
+            let Some(end) = rest[close..].find(')').map(|e| close + e) else { break };
+            if rest[open + 1..close].contains(['[', ']']) {
+                // (Not a link's words: an acting direction, say. Past it.)
+                out.push_str(&rest[..=open]);
+                rest = &rest[open + 1..];
+                continue;
+            }
+            out.push_str(&rest[..open]);
+            out.push_str(&rest[open + 1..close]);
+            rest = &rest[end + 1..];
+        }
+        out.push_str(rest);
+        lines.push(out.replace("**", "").replace("__", "").replace(['*', '`'], ""));
+    }
+    lines.join("\n").trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::for_speech;
+
+    #[test]
+    fn markdown_goes() {
+        assert_eq!(
+            for_speech("**Kenduskeag** (pronounced *ken-DUS-keeg*) is a [stream](https://x.org) in Maine.\n- It flows `through` Bangor."),
+            "Kenduskeag (pronounced ken-DUS-keeg) is a stream in Maine.\nIt flows through Bangor."
+        );
+        assert_eq!(for_speech("[warily, low] Don't go near the drain."), "[warily, low] Don't go near the drain.");
+        assert_eq!(for_speech("## Who\nBill"), "Who\nBill");
+        assert_eq!(for_speech("[wry] See [the map](https://m) first."), "[wry] See the map first.");
+    }
 }

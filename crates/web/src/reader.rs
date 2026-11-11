@@ -2714,12 +2714,22 @@ fn Assistant(
     let mic_level = RwSignal::new(0.0f64);
     let thinking = RwSignal::new(false);
     let speaking = RwSignal::new(false);
+    // Which question is being answered: a new one (or closing the panel) stops the old answer's voice.
+    let turn = RwSignal::new(0u32);
+    Effect::new(move |_| {
+        if !open.get() {
+            turn.update(|t| *t += 1);
+            crate::stop_answer();
+        }
+    });
     let toast = toast();
 
     let ask = move |question: String| {
         if question.trim().is_empty() {
             return;
         }
+        turn.update(|t| *t += 1);
+        crate::stop_answer();
         // Don't talk over the audiobook.
         if playing.get_untracked() {
             if let Some(a) = audio.get_untracked() {
@@ -2755,10 +2765,33 @@ fn Assistant(
                     thinking.set(false);
                     if speak.get_untracked() {
                         speaking.set(true);
-                        let say = duet_common::SayRequest { work_id: Some(id), persona: persona_id, text: spoken };
-                        match api::post::<_, String>("/api/assistant/say", &say).await {
-                            Ok(a) => crate::play_data_url(&a),
-                            Err(e) => leptos::logging::warn!("speaking the answer: {}", e.0),
+                        // A sentence or two at a time: the first plays a few seconds after the
+                        // text appears, and each next part is performed while this one plays,
+                        // rather than waiting for the whole answer to be performed first.
+                        let mine = turn.get_untracked();
+                        // Starts performing a part now (the request goes at once); awaited later.
+                        let start = move |text: String| {
+                            let say = duet_common::SayRequest { work_id: Some(id), persona: persona_id, text };
+                            wasm_bindgen_futures::JsFuture::from(wasm_bindgen_futures::future_to_promise(async move {
+                                api::post::<_, String>("/api/assistant/say", &say).await.map(JsValue::from).map_err(|e| JsValue::from(e.0))
+                            }))
+                        };
+                        let mut parts = spoken_parts(&spoken).into_iter();
+                        let mut next = parts.next().map(start);
+                        while let Some(pending) = next.take() {
+                            let audio = pending.await;
+                            if turn.try_get_untracked() != Some(mine) {
+                                break;
+                            }
+                            // The next part is performed while this one plays.
+                            next = parts.next().map(start);
+                            match audio {
+                                Ok(a) => crate::play_answer_part(&a.as_string().unwrap_or_default()).await,
+                                Err(e) => leptos::logging::warn!("speaking the answer: {}", e.as_string().unwrap_or_default()),
+                            }
+                            if turn.try_get_untracked() != Some(mine) {
+                                break;
+                            }
                         }
                         let _ = speaking.try_set(false);
                     }
@@ -2938,4 +2971,44 @@ fn light_markdown(text: &str) -> String {
 
 fn js_error(e: &JsValue) -> String {
     e.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())).or_else(|| e.as_string()).unwrap_or_else(|| "unknown error".into())
+}
+
+/// An answer cut into parts to perform one after another: the first short (a sentence) so the
+/// voice starts soon, the rest a couple of sentences each. A character's opening acting
+/// direction ("[warily]") goes on every part, so the whole answer keeps its tone.
+fn spoken_parts(text: &str) -> Vec<String> {
+    let text = text.trim();
+    let (direction, body) = match text.strip_prefix('[').and_then(|r| r.split_once(']')) {
+        Some((d, rest)) => (format!("[{d}] "), rest.trim()),
+        None => (String::new(), text),
+    };
+    // (The book's own sentence splitter: "Mr." and "No. 5" don't end a sentence.)
+    let mut sentences: Vec<String> = duet_common::text::sentences(body).into_iter().map(|r| body[r].trim().to_string()).collect();
+    sentences.retain(|s| s.chars().any(char::is_alphanumeric));
+    let mut parts: Vec<String> = Vec::new();
+    for s in sentences {
+        let n = parts.len();
+        match parts.last_mut() {
+            // (The first part alone; later ones grow to about two sentences.)
+            Some(last) if n > 1 && last.len() + s.len() < 220 => {
+                last.push(' ');
+                last.push_str(&s);
+            }
+            _ => parts.push(s),
+        }
+    }
+    parts.into_iter().map(|p| format!("{direction}{p}")).collect()
+}
+
+#[cfg(test)]
+mod spoken_tests {
+    use super::spoken_parts;
+
+    #[test]
+    fn first_sentence_alone_then_pairs() {
+        let p = spoken_parts("[wry] It's a stream. It runs through Bangor! Kids play there. Don't, though.");
+        assert_eq!(p, vec!["[wry] It's a stream.", "[wry] It runs through Bangor! Kids play there. Don't, though."]);
+        assert_eq!(spoken_parts("Mr. Hanlon said \"No.\" Then left."), vec!["Mr. Hanlon said \"No.\"", "Then left."]);
+        assert!(spoken_parts("  ").is_empty());
+    }
 }

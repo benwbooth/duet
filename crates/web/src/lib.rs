@@ -70,6 +70,10 @@ extern "C" {
     fn selected_text() -> String;
     #[wasm_bindgen(js_name = playDataUrl)]
     fn play_data_url(url: &str);
+    #[wasm_bindgen(js_name = playAnswerPart)]
+    async fn play_answer_part(url: &str);
+    #[wasm_bindgen(js_name = stopAnswer)]
+    fn stop_answer();
     #[wasm_bindgen(js_name = formatTime)]
     fn format_time(secs: f64) -> String;
     #[wasm_bindgen(js_name = setMediaSession)]
