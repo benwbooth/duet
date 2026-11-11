@@ -476,8 +476,9 @@ async fn choose(state: &State, s: &PodcastSettings, items: &[feeds::Item], stori
          The show is deep dives, not a headline read: from the posts and articles in the listener's own feeds, pick the \
          {stories} stories most worth really digging into this morning: ones with substance, a story behind them, or \
          something genuinely cool, that this listener would love, in a mix across their interests (not all one topic). \
-         Group items about the same story together. Skip ads, self-promotion, duplicates, thin news with nothing more to say, \
-         and keep politics to a small share.\n\n\
+         Group items about the same story together. Skip ads, self-promotion, duplicates, and thin news with nothing more to say. \
+         Routine world news and political headlines are boring to this listener: leave them out, unless one is \
+         genuinely huge, and then at most one.\n\n\
          Also, if there are posts from the listener's X timeline (source \"X (your timeline)\") or Reddit with interesting \
          takes, add one extra \"roundup\" story, placed second, titled like \"What's on your X feed today\": up to ten of \
          the most interesting posts and insightful comments, to be read out and reacted to.\n\n\

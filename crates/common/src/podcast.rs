@@ -36,6 +36,11 @@ pub struct PodcastSettings {
 
 /// What a briefing is about until the listener says otherwise.
 pub const DEFAULT_INTERESTS: &str = "Deep dives, not headlines: tech, AI, retro video games and new games, movies, TV, books, \
+     sci-fi, fantasy and horror, what's in my X feed, and anything cool going on in the world. Keep world news and \
+     politics to a minimum: only something really big, and only once in a while.";
+
+/// The interests written by settings version 2, replaced in version 3.
+const INTERESTS_V2: &str = "Deep dives, not headlines: tech, AI, retro video games and new games, movies, TV, books, \
      sci-fi, fantasy and horror, what's in my X feed, and anything cool going on in the world. Some world news, and a \
      little politics, but not too much.";
 
@@ -53,7 +58,7 @@ pub fn default_host() -> PodcastHost {
 }
 
 /// The settings version this build brings saved settings up to.
-pub const SETTINGS_VERSION: u32 = 2;
+pub const SETTINGS_VERSION: u32 = 3;
 
 impl PodcastSettings {
     /// Brings settings saved by an older duet up to today's defaults, keeping what the
@@ -80,6 +85,10 @@ impl PodcastSettings {
                     self.sources.push(PodcastSource { kind: c.kind.into(), value: c.value.into(), enabled: true });
                 }
             }
+        }
+        if self.version < 3 && self.interests == INTERESTS_V2 {
+            // Version 3: world news headlines only when they're really big.
+            self.interests = DEFAULT_INTERESTS.into();
         }
         self.version = SETTINGS_VERSION;
         true
