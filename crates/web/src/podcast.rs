@@ -80,6 +80,12 @@ export function podSay(url, onEnd) {
   answer.addEventListener("ended", () => onEnd());
   answer.play().catch(() => onEnd());
 }
+// "Wednesday" / "November 11" from an episode's start time.
+export function podDate(iso, part) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  return part === "weekday" ? d.toLocaleDateString(undefined, { weekday: "long" }) : d.toLocaleDateString(undefined, { month: "long", day: "numeric" });
+}
 export function podSaved(key) { try { return parseInt(localStorage.getItem("duet-brief-" + key) || "0", 10) || 0; } catch (_) { return 0; } }
 export function podSave(key, i) { try { localStorage.setItem("duet-brief-" + key, String(i)); } catch (_) {} }
 "#)]
@@ -108,6 +114,8 @@ extern "C" {
     fn pod_meta(title: &str, artist: &str);
     #[wasm_bindgen(js_name = podSay)]
     fn pod_say(url: &str, on_end: &js_sys::Function);
+    #[wasm_bindgen(js_name = podDate)]
+    fn pod_date(iso: &str, part: &str) -> String;
     #[wasm_bindgen(js_name = podSaved)]
     fn pod_saved(key: &str) -> usize;
     #[wasm_bindgen(js_name = podSave)]
@@ -267,55 +275,88 @@ pub fn Briefing() -> impl IntoView {
         });
     };
 
+    // Settings live in their own pane, out of the player's way.
+    let show_settings = RwSignal::new(false);
+    let show_episodes = RwSignal::new(false);
+    let _ = tab;
+
     view! {
         <div class="briefing">
-            <header class="page-head">
-                <div class="titles">
-                    <h1>"Daily briefing " {crate::ai_tag()}</h1>
-                    <p class="subtitle">"A podcast made for you each morning from your feeds, by AI: written by the chat model, voiced by AI hosts."</p>
-                </div>
-                <div class="segmented">
-                    <button class:active=move || tab.get() == "listen" on:click=move |_| tab.set("listen")>"Listen"</button>
-                    <button class:active=move || tab.get() == "sources" on:click=move |_| tab.set("sources")>"Sources & hosts"</button>
+            <header class="brief-head">
+                <h1>"Daily briefing " {crate::ai_tag()}</h1>
+                <div class="brief-head-actions">
+                    <button class="ghost" title="Make a new episode now" on:click=make disabled=move || starting.get()>
+                        {move || if starting.get() { view! { <span class="spinner small"></span> }.into_any() } else { icon(icons::SPARKLE).into_any() }}
+                        <span class="label">"New episode"</span>
+                    </button>
+                    <button class="icon-button" title="Episodes" aria-label="Episodes" class:active=move || show_episodes.get()
+                        on:click=move |_| show_episodes.update(|v| *v = !*v)>
+                        <svg viewBox="0 0 24 24" class="icon" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+                    </button>
+                    <button class="icon-button" title="Sources, hosts and logins" aria-label="Briefing settings" on:click=move |_| show_settings.set(true)>
+                        {icon(icons::SETTINGS)}
+                    </button>
                 </div>
             </header>
-            <Show when=move || tab.get() == "listen" fallback=move || view! { <BriefingSettings settings/> }>
-                <div class="brief-layout">
-                    <div class="brief-main">
-                        {move || match current.get() {
-                            None => view! {
-                                <div class="brief-empty">
-                                    <p>"No episodes yet. Pick your sources and what you care about, then make the first one."</p>
-                                    <button class="primary" on:click=make disabled=move || starting.get()>{icon(icons::SPARKLE)}"Make today's briefing"</button>
-                                </div>
-                            }.into_any(),
-                            Some(_) => view! { <Player current index pstate rate/> }.into_any(),
-                        }}
+            <div class="brief-stage">
+                {move || match current.get() {
+                    None => view! {
+                        <div class="brief-empty">
+                            <div class="brief-art empty"><span class="art-show">"Daily briefing"</span></div>
+                            <p>"No episodes yet. Your briefing is deep dives on what you care about, from your feeds, read by an AI host."</p>
+                            <div class="brief-empty-actions">
+                                <button class="primary" on:click=make disabled=move || starting.get()>{icon(icons::SPARKLE)}"Make today's briefing"</button>
+                                <button class="ghost" on:click=move |_| show_settings.set(true)>"Choose topics and sources"</button>
+                            </div>
+                        </div>
+                    }.into_any(),
+                    Some(_) => view! { <Player current index pstate rate/> }.into_any(),
+                }}
+            </div>
+            <Show when=move || show_episodes.get()>
+                <div class="brief-scrim" on:click=move |_| show_episodes.set(false)></div>
+                <aside class="brief-pane brief-episodes" role="dialog" aria-label="Episodes">
+                    <div class="pane-head">
+                        <h2>"Episodes"</h2>
+                        <button class="icon-button" aria-label="Close" on:click=move |_| show_episodes.set(false)>"×"</button>
                     </div>
-                    <aside class="brief-episodes">
-                        <button class="primary" on:click=make disabled=move || starting.get()>
-                            {move || if starting.get() { view! { <span class="spinner small"></span> }.into_any() } else { icon(icons::SPARKLE).into_any() }}
-                            "New episode now"
-                        </button>
-                        <h3>"Episodes"</h3>
-                        <For each=move || episodes.get() key=|e| (e.id.clone(), e.stage.clone()) let:e>
-                            {
-                                let id = e.id.clone();
-                                let id2 = e.id.clone();
-                                let making = !matches!(e.stage.as_str(), "ready" | "failed");
-                                view! {
-                                    <button class="brief-ep" class:active=move || current.with(|c| c.as_ref().is_some_and(|c| c.id == id2))
-                                        on:click=move |_| open_episode(id.clone())>
-                                        <span class="ep-title">{e.title.clone()}</span>
-                                        <small>{if making { "Being made…".to_string() } else if e.stage == "failed" { "Didn't finish".into() } else { format!("{} stories", e.stories) }}</small>
-                                    </button>
-                                }
+                    <For each=move || episodes.get() key=|e| (e.id.clone(), e.stage.clone()) let:e>
+                        {
+                            let id = e.id.clone();
+                            let id2 = e.id.clone();
+                            let making = !matches!(e.stage.as_str(), "ready" | "failed");
+                            let when = format!("{} · {}", pod_date(&e.created, "weekday"), pod_date(&e.created, "day"));
+                            view! {
+                                <button class="brief-ep" class:active=move || current.with(|c| c.as_ref().is_some_and(|c| c.id == id2))
+                                    on:click=move |_| { open_episode(id.clone()); show_episodes.set(false) }>
+                                    <span class="ep-when">{when}</span>
+                                    <span class="ep-title">{episode_name(&e.title)}</span>
+                                    <small>{if making { "Being made…".to_string() } else if e.stage == "failed" { "Didn't finish".into() } else { format!("{} stories", e.stories) }}</small>
+                                </button>
                             }
-                        </For>
-                    </aside>
-                </div>
+                        }
+                    </For>
+                </aside>
+            </Show>
+            <Show when=move || show_settings.get()>
+                <div class="brief-scrim" on:click=move |_| show_settings.set(false)></div>
+                <aside class="brief-pane brief-settings-pane" role="dialog" aria-label="Briefing settings">
+                    <div class="pane-head">
+                        <h2>"Briefing settings"</h2>
+                        <button class="icon-button" aria-label="Close" on:click=move |_| show_settings.set(false)>"×"</button>
+                    </div>
+                    <BriefingSettings settings/>
+                </aside>
             </Show>
         </div>
+    }
+}
+
+/// An episode's own name, without the date the server puts in front ("Briefing, Wed… · Name").
+fn episode_name(title: &str) -> String {
+    match title.split_once(" · ") {
+        Some((_, name)) if !name.trim().is_empty() => name.trim().to_string(),
+        _ => title.to_string(),
     }
 }
 
@@ -477,13 +518,31 @@ fn Player(current: RwSignal<Option<Episode>>, index: RwSignal<usize>, pstate: Rw
         })
     };
 
+    // The cover: the picture from the story playing (or the first story with one).
+    let art = move || {
+        current.with(|c| {
+            let e = c.as_ref()?;
+            let now = flat(e).get(index.get()).map(|(s, _)| *s).unwrap_or(0);
+            let pic = |seg: &duet_common::podcast::Segment| seg.sources.iter().find_map(|x| x.image.clone());
+            e.segments.get(now).and_then(pic).or_else(|| e.segments.iter().find_map(pic))
+        })
+    };
+
     let numbered = move || exchanges.get().into_iter().enumerate().collect::<Vec<(usize, Exchange)>>();
 
     view! {
         <section class="brief-player">
             <div class="brief-now">
+                <div class="brief-art" class:playing=playing
+                    style:background-image=move || art().map(|src| format!("url(\"{}\")", src.replace('"', "%22"))).unwrap_or_default()>
+                    <div class="art-text">
+                        <span class="art-show">"Daily briefing"</span>
+                        <span class="art-day">{move || pod_date(&ep().created, "weekday")}</span>
+                        <span class="art-date">{move || pod_date(&ep().created, "day")}</span>
+                    </div>
+                </div>
                 <div class="brief-title">
-                    <small>{move || ep().title}</small>
+                    <small>{move || episode_name(&ep().title)}</small>
                     <h2>{move || here().and_then(|(s, _)| current.with(|c| c.as_ref().map(|e| e.segments[s].title.clone()))).unwrap_or_else(|| "Getting today's stories".into())}</h2>
                 </div>
                 <Show when=move || !ep().finished()>
@@ -609,6 +668,7 @@ fn Player(current: RwSignal<Option<Episode>>, index: RwSignal<usize>, pstate: Rw
                 <label class="check"><input type="checkbox" prop:checked=move || resume_after.get() on:change=move |ev| resume_after.set(event_target_checked(&ev))/>"Carry on after the answer"</label>
             </div>
 
+            <h3 class="brief-chapters-head">"In this episode"</h3>
             <ol class="brief-stories">
                 {move || {
                     let e = ep();

@@ -1943,3 +1943,80 @@ html.eink .swatch-gray { background: #4a4a4c; } html.eink .swatch-dark { backgro
 .login-viewer iframe { width: 100%; height: min(70vh, 720px); border: 0; display: block; background: #fff; }
 .brief-advanced { margin-top: 1rem; }
 .brief-advanced summary { cursor: pointer; color: var(--muted); }
+
+/* ---- Briefing as a player: cover, now playing, chapters; settings and episodes in side panes ---- */
+.briefing { max-width: 980px; margin: 0 auto; }
+.brief-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.2rem; }
+.brief-head h1 { margin: 0; font-size: 1.6rem; display: flex; align-items: center; gap: 0.5rem; }
+.brief-head-actions { display: flex; align-items: center; gap: 0.4rem; }
+.brief-head-actions .icon-button.active { background: var(--surface); }
+.brief-stage { display: grid; }
+.brief-now {
+  grid-template-columns: 240px minmax(0, 1fr); grid-template-areas: "art title" "art caption" "art bar" "art controls" "making making" "error error";
+  column-gap: 1.6rem; row-gap: 0.7rem; align-items: center; padding: 1.4rem;
+}
+.brief-now > .brief-art { grid-area: art; align-self: start; }
+.brief-now > .brief-title { grid-area: title; }
+.brief-now > .brief-caption { grid-area: caption; }
+.brief-now > .brief-bar { grid-area: bar; }
+.brief-now > .brief-controls { grid-area: controls; justify-content: flex-start; }
+.brief-now > .brief-making { grid-area: making; }
+.brief-now > .brief-error { grid-area: error; }
+.brief-art {
+  position: relative; aspect-ratio: 1; width: 100%; border-radius: 18px; overflow: hidden;
+  background: linear-gradient(145deg, #2b1d14 0%, var(--accent) 58%, var(--accent-2) 100%) center / cover no-repeat;
+  box-shadow: 0 18px 40px -18px rgba(0,0,0,0.55); transition: transform 0.35s ease;
+}
+.brief-art.playing { transform: scale(1.015); }
+.brief-art::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,0) 35%, rgba(0,0,0,0.72) 100%); }
+.brief-art .art-text, .brief-art.empty .art-show { position: absolute; left: 1rem; right: 1rem; bottom: 0.9rem; z-index: 1; color: #fff; display: grid; gap: 0.05rem; text-shadow: 0 1px 6px rgba(0,0,0,0.35); }
+.brief-art .art-show { font-size: 0.72rem; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.85; font-weight: 600; }
+.brief-art .art-day { font-family: var(--serif); font-size: 1.7rem; line-height: 1.1; }
+.brief-art .art-date { font-size: 0.95rem; opacity: 0.9; }
+.brief-title small { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); font-weight: 600; }
+.brief-title h2 { font-size: 1.55rem; line-height: 1.2; }
+.brief-caption { min-height: 4.5rem; max-height: 9.5rem; overflow: auto; }
+.brief-caption p { font-size: 1.15rem; color: var(--text); }
+.brief-bar { height: 5px; }
+.brief-controls { gap: 0.5rem; }
+.brief-play { width: 60px; height: 60px; }
+.brief-chapters-head { margin: 0.6rem 0 0; font-family: var(--sans); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.brief-stories { gap: 0.35rem; }
+.brief-story { border-radius: 12px; }
+.brief-story.intro { border-color: transparent; }
+.story-head img { width: 48px; height: 48px; border-radius: 10px; }
+.brief-ask { border-radius: 14px; }
+.brief-empty { display: grid; justify-items: center; gap: 1rem; padding: 2.2rem 1.4rem; }
+.brief-empty .brief-art { width: min(240px, 70vw); }
+.brief-empty-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; justify-content: center; }
+/* Side panes (settings, episodes). Clicking outside closes them. */
+.brief-scrim { position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,0.35); animation: brief-fade 0.2s ease; }
+.brief-pane {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 71; width: min(560px, 100vw); overflow-y: auto; overscroll-behavior: contain;
+  background: var(--bg); border-left: 1px solid var(--line); box-shadow: -12px 0 40px -20px rgba(0,0,0,0.5);
+  padding: 0 1.2rem 2rem; animation: brief-slide 0.25s ease;
+}
+.brief-pane.brief-episodes { width: min(360px, 100vw); display: grid; align-content: start; gap: 0.3rem; position: fixed; top: 0; }
+.brief-pane .pane-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 1rem 0 0.6rem; background: var(--bg); }
+.brief-pane .pane-head h2 { margin: 0; font-size: 1.2rem; }
+.brief-ep .ep-when { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+@keyframes brief-slide { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes brief-fade { from { opacity: 0; } to { opacity: 1; } }
+/* Phones: a podcast app's now-playing screen. */
+@media (max-width: 720px) {
+  .brief-head h1 { font-size: 1.3rem; }
+  .brief-head-actions .label { display: none; }
+  .brief-now {
+    grid-template-columns: minmax(0, 1fr); grid-template-areas: "art" "title" "bar" "controls" "caption" "making" "error";
+    text-align: center; padding: 1.2rem 1rem 1rem; row-gap: 0.8rem; background: transparent; border: 0; box-shadow: none;
+  }
+  .brief-now > .brief-art { width: min(300px, 78vw); justify-self: center; border-radius: 20px; }
+  .brief-title h2 { font-size: 1.3rem; }
+  .brief-now > .brief-controls { justify-content: center; }
+  .brief-play { width: 72px; height: 72px; }
+  .brief-play svg { width: 34px; height: 34px; }
+  .brief-caption { text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 0.7rem 0.9rem; max-height: 8rem; }
+  .brief-caption p { font-size: 1rem; }
+  .brief-rate { margin-left: 0.2rem; }
+  .brief-pane { width: 100vw; border-left: 0; }
+}
