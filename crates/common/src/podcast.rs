@@ -28,7 +28,9 @@ pub struct PodcastSettings {
     pub rsshub_url: String,
     /// Listen to linked videos and reels (yt-dlp + speech recognition) to cover what's said in them.
     pub watch_videos: bool,
-    /// Which defaults these settings have been brought up to (see `upgrade`).
+    /// Which defaults these settings have been brought up to (see `upgrade`). Missing in
+    /// settings saved before versions existed, so it reads as 0 there, not as the current one.
+    #[serde(default)]
     pub version: u32,
 }
 
@@ -351,4 +353,19 @@ pub fn strip_directions(text: &str) -> String {
         }
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_saved_without_a_version_are_upgraded() {
+        let mut s: PodcastSettings = serde_json::from_str(r#"{"interests":"","minutes":20}"#).unwrap();
+        assert_eq!(s.version, 0);
+        assert!(s.upgrade());
+        assert_eq!(s.minutes, 30);
+        assert_eq!(s.interests, DEFAULT_INTERESTS);
+        assert_eq!(s.version, SETTINGS_VERSION);
+    }
 }
