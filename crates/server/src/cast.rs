@@ -815,6 +815,21 @@ async fn prepared(state: &State, asset: i64, chapter: usize, n: usize, sentences
 /// stopping the performer (they can't share the card), so any still missing are all made in
 /// that one stop; ones already made aren't asked about at all.
 async fn ensure_voices(state: &State, asset: i64, script: &Script, cast: &Cast) -> anyhow::Result<()> {
+    // Nothing is made while everyone this part needs has a voice: the director reads far ahead
+    // and keeps adding people from later chapters, and making theirs as each line was performed
+    // stopped the performer every minute or two ("It": a restart per line, stuck at 3 of 390).
+    let made = |name: String| state.data_dir.join("voices").join(format!("{name}.wav")).exists();
+    // (As the lines name them when performed: a speaker who isn't one of the cast is read by the narrator.)
+    let needed = script.values().filter_map(|(who, _)| canonical(who, &cast.characters));
+    if made(voice_name(asset, None)) && needed.into_iter().all(|who| made(voice_name(asset, Some(&who)))) {
+        return Ok(());
+    }
+    make_voices(state, asset, script, cast).await
+}
+
+/// Makes the voices of the narrator, this part's speakers and everyone the director has met so
+/// far who hasn't one yet: all in the one stop of the performer.
+async fn make_voices(state: &State, asset: i64, script: &Script, cast: &Cast) -> anyhow::Result<()> {
     // Cast everyone in this part up front, so the voice server isn't swapping models mid-part.
     // (One at a time, so the player can say whose voice is being made.)
     // Every character met so far, not just this part's: making a voice means stopping the
@@ -936,7 +951,7 @@ fn direct_ahead(state: &State, asset: i64, chapter: usize) {
                     if k < 2 && !performer_ready(&state).await {
                         let cast: Cast = read_json(&base.join("cast.json")).await.unwrap_or_default();
                         if !cast.narrator.is_empty() {
-                            if let Err(e) = ensure_voices(&state, asset, &Script::new(), &cast).await {
+                            if let Err(e) = make_voices(&state, asset, &Script::new(), &cast).await {
                                 tracing::warn!("casting ahead: {e:#}");
                             }
                             // (Its "Finding a voice for ..." goes, unless a line has said more since.)
@@ -1060,7 +1075,8 @@ pub fn prepare(state: &State, asset: i64, chapter: usize, sentence: usize) {
         crate::activity::set(&key, "AI full cast", &title, format!("Getting chapter {} ready to play (directing and casting)", chapter + 1), 0, (to - from) as u32);
         match prepared(&state, asset, chapter, from, &sentences, true).await {
             Ok((script, cast)) => {
-                if let Err(e) = ensure_voices(&state, asset, &script, &cast).await {
+                // (Everyone met so far, while the performer isn't needed yet.)
+                if let Err(e) = make_voices(&state, asset, &script, &cast).await {
                     tracing::warn!("preparing the full cast: {e:#}");
                 }
             }
