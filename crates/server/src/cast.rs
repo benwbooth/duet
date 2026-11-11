@@ -56,23 +56,25 @@ pub async fn current(state: &State, asset: i64) -> serde_json::Value {
     let now = STATUS.lock().unwrap().get(&asset).cloned();
     let Some((what, done, total, since)) = now else { return json!(null) };
     if what.starts_with("Performing") {
-        let tts = state.settings.read().await.ai.tts_url.clone();
-        let url = format!("{}/status", tts.trim_end_matches('/'));
-        if let Ok(r) = state.http.get(url).timeout(std::time::Duration::from_secs(2)).send().await {
-            if let Ok(v) = r.json::<serde_json::Value>().await {
-                if v["fish_starting"].as_bool() == Some(true) {
-                    let (elapsed, expected) = (v["elapsed"].as_f64().unwrap_or(0.0), v["expected"].as_f64().unwrap_or(360.0));
-                    return json!({
-                        "what": "Warming up the voices (the first line after a while takes longest)",
-                        "progress": (elapsed / expected.max(1.0)).min(0.97),
-                        "left": (expected - elapsed).max(0.0).round(),
-                        "secs": elapsed.round(),
-                    });
-                }
-            }
+        if let Some((elapsed, expected)) = warming(state).await {
+            return json!({
+                "what": "Warming up the voices (the first line after a while takes longest)",
+                "progress": (elapsed / expected.max(1.0)).min(0.97),
+                "left": (expected - elapsed).max(0.0).round(),
+                "secs": elapsed.round(),
+            });
         }
     }
     json!({ "what": what, "done": done, "total": total, "secs": since.elapsed().as_secs() })
+}
+
+/// While the performer is starting: (seconds so far, seconds it's expected to take).
+async fn warming(state: &State) -> Option<(f64, f64)> {
+    let tts = state.settings.read().await.ai.tts_url.clone();
+    let url = format!("{}/status", tts.trim_end_matches('/'));
+    let r = state.http.get(url).timeout(std::time::Duration::from_secs(2)).send().await.ok()?;
+    let v = r.json::<serde_json::Value>().await.ok()?;
+    (v["fish_starting"].as_bool() == Some(true)).then(|| (v["elapsed"].as_f64().unwrap_or(0.0), v["expected"].as_f64().unwrap_or(360.0)))
 }
 
 /// One lock per book: directing and casting happen once, however many requests arrive together.
@@ -901,12 +903,22 @@ fn direct_ahead(state: &State, asset: i64, chapter: usize) {
         // pages ahead of the listener, not the whole book.)
         let order: Vec<usize> = if comic { (chapter..chapters.min(chapter + 6)).collect() } else { (chapter..chapters).chain(0..chapter).collect() };
         let what = if comic { "page" } else { "chapter" };
+        let order_len = order.len();
         for (k, c) in order.into_iter().enumerate() {
-            crate::activity::set(&key, "AI full cast", &title, format!("Directing {what} {} (who says what, and how)", c + 1), k as u32, chapters as u32);
             let Ok(sentences) = sentences_of(&state, asset, c).await else { break };
-            for part in 0..sentences.len().div_ceil(CHUNK) {
+            // (Counted a part at a time: a long chapter is a dozen or more parts, and counting
+            // whole chapters sat at 0 for minutes while the director was busy on it.)
+            let parts = sentences.len().div_ceil(CHUNK);
+            for part in 0..parts {
                 let done = base.join(format!("script-{c}-{part}.json")).exists() || base.join(format!("script-{c}.json")).exists();
                 if !done {
+                    let left = order_len - k - 1;
+                    let then = match left {
+                        0 => String::new(),
+                        1 => format!(", then 1 more {what}"),
+                        _ => format!(", then {left} more {what}s"),
+                    };
+                    crate::activity::set(&key, "AI full cast", &title, format!("Directing {what} {} (who says what, and how){then}", c + 1), part as u32, parts as u32);
                     if let Err(e) = prepared(&state, asset, c, part * CHUNK, &sentences, true).await {
                         tracing::warn!("directing ahead ({c}, part {part}): {e:#}");
                     }
@@ -946,21 +958,52 @@ fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
                     return;
                 }
                 let done_already = dir(&state, asset).join(format!("{c}-{k}.mp3")).exists();
+                let what = format!("Performing chapter {} ahead of you", c + 1);
+                let (done, total) = ((k - from) as u32, (sentences.len() - from) as u32);
                 if !done_already {
-                    crate::activity::set(&key, "AI full cast", &title, format!("Performing chapter {} ahead of you", c + 1), (k - from) as u32, (sentences.len() - from) as u32);
+                    crate::activity::set(&key, "AI full cast", &title, what.clone(), done, total);
                 }
+                // (While the voices are starting, minutes the first time, the jobs pane says so,
+                // with how long is left, rather than sitting at 0.)
+                let ticker = (!done_already).then(|| {
+                    let (state, key, title, what) = (state.clone(), key.clone(), title.clone(), what.clone());
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                            match warming(&state).await {
+                                Some((elapsed, expected)) => {
+                                    let left = ((expected - elapsed).max(0.0) / 60.0).ceil() as u32;
+                                    let left = if left <= 1 { "about a minute left".to_string() } else { format!("about {left} minutes left") };
+                                    crate::activity::set(&key, "AI full cast", &title, format!("Warming up the voices ({left}), then {}", what.to_lowercase()), elapsed as u32, expected.max(elapsed + 1.0) as u32);
+                                }
+                                None => crate::activity::set(&key, "AI full cast", &title, what.clone(), done, total),
+                            }
+                        }
+                    })
+                });
                 // (If the voices are restarting, wait for them rather than give up: giving up left
                 // the listener's stretch marked as being worked on, so nothing more was performed.)
                 let mut tries = 0;
-                while let Err(e) = perform(&state, asset, c, k, false).await {
-                    tries += 1;
-                    if moved() || tries > 12 {
-                        tracing::warn!("performing ahead ({c}, {k}): {e:#}");
-                        LISTENER.lock().unwrap().remove(&asset);
-                        crate::activity::clear(&key);
-                        return;
+                let performed = loop {
+                    match perform(&state, asset, c, k, false).await {
+                        Ok(_) => break Ok(()),
+                        Err(e) => {
+                            tries += 1;
+                            if moved() || tries > 12 {
+                                break Err(e);
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                        }
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                };
+                if let Some(t) = ticker {
+                    t.abort();
+                }
+                if let Err(e) = performed {
+                    tracing::warn!("performing ahead ({c}, {k}): {e:#}");
+                    LISTENER.lock().unwrap().remove(&asset);
+                    crate::activity::clear(&key);
+                    return;
                 }
                 if let Some(entry) = LISTENER.lock().unwrap().get_mut(&asset).filter(|e| e.2 == generation) {
                     // (Lets a request a little further on count as the same stretch.)

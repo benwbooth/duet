@@ -903,15 +903,19 @@ class Handler(BaseHTTPRequestHandler):
                 # Someone's about to want the full cast: have Fish loaded (in the background) and
                 # keep it from being unloaded as idle while they're there.
                 touch("fish")
-                if body.get("start", True) and not fish.healthy() and fish.starting_since is None:
+                if body.get("start", True) and not fish.healthy() and fish.starting_since is None and time.time() >= fish_broken_until:
                     def start():
+                        global fish_broken_until
                         try:
                             with lock:
                                 # (The full cast comes before the pictures: they don't both fit.)
                                 stop_drawing()
                                 fish.start()
                         except Exception as e:
-                            print(f"warming fish: {e}", flush=True)
+                            # (The lines asked for next go to Qwen3-TTS straight away, rather
+                            # than waiting minutes on another start that fails the same way.)
+                            fish_broken_until = time.time() + 600
+                            print(f"warming fish: {e}; using Qwen3-TTS for the next 10 minutes", flush=True)
                     threading.Thread(target=start, daemon=True).start()
                 return self.reply(200, b'{"ok":true}', "application/json")
             if path in ("/v1/align-words", "/align-words"):
@@ -990,6 +994,31 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(500, json.dumps({"error": str(e)}).encode(), "application/json")
 
 
+def compile_caches():
+    """Somewhere writable, and kept, for the GPU kernels Fish (and the others) compile. Triton's
+    default is ~/.triton and Inductor's /tmp: in the duet container the home folder isn't
+    writable (Fish failed every start with "Permission denied: '/home/ben/.triton'", after
+    minutes of loading, and the full cast fell back to Qwen3-TTS) and /tmp goes with each
+    deploy (so every start would tune its kernels all over again). ~/.cache is kept; failing
+    that, beside the voices."""
+    candidates = [os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+                  os.path.join(os.path.dirname(os.path.abspath(args.voices)), "cache")]
+    for base in candidates:
+        try:
+            os.makedirs(os.path.join(base, "triton"), exist_ok=True)
+            os.makedirs(os.path.join(base, "torchinductor"), exist_ok=True)
+            probe = os.path.join(base, "triton", ".writable")
+            with open(probe, "w"):
+                pass
+            os.unlink(probe)
+        except OSError:
+            continue
+        os.environ.setdefault("TRITON_CACHE_DIR", os.path.join(base, "triton"))
+        os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", os.path.join(base, "torchinductor"))
+        print(f"compiled kernels kept in {base}", flush=True)
+        return
+
+
 def main():
     global args
     ap = argparse.ArgumentParser()
@@ -1028,6 +1057,7 @@ def main():
     for name in ("vibevoice", "chatterbox"):
         if not getattr(args, f"{name}_python"):
             setattr(args, f"{name}_python", os.path.join(os.path.dirname(os.path.abspath(args.voices)), f"{name}-venv", "bin", "python"))
+    compile_caches()
     print(f"duet TTS ({args.engine}) on http://{args.host}:{args.port}/v1", flush=True)
     threading.Thread(target=reaper, daemon=True).start()
 

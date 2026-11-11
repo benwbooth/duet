@@ -283,8 +283,9 @@ pub fn ActivityList(list: Signal<Vec<Activity>>) -> impl IntoView {
                 {
                     let known = a.fraction >= 0.0;
                     let pct = (a.fraction * 100.0).clamp(0.0, 100.0);
-                    // (Lining up the audio counts seconds of the track: its detail says how far, as a time.)
-                    let count = (a.total > 0 && a.kind != "Audio sync").then(|| format!("{} of {}", a.done.min(a.total), a.total));
+                    // (Lining up the audio counts seconds of the track, and warming up the voices
+                    // seconds of the start: their details say how far, as a time.)
+                    let count = (a.total > 0 && a.kind != "Audio sync" && !a.detail.starts_with("Warming up")).then(|| format!("{} of {}", a.done.min(a.total), a.total));
                     view! {
                         <li>
                             <div class="dl-body">
