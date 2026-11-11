@@ -2021,9 +2021,15 @@ html.eink .swatch-gray { background: #4a4a4c; } html.eink .swatch-dark { backgro
   .brief-pane { width: 100vw; border-left: 0; }
 }
 .brief-play { flex: none; aspect-ratio: 1; }
-.brief-row { align-items: end; }
+.brief-row { align-items: start; }
 @media (max-width: 720px) {
   /* Above the bottom tab bar, clear of the notch. */
   .brief-pane { padding-top: env(safe-area-inset-top); padding-bottom: calc(1.5rem + env(safe-area-inset-bottom)); }
   .brief-controls .icon-button { flex: none; }
+}
+.brief-rate { flex: none; min-width: 4.2rem; }
+.brief-settings .check { display: flex; align-items: center; gap: 0.55rem; }
+.brief-settings .check input[type="checkbox"] { width: 1.15rem; height: 1.15rem; flex: none; margin: 0; }
+@media (max-width: 720px) {
+  .brief-controls { flex-wrap: wrap; row-gap: 0.4rem; }
 }
