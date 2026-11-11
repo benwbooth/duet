@@ -359,6 +359,17 @@ async fn cast_warm(AxState(s): AxState<State>, Json(body): Json<serde_json::Valu
         crate::cast::cast_open();
     }
     let _ = s.http.post(format!("{}/warm", tts.trim_end_matches('/'))).json(&serde_json::json!({ "start": start })).timeout(std::time::Duration::from_secs(5)).send().await;
+    // A book open in full cast mode: its lines from where you are are performed now, while the
+    // voices warm up and before play is pressed (it sat idle for minutes, ready, until then).
+    if let (true, Some(id)) = (start, body["asset"].as_i64()) {
+        if let Ok(Some(a)) = db::asset(&s.db, id).await {
+            let (chapter, sentence) = match db::get_position(&s.db, a.work_id).await.ok().flatten() {
+                Some(p) => (p.chapter, p.sentence),
+                None => (0, 0),
+            };
+            crate::cast::prepare(&s, id, chapter, sentence);
+        }
+    }
     Json(serde_json::json!({ "ok": true }))
 }
 

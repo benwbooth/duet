@@ -1101,9 +1101,12 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     let warming = StoredValue::new(false);
     Effect::new(move |_| {
         let cast = mode.get().cast();
+        // (With the book, so the lines from where you are get performed while the voices warm
+        // up, before you press play.)
+        let asset = ebook.get().map(|e| e.id);
         if cast {
             spawn_local(async move {
-                let _ = api::post::<_, serde_json::Value>("/api/cast/warm", &serde_json::json!({ "start": true })).await;
+                let _ = api::post::<_, serde_json::Value>("/api/cast/warm", &serde_json::json!({ "start": true, "asset": asset })).await;
             });
         }
         if warming.get_value() {
@@ -1114,7 +1117,8 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
             // (Every two minutes while the reader is open; the loop ends with it.)
             while let Some(m) = mode.try_get_untracked() {
                 gloo_timers::future::TimeoutFuture::new(120_000).await;
-                let _ = api::post::<_, serde_json::Value>("/api/cast/warm", &serde_json::json!({ "start": m.cast() })).await;
+                let asset = ebook.try_get_untracked().flatten().map(|e| e.id);
+                let _ = api::post::<_, serde_json::Value>("/api/cast/warm", &serde_json::json!({ "start": m.cast(), "asset": asset })).await;
             }
         });
     });

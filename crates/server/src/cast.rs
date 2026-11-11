@@ -1064,6 +1064,14 @@ const OPENING: usize = 40;
 /// here performed, so playing starts at once. Shown in the jobs pane.
 pub fn prepare(state: &State, asset: i64, chapter: usize, sentence: usize) {
     direct_ahead(state, asset, chapter);
+    // (Once at a time per book; and not where the listener's own performer is already working.)
+    if !PREPARING.lock().unwrap().insert(asset) {
+        return;
+    }
+    if listening_now() {
+        PREPARING.lock().unwrap().remove(&asset);
+        return;
+    }
     let state = state.clone();
     tokio::spawn(async move {
         let title = crate::activity::title(&state, asset).await;
@@ -1083,6 +1091,10 @@ pub fn prepare(state: &State, asset: i64, chapter: usize, sentence: usize) {
             Err(e) => tracing::warn!("preparing the full cast: {e:#}"),
         }
         for k in from..to {
+            // (Pressing play hands over to the listener's own performer.)
+            if listening_now() {
+                break;
+            }
             crate::activity::set(&key, "AI full cast", &title, format!("Getting chapter {} ready to play", chapter + 1), (k - from) as u32, (to - from) as u32);
             if let Err(e) = perform(&state, asset, chapter, k, false).await {
                 tracing::warn!("preparing the full cast ({chapter}, {k}): {e:#}");
@@ -1091,8 +1103,16 @@ pub fn prepare(state: &State, asset: i64, chapter: usize, sentence: usize) {
         }
         idle(asset);
         crate::activity::clear(&key);
+        PREPARING.lock().unwrap().remove(&asset);
     });
 }
+
+/// Whether someone's playing the full cast right now (asked for a line in the last half minute).
+fn listening_now() -> bool {
+    LAST_HEARD.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(30))
+}
+
+static PREPARING: LazyLock<std::sync::Mutex<std::collections::HashSet<i64>>> = LazyLock::new(Default::default);
 
 /// One sentence, performed: MP3 bytes, from the cache when it's been performed before. Asking
 /// for one also sets the performer working ahead from it.

@@ -812,7 +812,10 @@ def _sync_window(body):
 
 
 def align_words(body):
-    with audio_first():
+    # (A performed line's words, timed while the next lines are performed: in turn with Fish,
+    # not beside it. Run together they slowed Fish by a fifth, 51 tokens a second to 40, and
+    # two models computing at once on this card has given garbage before.)
+    with lock, audio_first():
         return _align_words(body)
 
 
