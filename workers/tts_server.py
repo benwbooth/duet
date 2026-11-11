@@ -118,7 +118,7 @@ def reaper():
             if drawing_now() and now - last_used.get("drawing", now) > 300:
                 print("stopping the picture drawing (idle)", flush=True)
                 stop_drawing()
-            if fish.proc and now - last_used["fish"] > limit:
+            if fish.proc and now - last_used["fish"] > max(limit, args.fish_idle_minutes * 60):
                 print("stopping Fish Audio (idle)", flush=True)
                 fish.stop()
             for name, c in cloners.items():
@@ -904,6 +904,11 @@ class Handler(BaseHTTPRequestHandler):
                 # keep it from being unloaded as idle while they're there.
                 touch("fish")
                 if body.get("start", True) and not fish.healthy() and fish.starting_since is None and time.time() >= fish_broken_until:
+                    # The pictures give up the card at once (they carry on later from where they
+                    # got to) rather than Fish waiting for their whole batch: someone's about to
+                    # listen, and that came out at two minutes before the voices even began.
+                    stop_drawing()
+
                     def start():
                         global fish_broken_until
                         try:
@@ -1048,6 +1053,10 @@ def main():
     ap.add_argument("--chatterbox-python", default="", help="python of the Chatterbox environment (default: chatterbox-venv beside --voices)")
     ap.add_argument("--chatterbox-model", default="")
     ap.add_argument("--idle-minutes", type=float, default=5, help="unload models unused for this long (0: never)")
+    # Fish takes two or three minutes to start, so it's kept longer: coming back to the book
+    # within the half hour, the first line plays in seconds. (Anything else that wants the card,
+    # the pictures, a voice designer, Ollama, still has it stopped at once.)
+    ap.add_argument("--fish-idle-minutes", type=float, default=30, help="stop Fish after this long unused")
     ap.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     ap.add_argument("--no-free-ollama", dest="free_ollama", action="store_false",
                     help="don't ask Ollama to unload its models before loading voice models")
