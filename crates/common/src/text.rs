@@ -23,10 +23,13 @@ pub fn sentences(text: &str) -> Vec<std::ops::Range<usize>> {
             while j < chars.len() && matches!(chars[j].1, '.' | '!' | '?' | '…' | '"' | '\'' | '”' | '’' | ')' | ']' | '»') {
                 j += 1;
             }
-            let at_break = j >= chars.len() || chars[j].1.is_whitespace();
+            // A spaced ellipsis (". . .") is one mark: only its last dot can end the sentence.
+            let spaced_ellipsis = c == '.' && j < chars.len() && chars[j].1 == ' ' && chars.get(j + 1).is_some_and(|&(_, c)| c == '.');
+            let at_break = (j >= chars.len() || chars[j].1.is_whitespace()) && !spaced_ellipsis;
             // `"Stop!" cried Mr. Smith.` is one sentence: the next word continues it.
             let continues = chars[j..].iter().map(|&(_, c)| c).find(|c| !c.is_whitespace()).is_some_and(char::is_lowercase);
-            if at_break && !continues && !(c == '.' && is_abbreviation(&text[start.unwrap()..pos])) {
+            let next_word: String = chars[j..].iter().map(|&(_, c)| c).skip_while(|c| c.is_whitespace()).take_while(|c| !c.is_whitespace()).collect();
+            if at_break && !continues && !(c == '.' && j == i + 1 && is_abbreviation(&text[start.unwrap()..pos], &next_word)) {
                 let end = if j < chars.len() { chars[j].0 } else { text.len() };
                 out.push(start.unwrap()..end);
                 start = None;
@@ -56,7 +59,129 @@ fn trim_end(text: &str, start: usize, end: usize) -> usize {
     start + text[start..end].trim_end().len()
 }
 
-fn is_abbreviation(before: &str) -> bool {
+/// Whether the `.` right after `before` is an abbreviation's rather than the sentence's end,
+/// given the word that follows it. Case-insensitive, so signs and headings in capitals
+/// ("DERRY DEPT. OF PUBLIC WORKS") work too.
+fn is_abbreviation(before: &str, next: &str) -> bool {
+    // (A stop on its own, "marked D . From", follows no word.)
+    if before.ends_with(char::is_whitespace) {
+        return false;
+    }
+    let mut words = before.split_whitespace().rev();
+    let word = words.next().unwrap_or("").trim_start_matches(|c: char| !c.is_alphanumeric());
+    let prev = words.next().unwrap_or("").trim_start_matches(|c: char| !c.is_alphanumeric());
+    if word.is_empty() {
+        return false;
+    }
+    let lower = word.to_lowercase();
+    let next = next.trim_start_matches(|c: char| !c.is_alphanumeric());
+    let next_first = next.chars().next();
+    let next_capitalized = next_first.is_some_and(char::is_uppercase);
+    let next_all_caps = next.chars().filter(|c| c.is_alphabetic()).count() > 1 && !next.chars().any(char::is_lowercase);
+    let word_all_caps = word.chars().filter(|c| c.is_alphabetic()).count() > 1 && !word.chars().any(char::is_lowercase);
+
+    // Titles come before a name, so they never end a sentence.
+    const TITLES: &[&str] = &[
+        "mr", "mrs", "ms", "messrs", "mme", "mlle", "dr", "prof", "rev", "fr", "hon", "capt", "col", "gen", "lt",
+        "sgt", "cpl", "pvt", "maj", "adm", "cmdr", "cdr", "gov", "sen", "rep", "pres", "supt", "det", "insp", "mt",
+        "ft",
+    ];
+    // Only before a number: "No. 5", "Vol. 2", "p. 41" (and "No." the answer stays a sentence).
+    const NUMBERED: &[&str] = &["no", "nos", "vol", "vols", "pp", "p", "fig", "figs", "ch", "sec", "op"];
+    // Can end a sentence ("He worked for Acme Inc. Then…"), so these end one when the next word
+    // looks like a new sentence: capitalized, but not a capitals sign or heading carrying on.
+    const OTHERS: &[&str] = &[
+        "dept", "depts", "inc", "ltd", "co", "corp", "bros", "assn", "univ", "jr", "sr", "esq", "etc", "vs", "cf",
+        "approx", "est", "ave", "blvd", "rd", "hwy", "sq", "apt", "jan", "feb", "mar", "apr", "jun", "jul", "aug",
+        "sep", "sept", "oct", "nov", "dec", "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
+        "min", "hr", "hrs", "oz", "lb", "lbs", "ft", "in", "yd", "mi", "mph", "gal", "qt", "pt", "doz",
+    ];
+    let continues = !next_capitalized || (word_all_caps && next_all_caps);
+
+    // Single initials ("J. R. R. Tolkien", "Richard P. Macklin") don't end sentences.
+    if word.chars().count() == 1 && word.chars().all(char::is_uppercase) {
+        return true;
+    }
+    // (Capitalized, so "heard the engine rev. It pulled out" still ends.)
+    if TITLES.contains(&lower.as_str()) {
+        return word.chars().next().is_some_and(char::is_uppercase);
+    }
+    if lower == "st" {
+        // "Baker St. He left" is a street; "St. Louis", "in St. Mary's" are saints.
+        let street = prev.chars().next().is_some_and(char::is_uppercase);
+        return !street || continues;
+    }
+    if NUMBERED.contains(&lower.as_str()) {
+        // (A lone "I" is the pronoun: "No. I won't", "a little chap. I feel".)
+        let numeral = next.trim_end_matches(|c: char| !c.is_alphanumeric());
+        let roman = numeral != "I" && !numeral.is_empty() && numeral.chars().all(|c| matches!(c, 'I' | 'V' | 'X' | 'L' | 'C'));
+        return next_first.is_some_and(|c| c.is_ascii_digit()) || roman;
+    }
+    if OTHERS.contains(&lower.as_str()) {
+        return continues;
+    }
+    // Dotted short forms: "e.g", "i.e", "U.S", "a.m", "Ph.D".
+    if word.contains('.') && word.split('.').all(|p| !p.is_empty() && p.chars().count() <= 2 && p.chars().all(char::is_alphabetic)) {
+        return continues;
+    }
+    false
+}
+
+/// Bumped whenever `sentences` splits differently, so data numbered by sentence (full-cast
+/// lines, sync maps, pictures, reading places) is renumbered once (see the server's `resegment`).
+pub const SEGMENTATION_VERSION: u32 = 2;
+
+/// How `sentences` split before version 2 (abbreviations like "DEPT." and spaced ellipses
+/// ended sentences), kept only to renumber data saved by it.
+pub fn sentences_v1(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut start: Option<usize> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let (pos, c) = chars[i];
+        if start.is_none() {
+            if c.is_whitespace() {
+                i += 1;
+                continue;
+            }
+            start = Some(pos);
+        }
+        if matches!(c, '.' | '!' | '?' | '…') {
+            let mut j = i + 1;
+            while j < chars.len() && matches!(chars[j].1, '.' | '!' | '?' | '…' | '"' | '\'' | '”' | '’' | ')' | ']' | '»') {
+                j += 1;
+            }
+            let at_break = j >= chars.len() || chars[j].1.is_whitespace();
+            // `"Stop!" cried Mr. Smith.` is one sentence: the next word continues it.
+            let continues = chars[j..].iter().map(|&(_, c)| c).find(|c| !c.is_whitespace()).is_some_and(char::is_lowercase);
+            if at_break && !continues && !(c == '.' && is_abbreviation_v1(&text[start.unwrap()..pos])) {
+                let end = if j < chars.len() { chars[j].0 } else { text.len() };
+                out.push(start.unwrap()..end);
+                start = None;
+                i = j;
+                continue;
+            }
+        } else if c == '\n' && i + 1 < chars.len() && chars[i + 1].1 == '\n' {
+            // A blank line always ends a sentence (headings, verse, lists).
+            let end = trim_end(text, start.unwrap(), pos);
+            if end > start.unwrap() {
+                out.push(start.unwrap()..end);
+            }
+            start = None;
+        }
+        i += 1;
+    }
+    if let Some(s) = start {
+        let end = trim_end(text, s, text.len());
+        if end > s {
+            out.push(s..end);
+        }
+    }
+    out
+}
+
+fn is_abbreviation_v1(before: &str) -> bool {
     let word = before.rsplit(|c: char| c.is_whitespace()).next().unwrap_or("");
     let word = word.trim_start_matches(|c: char| !c.is_alphanumeric());
     const ABBR: &[&str] = &[
@@ -163,6 +288,25 @@ mod tests {
             split("\"Stop!\" cried Mr. Smith. Dr. J. Watson agreed."),
             ["\"Stop!\" cried Mr. Smith.", "Dr. J. Watson agreed."]
         );
+    }
+
+    #[test]
+    fn more_abbreviations() {
+        assert_eq!(
+            split("Stencilled across each was DERRY DEPT. OF PUBLIC WORKS. Beyond them, rain."),
+            ["Stencilled across each was DERRY DEPT. OF PUBLIC WORKS.", "Beyond them, rain."]
+        );
+        assert_eq!(split("The Derry Dept. of Public Works came."), ["The Derry Dept. of Public Works came."]);
+        assert_eq!(split("He worked at Acme Inc. Then he quit."), ["He worked at Acme Inc.", "Then he quit."]);
+        assert_eq!(split("\"No. I won't.\" See No. 5 and Vol. II."), ["\"No.", "I won't.\"", "See No. 5 and Vol. II."]);
+        assert_eq!(split("He moved to St. Louis. She lived on Baker St. He visited."), ["He moved to St. Louis.", "She lived on Baker St.", "He visited."]);
+        assert_eq!(split("We met at 5 p.m. sharp, e.g. in the U.S. He left."), ["We met at 5 p.m. sharp, e.g. in the U.S.", "He left."]);
+        assert_eq!(split("Ask Mrs. Kersh. Prof. Smith left."), ["Ask Mrs. Kersh.", "Prof. Smith left."]);
+        assert_eq!(split("It ended there."), ["It ended there."]);
+        assert_eq!(split("Ask Richard P. Macklin. See p. 4."), ["Ask Richard P. Macklin.", "See p. 4."]);
+        assert_eq!(split("And I . . . I can't. He went in . . . but nothing."), ["And I . . .", "I can't.", "He went in . . . but nothing."]);
+        assert_eq!(split("Not a bad little chap. I feel responsible."), ["Not a bad little chap.", "I feel responsible."]);
+        assert_eq!(split("He heard the engine rev. It pulled out."), ["He heard the engine rev.", "It pulled out."]);
     }
 
     #[test]

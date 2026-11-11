@@ -289,6 +289,10 @@ fn text_groups(body: &NodeRef) -> Vec<Vec<NodeRef>> {
 
 /// Wraps every sentence in `<span class="s" data-s="N">` and returns the sentences' text.
 fn wrap_sentences(body: &NodeRef) -> Vec<String> {
+    wrap_sentences_with(body, text::sentences)
+}
+
+fn wrap_sentences_with(body: &NodeRef, split: fn(&str) -> Vec<std::ops::Range<usize>>) -> Vec<String> {
     let span_name = {
         let tmp = kuchikiki::parse_html().one("<span></span>").document_node;
         tmp.select_first("span").map(|s| s.name.clone()).expect("span parses")
@@ -297,7 +301,7 @@ fn wrap_sentences(body: &NodeRef) -> Vec<String> {
     for group in text_groups(body) {
         let texts: Vec<String> = group.iter().map(|n| n.as_text().unwrap().borrow().clone()).collect();
         let full: String = texts.concat();
-        let ranges = text::sentences(&full);
+        let ranges = split(&full);
         if ranges.is_empty() {
             continue;
         }
@@ -381,6 +385,11 @@ pub fn chapter(src: &Source, asset_id: i64, index: usize) -> anyhow::Result<Chap
 /// One chapter's sentences, numbered exactly as `chapter` numbers them.
 pub fn chapter_sentences(src: &Source, asset_id: i64, index: usize) -> anyhow::Result<Vec<String>> {
     Ok(wrap_sentences(&chapter_dom(src, asset_id, index)?))
+}
+
+/// A chapter's sentences as an earlier version of the splitter numbered them (see `resegment`).
+pub fn chapter_sentences_v1(src: &Source, asset_id: i64, index: usize) -> anyhow::Result<Vec<String>> {
+    Ok(wrap_sentences_with(&chapter_dom(src, asset_id, index)?, text::sentences_v1))
 }
 
 /// Every chapter's sentences.

@@ -27,6 +27,7 @@ mod mirrors;
 mod llm;
 mod podcast;
 mod qbit;
+mod resegment;
 mod routes;
 mod selenium;
 mod setup;
@@ -158,6 +159,8 @@ async fn main() -> anyhow::Result<()> {
         ui_build,
     });
 
+    // (Before anything performs or syncs by sentence number.)
+    resegment::run(&state).await;
     tokio::spawn(jobs::run(state.clone()));
     tokio::spawn(downloads::watch_torrents(state.clone()));
     tokio::spawn(library::watch_inbox(state.clone()));

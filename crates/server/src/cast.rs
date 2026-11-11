@@ -16,7 +16,7 @@ use crate::{State, book, db};
 
 /// Sentences per direction request: a chapter is directed a part at a time, as the listener
 /// reaches it, so the first line plays after one short request rather than the whole chapter's.
-const CHUNK: usize = 30;
+pub(crate) const CHUNK: usize = 30;
 
 /// (speaker, acting direction) for each sentence with dialogue, by sentence number.
 type Script = BTreeMap<usize, (String, String)>;
