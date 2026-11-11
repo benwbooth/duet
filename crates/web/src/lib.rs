@@ -619,7 +619,7 @@ fn App() -> impl IntoView {
                     let panel = downloads_panel();
                     view! {
                         <button class="dl-tab" title="Downloads" aria-label="Downloads" on:click=move |_| panel.opened()>
-                            {icon(icons::DOWNLOAD)}
+                            {icon(icons::DOWNLOAD)}<span>"Downloads"</span>
                             {move || {
                                 let n = panel.list.with(|l| l.iter().filter(|d| active(d)).count());
                                 (n > 0).then(|| view! { <span class="dl-badge">{n}</span> })

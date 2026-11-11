@@ -820,8 +820,15 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .clear-finished { font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
 .dl-dismiss { flex: none; }
 /* Sidebar downloads button with active-count badge. */
-.dl-tab { position: relative; display: flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.55rem 0.7rem; margin-top: auto; border-radius: 10px; color: inherit; background: transparent; border: 1px solid transparent; cursor: pointer; font: inherit; }
-.dl-tab:hover { background: var(--surface); }
+/* Downloads: pinned to the foot of the sidebar, just above "Hide sidebar". */
+.tabs .dl-tab { position: relative; margin-top: auto; display: flex; align-items: center; gap: 0.6rem; width: 100%; justify-content: flex-start; padding: 0.55rem 0.8rem; border-radius: 12px; font-size: 0.9rem; color: var(--muted); background: transparent; border: 0; box-shadow: none; cursor: pointer; font-family: inherit; }
+.tabs .dl-tab:hover { color: var(--text); background: var(--surface-2); }
+.tabs .dl-tab .dl-badge { margin-left: auto; }
+.tabs .dl-tab + .tabs-hide { margin-top: 0; }
+@media (max-width: 760px) {
+  .tabs .dl-tab { margin-top: 0; width: auto; flex-direction: column; gap: 3px; font-size: 0.68rem; padding: 0.5rem 0.6rem; }
+  .tabs .dl-tab .dl-badge { position: absolute; top: 2px; right: 2px; margin: 0; }
+}
 .dl-badge { min-width: 1.3rem; height: 1.3rem; padding: 0 0.3rem; border-radius: 99px; background: var(--accent); color: #fff; font-size: 0.72rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
 .dl-empty { margin: 0.2rem 0.4rem 0.5rem !important; font-size: 0.85rem; }
 .update-banner { position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%); z-index: 120; display: flex; align-items: center; gap: 0.8rem; padding: 0.6rem 0.6rem 0.6rem 1rem; border-radius: 12px; background: var(--text); color: var(--bg); font-size: 0.88rem; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
