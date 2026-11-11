@@ -80,20 +80,44 @@ def sex_of(text):
     return "male" if m else None
 
 
+WORD_NUMBERS = {w: i for i, w in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
+    "sixteen seventeen eighteen nineteen".split())}
+WORD_NUMBERS.update({w: 10 * i for i, w in enumerate("twenty thirty forty fifty sixty seventy eighty ninety".split(), 2)})
+NUMBER = r"(\d{1,2}|" + "|".join(WORD_NUMBERS) + r")"
+
+
+def age_from_years(n):
+    return "child" if n <= 12 else "teenager" if n <= 19 else "young adult" if n < 40 else "middle-aged" if n < 60 else "elderly"
+
+
 def age_of(text):
-    n = r"([4-9]|1[0-2]|four|five|six|seven|eight|nine|ten|eleven|twelve)"
-    if re.search(r"\b(child|kid|toddler|little girl|little boy|young girl|young boy|pre-pubescent|schoolgirl|schoolboy)\b", text) or re.search(
-        rf"\b(about|aged|age|of)\s+{n}\b|\b{n}[- ]years?[- ]old\b", text
-    ):
-        return "child"
-    if re.search(r"\b(teen|teenage|adolescent|1[3-9]\b)", text):
-        return "teenager"
-    if re.search(r"\b(middle-aged|middle aged|40s|50s|forties|fifties|about 4\d|about 5\d)\b", text):
-        return "middle-aged"
-    if re.search(r"\b(elderly|old man|old woman|ancient|60s|70s|80s|sixties|seventies|eighties)\b", text):
-        return "elderly"
-    if re.search(r"\b(young|20s|30s|twenties|thirties|about [23]\d)\b", text):
-        return "young adult"
+    """OmniVoice's age for a description. The director starts with the age ("A male voice, a
+    boy of 11." / "A female voice, about 50."), so that's read first, and a number only counts
+    as an age where it reads as one: a "mother of four" or a teacher "of children" isn't a child."""
+    head = re.split(r"\.\s", text, maxsplit=1)[0]
+    for t in (head, text):
+        decade = re.search(r"\b(?:early|mid|late)?[- ]?([1-9])0s\b", t)
+        years = re.search(
+            rf"\b(?:about|aged|age|around|roughly|maybe|perhaps|voice,)\s+{NUMBER}\b|\b{NUMBER}[- ]years?[- ]old\b|"
+            rf"\b(?:boys?|girls?|child|children|kids?|toddler|baby|son|daughter|teen|teenager)\s+(?:of\s+)?(?:about\s+)?{NUMBER}\b",
+            t,
+        )
+        if years:
+            w = next(g for g in years.groups() if g)
+            return age_from_years(int(w) if w.isdigit() else WORD_NUMBERS[w])
+        if decade:
+            return age_from_years(int(decade.group(1)) * 10)
+        if re.search(r"\b(child|kid|toddler|baby|little girl|little boy|young girl|young boy|pre-pubescent|schoolgirl|schoolboy|boys?|girls?)\b", t):
+            return "child"
+        if re.search(r"\b(teen|teens|teenage|teenager|adolescent)\b", t):
+            return "teenager"
+        if re.search(r"\b(middle-aged|middle aged|forties|fifties)\b", t):
+            return "middle-aged"
+        if re.search(r"\b(elderly|old man|old woman|ancient|sixties|seventies|eighties)\b", t):
+            return "elderly"
+        if re.search(r"\b(young|twenties|thirties)\b", t):
+            return "young adult"
     return None
 
 
