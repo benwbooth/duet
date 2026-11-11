@@ -501,11 +501,38 @@ def from_sample(voice, sample):
 fish_broken_until = 0.0
 
 
+def tighten(wav, sr, edge=0.04, longest=0.2):
+    """VibeVoice and Chatterbox leave dead air in their takes: up to most of a second before a
+    line starts, and stretches of true silence mid-line that play as hiccups. Trims the ends to
+    `edge` seconds and shortens any silence inside to `longest`."""
+    import numpy as np
+
+    hop = max(1, int(sr * 0.01))
+    n = len(wav) // hop
+    if n < 3:
+        return wav
+    frames = np.abs(wav[: n * hop]).reshape(n, hop).max(axis=1)
+    quiet = frames < 10 ** (-48 / 20)
+    voiced = np.flatnonzero(~quiet)
+    if not len(voiced):
+        return wav
+    keep_edge, keep_gap = int(edge / 0.01), int(longest / 0.01)
+    first, last = max(0, voiced[0] - keep_edge), min(n, voiced[-1] + 1 + keep_edge)
+    out, run = [], 0
+    for i in range(first, last):
+        run = run + 1 if quiet[i] else 0
+        # Inside a long silence, only its first `longest` is kept.
+        if run <= keep_gap or i >= voiced[-1]:
+            out.append(wav[i * hop : (i + 1) * hop])
+    return np.concatenate(out) if out else wav
+
+
 def synthesize(text, voice, description, language, engine=None):
     global fish_broken_until
     ref_wav, ref_text = reference(voice, description, language)
     if engine in cloners:
-        return cloners[engine].tts(text, ref_wav)
+        wav, sr = cloners[engine].tts(text, ref_wav)
+        return tighten(wav, sr), sr
     if args.engine == "fish" and time.time() >= fish_broken_until:
         try:
             return fish.tts(text, ref_wav, ref_text)
