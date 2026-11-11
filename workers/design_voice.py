@@ -30,8 +30,8 @@ RATE = 24000
 
 # OmniVoice's accents, by the words a description uses for them.
 OMNI_ACCENTS = [
-    ("british", r"british|english|englishm[ae]n|englishwom[ae]n|england|received pronunciation|\brp\b|london|cockney|oxford|yorkshire|bbc"),
-    ("american", r"american|united states|new york|texan|southern drawl|\bus\b"),
+    ("british", r"british|english|englishm[ae]n|englishwom[ae]n|(?<!new )england|received pronunciation|\brp\b|london|cockney|oxford|yorkshire|bbc"),
+    ("american", r"american|united states|new york|new england|\bmaine\b|texan|southern drawl|\bus\b"),
     ("australian", r"australian|australia|aussie"),
     ("canadian", r"canadian|canada"),
     ("indian", r"\bindian\b|\bindia\b"),
@@ -97,6 +97,21 @@ def age_of(text):
     return None
 
 
+# Children's voices sit around 220-300 Hz; a man's is about 85-155 and a woman's 165-255.
+# A child's take below this is a grown-up's voice, whatever was asked for.
+CHILD_HZ = 190
+
+
+def pitch_hz(wav):
+    """The median pitch of a take's voiced speech, in Hz."""
+    import librosa
+
+    y = librosa.resample(np.asarray(wav, dtype=np.float32), orig_sr=RATE, target_sr=16000)
+    f0, voiced, _ = librosa.pyin(y, fmin=60, fmax=600, sr=16000)
+    f0 = f0[voiced & np.isfinite(f0)]
+    return float(np.median(f0)) if f0.size else 0.0
+
+
 def pitch_of(text):
     if re.search(r"\b(very deep|booming|bass)\b", text):
         return "very low pitch"
@@ -125,10 +140,15 @@ class Classifier:
         return float(p[enc.encode_label(label)]), enc.decode_ndim(int(p.argmax()))
 
 
+_omni = []
+
+
 def omni(text, instruct):
     from omnivoice import OmniVoice
 
-    m = OmniVoice.from_pretrained("k2-fsa/OmniVoice", device_map="cuda:0", dtype=torch.float16)
+    if not _omni:  # loaded once for all the rounds
+        _omni.append(OmniVoice.from_pretrained("k2-fsa/OmniVoice", device_map="cuda:0", dtype=torch.float16))
+    m = _omni[0]
     return lambda: np.asarray(m.generate(text=text, instruct=instruct)[0], dtype=np.float32)
 
 
@@ -211,30 +231,51 @@ def main():
         ears = None
         print(f"  clarity check unavailable: {e}", file=sys.stderr, flush=True)
 
-    # Rounds of takes; a child voice that won't come out clear is tried again a little older.
+    # Rounds of takes. OmniVoice often answers "male, child" with a grown man's voice (Bill,
+    # 11, came out at 86 Hz), and Fish then plays the boy as a man, so a child's take must
+    # also sound like a child: its pitch is measured, and a round that only makes men is
+    # followed by one that doesn't name the sex (a child's voice is a child's voice before it
+    # breaks), then one asking for a girl's voice, the most reliable child OmniVoice makes.
+    # A child that won't come out clear at all is tried again a little older.
+    # (engine, prompt, takes, lowest pitch a take may have in Hz; negative: a last try, only
+    # when no take so far has said its line clearly)
     rounds = []
     if omni_can:
         sex, age, pitch = sex_of(low), age_of(low), pitch_of(low)
-        ages = [age, "teenager"] if age == "child" else [age]
-        for a in ages:
-            attrs = [x for x in (sex, a, pitch) if x] + ([f"{accent} accent"] if accent else [])
-            rounds.append(("omnivoice", ", ".join(attrs), 4))
+        acc = [f"{accent} accent"] if accent else []
+        if age == "child":
+            # A deep or husky boy is still a boy: "low pitch" only pulls OmniVoice to men.
+            up = [pitch] if pitch in ("high pitch", "very high pitch") else []
+            rounds.append(("omnivoice", ", ".join([x for x in (sex, "child") if x] + up + acc), 4, CHILD_HZ))
+            rounds.append(("omnivoice", ", ".join(["child", "high pitch"] + acc), 4, CHILD_HZ))
+            if sex == "male":
+                rounds.append(("omnivoice", ", ".join(["female", "child"] + acc), 3, CHILD_HZ))
+            rounds.append(("omnivoice", ", ".join([x for x in (sex, "teenager", pitch) if x] + acc), 3, -CHILD_HZ))
+        else:
+            rounds.append(("omnivoice", ", ".join([x for x in (sex, age, pitch) if x] + acc), 4, 0))
     else:
-        rounds.append(("maya1", desc, 3))
-    best = None  # (clear, accent score, clarity, wav, engine)
-    for engine, prompt, tries in rounds:
+        rounds.append(("maya1", desc, 3, CHILD_HZ if age_of(low) == "child" else 0))
+    best = None  # (key, wav, engine, accent score, clarity)
+    for engine, prompt, tries, min_hz in rounds:
+        if min_hz < 0:
+            if best and best[0][1]:
+                break
+            min_hz = -min_hz
         print(f"  {engine}: {prompt[:120]}", file=sys.stderr, flush=True)
         make = omni(text, prompt) if engine == "omnivoice" else maya(text, prompt)
         for i in range(tries):
             wav = make()
             clarity = ears.clarity(wav, text) if ears else 1.0
             score, top = judge.score(wav, label) if judge else (0.0, None)
-            clear = clarity >= 0.85
-            print(f"  take {i + 1}: says {clarity:.0%} of the line; {label} {score:.2f} (sounds most like {top})", file=sys.stderr, flush=True)
-            key = (clear, score if clear else clarity)
+            hz = pitch_hz(wav) if min_hz else 0.0
+            clear, young = clarity >= 0.85, hz >= min_hz
+            pitch_note = f"; pitch {hz:.0f} Hz" + ("" if young else f" (a child is above {min_hz})") if min_hz else ""
+            print(f"  take {i + 1}: says {clarity:.0%} of the line; {label} {score:.2f} (sounds most like {top}){pitch_note}", file=sys.stderr, flush=True)
+            # Clear and the right age first; then clear; then the most child-like of the rest.
+            key = (clear and young, clear, score if clear and young else (hz if clear else clarity))
             if best is None or key > best[0]:
                 best = (key, wav, engine, score, clarity)
-            if clear and (judge is None or top == label):
+            if clear and young and (judge is None or top == label):
                 break
         if best and best[0][0]:
             break
