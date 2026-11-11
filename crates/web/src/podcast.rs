@@ -106,6 +106,55 @@ export function podSay(url, onEnd) {
   answer.addEventListener("ended", () => onEnd());
   answer.play().catch(() => onEnd());
 }
+// Hands-free: the microphone stays open while the show plays, with echo cancellation so the
+// host's own voice doesn't count. Talking over it calls onSpeech; once armed (you're being
+// recorded), a pause after you've spoken calls onDone.
+let ears = null;
+export async function podListen(onSpeech, onDone) {
+  if (ears) { ears.onSpeech = onSpeech; ears.onDone = onDone; return; }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  const ctx = new AudioContext();
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  const buf = new Float32Array(analyser.fftSize);
+  ears = { stream, ctx, onSpeech, onDone, floor: 0.01, loudSince: 0, quietSince: 0, armed: false, spoke: false, armedAt: 0, stopped: false };
+  const e = ears;
+  const tick = () => {
+    if (e.stopped) return;
+    analyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (const v of buf) sum += v * v;
+    const rms = Math.sqrt(sum / buf.length);
+    const now = performance.now();
+    // The room's own level, followed slowly, so a fan or traffic doesn't count as talking.
+    if (rms < e.floor * 2) e.floor = e.floor * 0.98 + rms * 0.02;
+    const loud = rms > Math.max(0.02, e.floor * 4);
+    if (loud) { e.quietSince = 0; if (!e.loudSince) e.loudSince = now; } else { e.loudSince = 0; if (!e.quietSince) e.quietSince = now; }
+    if (!e.armed) {
+      if (e.loudSince && now - e.loudSince > 300 && e.onSpeech) { e.loudSince = 0; e.onSpeech(); }
+    } else {
+      if (loud && now - e.armedAt > 200) e.spoke = true;
+      // Done: a pause after speaking, or nothing said at all for a while.
+      if ((e.spoke && e.quietSince && now - e.quietSince > 1300) || (!e.spoke && now - e.armedAt > 7000)) {
+        e.armed = false; e.spoke = false;
+        if (e.onDone) e.onDone();
+      }
+    }
+    e.timer = setTimeout(tick, 50);
+  };
+  tick();
+}
+export function podListenArm(on) { if (ears) { ears.armed = on; ears.spoke = on; ears.armedAt = performance.now(); ears.quietSince = 0; } }
+export function podListenStop() {
+  if (!ears) return;
+  ears.stopped = true; clearTimeout(ears.timer);
+  ears.stream.getTracks().forEach((t) => t.stop());
+  ears.ctx.close().catch(() => {});
+  ears = null;
+}
+export function podAnswering() { return !!(answer && !answer.paused && !answer.ended); }
+export function podStopAnswer() { if (answer) answer.pause(); }
 // "Wednesday" / "November 11" from an episode's start time.
 export function podDate(iso, part) {
   const d = new Date(iso);
@@ -140,6 +189,16 @@ extern "C" {
     fn pod_meta(title: &str, artist: &str);
     #[wasm_bindgen(js_name = podSay)]
     fn pod_say(url: &str, on_end: &js_sys::Function);
+    #[wasm_bindgen(js_name = podListen, catch)]
+    async fn pod_listen(on_speech: &js_sys::Function, on_done: &js_sys::Function) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name = podListenArm)]
+    fn pod_listen_arm(on: bool);
+    #[wasm_bindgen(js_name = podListenStop)]
+    fn pod_listen_stop();
+    #[wasm_bindgen(js_name = podAnswering)]
+    fn pod_answering() -> bool;
+    #[wasm_bindgen(js_name = podStopAnswer)]
+    fn pod_stop_answer();
     #[wasm_bindgen(js_name = podDate)]
     fn pod_date(iso: &str, part: &str) -> String;
     #[wasm_bindgen(js_name = podSaved)]
@@ -474,15 +533,23 @@ fn Player(current: RwSignal<Option<Episode>>, index: RwSignal<usize>, pstate: Rw
         });
     };
 
-    let mic = move |_| {
+    // Asked by talking over the show (hands-free), rather than with the button.
+    let by_voice = StoredValue::new(false);
+    let mic_toggle = move || {
         if recording.get_untracked() {
             recording.set(false);
+            pod_listen_arm(false);
+            let voice = by_voice.get_value();
+            by_voice.set_value(false);
             spawn_local(async move {
                 match crate::stop_recording().await {
                     Ok(text) => {
                         let text = text.as_string().unwrap_or_default();
                         if text.trim().is_empty() {
-                            toast.show("Didn't catch any words. Is the right microphone selected?");
+                            // (Hands-free mistakes a cough or a car for talking now and then: just carry on.)
+                            if !voice {
+                                toast.show("Didn't catch any words. Is the right microphone selected?");
+                            }
                             if resume_after.get_untracked() && was_playing.get_value() {
                                 pod_resume();
                             }
@@ -498,8 +565,12 @@ fn Player(current: RwSignal<Option<Episode>>, index: RwSignal<usize>, pstate: Rw
         if mic_starting.get_untracked() {
             return;
         }
-        // Stop the show while you ask.
-        was_playing.set_value(pod_playing());
+        // Stop the show (and any answer being given) while you ask.
+        if pod_answering() {
+            pod_stop_answer();
+        } else {
+            was_playing.set_value(pod_playing());
+        }
         pod_pause();
         mic_starting.set(true);
         input.set(String::new());
@@ -519,6 +590,48 @@ fn Player(current: RwSignal<Option<Episode>>, index: RwSignal<usize>, pstate: Rw
             }
         });
     };
+    let mic = move |_| mic_toggle();
+
+    // Hands-free: listening while it talks, so you can just start speaking to interrupt.
+    let hands_free = RwSignal::new(pod_saved("handsfree-off") == 0);
+    let listening = RwSignal::new(false);
+    let on_speech = Closure::<dyn Fn()>::new(move || {
+        if recording.get_untracked() || mic_starting.get_untracked() || thinking.get_untracked() {
+            return;
+        }
+        if !(pod_playing() || pod_answering()) {
+            return;
+        }
+        by_voice.set_value(true);
+        mic_toggle();
+        pod_listen_arm(true);
+    })
+    .into_js_value();
+    let on_done = Closure::<dyn Fn()>::new(move || {
+        if recording.get_untracked() && by_voice.get_value() {
+            mic_toggle();
+        }
+    })
+    .into_js_value();
+    let ears = StoredValue::new((on_speech, on_done));
+    Effect::new(move |_| {
+        let want = hands_free.get() && crate::mic_supported() && matches!(pstate.get().as_str(), "playing" | "waiting");
+        if want && !listening.get_untracked() {
+            listening.set(true);
+            let (speech, done) = ears.get_value();
+            spawn_local(async move {
+                if let Err(e) = pod_listen(speech.unchecked_ref(), done.unchecked_ref()).await {
+                    listening.set(false);
+                    hands_free.set(false);
+                    toast.show(format!("Hands-free needs the microphone: {e:?}"));
+                }
+            });
+        } else if !hands_free.get() && listening.get_untracked() {
+            listening.set(false);
+            pod_listen_stop();
+        }
+    });
+    on_cleanup(pod_listen_stop);
 
     let play_pause = move |_| {
         if playing() {
@@ -695,7 +808,20 @@ fn Player(current: RwSignal<Option<Episode>>, index: RwSignal<usize>, pstate: Rw
                         placeholder=move || if mic_starting.get() { "Waiting for the microphone…" } else if recording.get() { "Listening…" } else { "Ask, or say \"tell me more about…\"" }
                         on:input=move |ev| input.set(event_target_value(&ev))/>
                 </form>
-                <label class="check"><input type="checkbox" prop:checked=move || resume_after.get() on:change=move |ev| resume_after.set(event_target_checked(&ev))/>"Carry on after the answer"</label>
+                <div class="brief-ask-options">
+                    <Show when=crate::mic_supported>
+                        <label class="check" title="The microphone stays on while the show plays (echo-cancelled), so you can just start talking to ask something">
+                            <input type="checkbox" prop:checked=move || hands_free.get() on:change=move |ev| {
+                                let on = event_target_checked(&ev);
+                                pod_save("handsfree-off", if on { 0 } else { 1 });
+                                hands_free.set(on);
+                            }/>
+                            "Hands-free: just talk to interrupt"
+                            <Show when=move || listening.get()><span class="listening-dot" aria-label="Listening"></span></Show>
+                        </label>
+                    </Show>
+                    <label class="check"><input type="checkbox" prop:checked=move || resume_after.get() on:change=move |ev| resume_after.set(event_target_checked(&ev))/>"Carry on after the answer"</label>
+                </div>
             </div>
 
             <h3 class="brief-chapters-head">"In this episode"</h3>

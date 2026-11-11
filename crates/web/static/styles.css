@@ -2041,3 +2041,6 @@ html.eink .swatch-gray { background: #4a4a4c; } html.eink .swatch-dark { backgro
 @media (max-width: 720px) {
   .brief-controls { flex-wrap: wrap; row-gap: 0.4rem; }
 }
+.brief-ask-options { display: flex; flex-wrap: wrap; gap: 0.3rem 1.2rem; margin-top: 0.3rem; }
+.listening-dot { width: 8px; height: 8px; border-radius: 50%; background: #d64545; display: inline-block; margin-left: 0.3rem; animation: listening 1.6s ease-in-out infinite; }
+@keyframes listening { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
