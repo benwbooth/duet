@@ -13,28 +13,53 @@ use wasm_bindgen::prelude::*;
 use crate::{api, icon, icons, toast};
 
 #[wasm_bindgen(inline_js = r#"
-let audio = null, lines = [], idx = 0, want = false, cbIndex = null, cbState = null, rate = 1, answer = null;
+let audio = null, spare = null, lines = [], idx = 0, want = false, cbIndex = null, cbState = null, rate = 1, answer = null;
 function state(s) { if (cbState) cbState(s); }
+// Two players: the line playing, and the next one already loaded, so one line runs straight
+// into the next without stopping to fetch and decode it.
+function wire(el) {
+  el.preload = "auto";
+  el.addEventListener("ended", () => { if (el === audio) { idx += 1; advance(); } });
+  el.addEventListener("playing", () => { if (el === audio) state("playing"); });
+  el.addEventListener("pause", () => { if (el === audio && !el.ended) state("paused"); });
+  el.addEventListener("waiting", () => { if (el === audio) state("waiting"); });
+  return el;
+}
+function has(el, url) { return el && el.src && el.src.endsWith(url); }
+// Gets the line after this one loading in the spare player.
+function preload() {
+  const n = lines[idx + 1];
+  if (n && n.ready && !has(spare, n.url)) { spare.src = n.url; spare.load(); }
+}
+// On to the next line: the spare has it loaded already, so it just starts.
+function advance() {
+  const l = lines[idx];
+  if (l && l.ready && has(spare, l.url)) {
+    const done = audio;
+    audio = spare; spare = done;
+    audio.playbackRate = rate;
+    if (cbIndex) cbIndex(idx);
+    if (want) audio.play().catch(() => state("paused"));
+    done.pause();
+    preload();
+    return;
+  }
+  load();
+}
 function load() {
   const l = lines[idx];
   if (!l) { want = false; state("ended"); return; }
   if (!l.ready) { state("waiting"); return; }
-  if (!audio.src.endsWith(l.url)) audio.src = l.url;
+  if (!has(audio, l.url)) audio.src = l.url;
   audio.playbackRate = rate;
   if (cbIndex) cbIndex(idx);
   if (want) audio.play().catch(() => state("paused"));
-  // The next line, ready before it's needed.
-  const n = lines[idx + 1];
-  if (n && n.ready) fetch(n.url).catch(() => {});
+  preload();
 }
 export function podInit(onIndex, onState) {
   if (!audio) {
-    audio = new Audio();
-    audio.preload = "auto";
-    audio.addEventListener("ended", () => { idx += 1; load(); });
-    audio.addEventListener("playing", () => state("playing"));
-    audio.addEventListener("pause", () => { if (!audio.ended) state("paused"); });
-    audio.addEventListener("waiting", () => state("waiting"));
+    audio = wire(new Audio());
+    spare = wire(new Audio());
   }
   cbIndex = onIndex; cbState = onState;
   if ("mediaSession" in navigator) {
@@ -50,6 +75,7 @@ export function podLines(json) {
   const was = lines[idx];
   lines = JSON.parse(json);
   if (want && was && !was.ready && lines[idx] && lines[idx].ready) load();
+  else if (audio) preload();
 }
 export function podPlayFrom(i) { idx = Math.max(0, i); want = true; load(); }
 export function podPause() { want = false; if (audio) audio.pause(); state("paused"); }
@@ -69,8 +95,8 @@ export function podJump(d) {
   }
   idx = target; load();
 }
-export function podRate(r) { rate = r; if (audio) audio.playbackRate = r; }
-export function podStop() { want = false; if (audio) { audio.pause(); audio.removeAttribute("src"); } lines = []; idx = 0; if (answer) answer.pause(); }
+export function podRate(r) { rate = r; if (audio) audio.playbackRate = r; if (spare) spare.playbackRate = r; }
+export function podStop() { want = false; for (const el of [audio, spare]) if (el) { el.pause(); el.removeAttribute("src"); } lines = []; idx = 0; if (answer) answer.pause(); }
 export function podMeta(title, artist) {
   if ("mediaSession" in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title, artist, album: "Daily briefing" });
 }
