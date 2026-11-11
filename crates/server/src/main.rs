@@ -7,6 +7,7 @@ mod annas_archive;
 mod audiobookbay;
 mod audiotext;
 mod book;
+mod browser;
 mod cast;
 mod comic;
 mod db;
@@ -30,6 +31,7 @@ mod routes;
 mod selenium;
 mod setup;
 mod torznab;
+mod vpn;
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 

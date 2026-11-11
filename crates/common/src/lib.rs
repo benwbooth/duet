@@ -274,6 +274,8 @@ pub struct Settings {
     pub audiobookbay: AudiobookBaySettings,
     pub ai: AiSettings,
     pub reader: ReaderSettings,
+    /// On-demand VPN exit-IP renewal (docker-based setups).
+    pub vpn: VpnSettings,
     /// The first-run guide was finished or skipped.
     pub setup_done: bool,
 }
@@ -332,7 +334,37 @@ impl Default for Settings {
             audiobookbay: AudiobookBaySettings::default(),
             ai: AiSettings::default(),
             reader: ReaderSettings::default(),
+            vpn: VpnSettings::default(),
             setup_done: false,
+        }
+    }
+}
+
+/// On-demand VPN exit-IP renewal for docker-based setups (e.g. a
+/// `pia-vpn` container whose network namespace the sidecars share).
+/// Empty compose folder (the default): the feature stays hidden.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct VpnSettings {
+    /// Show the renewal button and allow renewals.
+    pub enabled: bool,
+    /// Container running the VPN tunnel (e.g. pia_vpn).
+    pub container: String,
+    /// Folder holding the docker-compose.yaml that drives the VPN and its
+    /// sidecars (e.g. ~/src/home-services).
+    pub compose_dir: String,
+    /// Sidecars sharing the VPN's network namespace, recreated after the
+    /// tunnel restarts (space-separated compose service names).
+    pub dependents: String,
+}
+
+impl Default for VpnSettings {
+    fn default() -> Self {
+        VpnSettings {
+            enabled: false,
+            container: "pia_vpn".into(),
+            compose_dir: String::new(),
+            dependents: "vpn-proxy geckodriver aa-browser qbittorrent-vpn qbittorrent-port-update prowlarr".into(),
         }
     }
 }

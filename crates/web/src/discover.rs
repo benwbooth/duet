@@ -341,19 +341,64 @@ pub fn Discover() -> impl IntoView {
     let aa_attention = RwSignal::new(false);
     let show_check = RwSignal::new(false);
     let frame_url = RwSignal::new(String::new());
+    // VPN renewal: a solved check that still fails usually means the exit
+    // IP is banned. Gated on configuration; offered on the page and in the
+    // bot-check modal.
+    let vpn_ready = RwSignal::new(false);
+    let vpn_msg = RwSignal::new(None::<String>);
+    let exit_ip = RwSignal::new(None::<String>);
+    #[derive(serde::Deserialize)]
+    struct VpnIp {
+        #[serde(default)]
+        ip: Option<String>,
+    }
+    let renew_vpn = move |_| {
+        vpn_msg.set(Some("Starting VPN renewal…".into()));
+        spawn_local(async move {
+            api::renew_vpn_ip(move |m| vpn_msg.set(Some(m))).await;
+            if let Ok(v) = api::get::<VpnIp>("/api/vpn/ip").await {
+                exit_ip.set(v.ip);
+            }
+        });
+    };
+    let restart_browser = move |_| {
+        vpn_msg.set(Some("Restarting browser for duet driving…".into()));
+        spawn_local(async move {
+            #[derive(serde::Deserialize)]
+            struct RestartResult {
+                #[serde(default)]
+                marionette: bool,
+            }
+            match api::post::<_, RestartResult>("/api/browser/restart", &serde_json::json!({ "marionette": true })).await {
+                Ok(_) => vpn_msg.set(Some("Browser back — duet can drive searches again.".into())),
+                Err(e) => vpn_msg.set(Some(format!("Restart failed: {}", e.0))),
+            }
+        });
+    };
     let ensure_frame_url = move || {
         if frame_url.get_untracked().is_empty() {
+            // The modal is always about the current query: load that search
+            // in the remote browser so the check triggers on the search page
+            // itself, not the mirror homepage.
+            let q = query.get_untracked();
             spawn_local(async move {
                 let s = api::get::<duet_common::Settings>("/api/settings").await.ok();
+                vpn_ready.set(s.as_ref().is_some_and(|s| s.vpn.enabled && !s.vpn.compose_dir.trim().is_empty()));
                 let configured = s.as_ref().map(|s| if s.annas_archive.viewer_url.trim().is_empty() { s.browser_url.clone() } else { s.annas_archive.viewer_url.clone() }).unwrap_or_default();
                 let url = if configured.trim().is_empty() {
-                    // Same host as duet, viewer port of the aa-browser sidecar.
+                    // Same host as duet. Plain HTTP keeps the sidecar's port;
+                    // HTTPS must use the TLS proxy's viewer port, otherwise
+                    // the browser blocks the frame as mixed content.
                     let loc = web_sys::window().and_then(|w| w.location().href().ok()).unwrap_or_default();
                     let (proto, host) = match loc.split_once("://") {
                         Some((p, rest)) => (p, rest.split('/').next().unwrap_or("localhost").split(':').next().unwrap_or("localhost")),
                         None => ("http", "localhost"),
                     };
-                    format!("{proto}://{host}:3001/")
+                    if proto == "https" {
+                        format!("https://{host}:4443/")
+                    } else {
+                        format!("{proto}://{host}:3001/")
+                    }
                 } else {
                     configured
                 };
@@ -368,6 +413,7 @@ pub fn Discover() -> impl IntoView {
         if generation.get_untracked() != this {
             return;
         }
+        let is_aa = SOURCES.get(i).is_some_and(|(id, _)| *id == "annas_archive");
         let outcome = match answer {
             Ok(r) => {
                 let n = r.results.len();
@@ -375,6 +421,10 @@ pub fn Discover() -> impl IntoView {
                 if r.need_check {
                     aa_attention.set(true);
                     ensure_frame_url();
+                } else if is_aa {
+                    // A clean AA answer (even "nothing found") proves the
+                    // session works — the badge must not stick around.
+                    aa_attention.set(false);
                 }
                 results.update(|all| {
                     if let Some(all) = all {
@@ -469,6 +519,9 @@ pub fn Discover() -> impl IntoView {
             return;
         }
         show_check.set(false);
+        // New attempt: show searching, not the old verdict. handle_answer
+        // re-sets attention only if the check is still up.
+        aa_attention.set(false);
         let this = generation.get_untracked();
         let Some(i) = SOURCES.iter().position(|(id, _)| *id == "annas_archive") else { return };
         status.update(|s| {
@@ -478,6 +531,22 @@ pub fn Discover() -> impl IntoView {
         });
         fetch_source(i, "annas_archive", q, this);
     };
+
+    // Whether the renewal button can work (Settings → VPN configured).
+    {
+        let vpn_ready = vpn_ready;
+        spawn_local(async move {
+            if let Ok(s) = api::get::<duet_common::Settings>("/api/settings").await {
+                let ready = s.vpn.enabled && !s.vpn.compose_dir.trim().is_empty();
+                vpn_ready.set(ready);
+                if ready {
+                    if let Ok(v) = api::get::<VpnIp>("/api/vpn/ip").await {
+                        exit_ip.set(v.ip);
+                    }
+                }
+            }
+        });
+    }
 
     // Opened as #/discover/<query> (a book's "Find another edition"): search for it straight away.
     {
@@ -523,6 +592,12 @@ pub fn Discover() -> impl IntoView {
             </Show>
         </form>
         <p class="hint">"Free sources plus Anna's Archive and Audiobook Bay. If Anna's Archive shows its bot check, its badge blinks yellow — click it to open the remote browser, solve the check, then retry."</p>
+        <Show when=move || vpn_ready.get()>
+            <p class="hint">"Exit IP: " {move || exit_ip.get().unwrap_or_else(|| "…".to_string())} " "
+                <button class="ghost" on:click=renew_vpn>"Get new VPN IP"</button>
+                {move || vpn_msg.get().map(|m| view! { <span>{m}</span> })}
+            </p>
+        </Show>
 
         <Show when=move || !status.with(Vec::is_empty)>
             <div class="source-status">
@@ -563,18 +638,24 @@ pub fn Discover() -> impl IntoView {
             <div class="check-modal-backdrop" on:click=move |_| show_check.set(false)>
                 <div class="check-modal" on:click=|ev| ev.stop_propagation()>
                     <h2>"Anna's Archive wants a human"</h2>
-                    <p class="muted">"The browser below opens straight at Anna's Archive. Pass the check there, then press Retry. duet picks up the solved session itself and searches again."</p>
+                    <p class="muted">"The browser below opens straight at Anna's Archive. Search for your book there and pass the check, then press Retry. duet picks up the solved session itself and searches again."</p>
                     <p class="muted">"Tip: if you get the drag-the-segments puzzle and dragging misbehaves, turn on the viewer's game / locked-window mode — it sends raw mouse motion with no screen edges to hit — do the drag, then turn it back off. Or hit the puzzle's ↻ until you get the click-the-checkbox variant."</p>
                     {move || (!frame_url.get().is_empty()).then(|| view! {
                         <iframe class="check-frame" src=frame_url.get() title="Remote Firefox" allow="clipboard-read; clipboard-write; pointer-lock; fullscreen" allowfullscreen></iframe>
                     })}
+                    <p class="muted">"Still failing after solving? Renew the exit IP below, wait for the new one, then Retry."</p>
                     <div class="row">
                         <button class="primary" on:click=move |_| retry_aa()>"I've solved it — retry Anna's Archive"</button>
                         <button class="ghost" on:click=move |_| show_check.set(false)>"Close"</button>
+                        <Show when=move || vpn_ready.get()>
+                            <button class="ghost" on:click=renew_vpn>"Get new VPN IP"</button>
+                        </Show>
+                        <button class="ghost" on:click=restart_browser title="Restarts the remote Firefox when it's stuck (fullscreen trap, blank page). Same profile and cookies.">"Restart browser"</button>
                         {move || (!frame_url.get().is_empty()).then(|| view! {
                             <a class="ghost" href=frame_url.get() target="_blank" rel="noopener">"Open in new tab"</a>
                         })}
                     </div>
+                    {move || vpn_msg.get().map(|m| view! { <p class="muted">{m}</p> })}
                 </div>
             </div>
         </Show>

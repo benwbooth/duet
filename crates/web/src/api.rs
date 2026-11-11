@@ -54,3 +54,37 @@ pub async fn put<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> ApiR
 pub async fn remove(url: &str) -> ApiResult<()> {
     decode(Request::delete(url).send().await.map_err(|e| ApiError(e.to_string()))?).await
 }
+
+/// Starts a VPN exit-IP renewal and polls until it finishes, forwarding
+/// each status message. Shared by the Settings and Discover buttons.
+pub async fn renew_vpn_ip(on_msg: impl Fn(String)) {
+    #[derive(serde::Deserialize)]
+    struct VpnStatus {
+        #[serde(default)]
+        state: String,
+        #[serde(default)]
+        message: String,
+    }
+    match post::<_, VpnStatus>("/api/vpn/renew", &serde_json::json!({})).await {
+        Ok(first) => on_msg(first.message),
+        Err(e) => {
+            on_msg(format!("Couldn't start renewal: {}", e.0));
+            return;
+        }
+    }
+    for _ in 0..100 {
+        gloo_timers::future::sleep(std::time::Duration::from_secs(3)).await;
+        match get::<VpnStatus>("/api/vpn/status").await {
+            Ok(st) => {
+                on_msg(st.message.clone());
+                if st.state != "running" {
+                    break;
+                }
+            }
+            Err(e) => {
+                on_msg(format!("Status check failed: {}", e.0));
+                break;
+            }
+        }
+    }
+}

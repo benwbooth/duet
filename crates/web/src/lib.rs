@@ -454,7 +454,29 @@ fn DownloadsPane() -> impl IntoView {
                                                 <p class="dl-error">{d.error.clone().unwrap_or_default()}</p>
                                             })}
                                         </div>
-                                        {done.then(|| view! { <a class="dl-open" href="#/">"Open"</a> })}
+                                        {done.then(|| view! {
+                                            <button class="dl-open link" on:click={
+                                                let name = d.name.clone();
+                                                let kind = d.kind;
+                                                move |_| {
+                                                    let name = name.clone();
+                                                    spawn_local(async move {
+                                                        let lib = api::get::<Vec<WorkSummary>>("/api/library").await.unwrap_or_default();
+                                                        let key = duet_common::text::title_key(&name);
+                                                        let hit = lib.iter().find(|w| duet_common::text::title_key(&w.title) == key);
+                                                        match hit {
+                                                            Some(w) if kind == AssetKind::Ebook && w.has_ebook => {
+                                                                let _ = web_sys::window().map(|win| win.location().set_hash(&format!("/read/{}", w.id)));
+                                                            }
+                                                            Some(w) => {
+                                                                let _ = web_sys::window().map(|win| win.location().set_hash(&format!("/work/{}", w.id)));
+                                                            }
+                                                            None => toast.show("Not in the library yet — press refresh, then Open again."),
+                                                        }
+                                                    });
+                                                }
+                                            }>"Open"</button>
+                                        })}
                                         {(done || failed).then(|| view! {
                                             <button class="icon-button dl-dismiss" title="Remove from downloads" aria-label="Remove from downloads"
                                                 on:click={

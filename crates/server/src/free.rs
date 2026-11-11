@@ -60,11 +60,13 @@ async fn failover<'a>(
     Some(Err(need_check.or(last_err).unwrap_or_else(|| anyhow::anyhow!("{name}: no mirrors"))))
 }
 
-/// Effective Anna's Archive session cookies: harvested from the remote
-/// Firefox profile first (fresh after each manual solve), else the pasted
-/// `browser_cookies` fallback, else empty.
-async fn aa_cookies(aa: &AnnasArchiveSettings) -> String {
-    if let Some(h) = crate::annas_archive::harvest_browser_cookies(&aa.browser_profile_dir).await {
+/// Effective Anna's Archive session cookies for one mirror: harvested from
+/// the remote Firefox profile first (fresh after each manual solve), else
+/// the pasted `browser_cookies` fallback, else empty. Per-mirror: the
+/// profile holds same-named cookies with different values per mirror, so
+/// the harvest is filtered to the mirror being attempted.
+async fn aa_cookies_for(aa: &AnnasArchiveSettings, mirror: &str) -> String {
+    if let Some(h) = crate::annas_archive::harvest_browser_cookies_for(&aa.browser_profile_dir, mirror).await {
         if !h.trim().is_empty() {
             return h;
         }
@@ -107,17 +109,14 @@ pub async fn search_one(
                 None
             } else {
                 let known = crate::mirrors::annas_archive_list();
-                let key = aa.secret_key.clone();
-                let cookies = aa_cookies(aa).await;
-                let wd = aa.webdriver_url.clone();
+                let settings = aa.clone();
                 let q = q.to_string();
                 failover("Anna's Archive", crate::mirrors::ordered(&aa.mirror, &known), move |m| {
-                    let key = key.clone();
-                    let cookies = cookies.clone();
-                    let wd = wd.clone();
+                    let settings = settings.clone();
                     let q = q.clone();
                     Box::pin(async move {
-                        annas.search(http, m.as_str(), &wd, &key, &cookies, &q).await
+                        let cookies = aa_cookies_for(&settings, &m).await;
+                        annas.search(http, m.as_str(), &settings.webdriver_url, &settings.secret_key, &cookies, &q).await
                     })
                 }).await
             }
@@ -162,11 +161,9 @@ pub async fn search(
             let annas_known = crate::mirrors::annas_archive_list();
             let libgen_known = crate::mirrors::libgen_list();
             let annas_search = failover("Anna's Archive", crate::mirrors::ordered(&aa.mirror, &annas_known), move |m| Box::pin(async move {
-                let key = aa.secret_key.clone();
-                let cookies = aa_cookies(aa).await;
-                let wd = aa.webdriver_url.clone();
+                let cookies = aa_cookies_for(aa, &m).await;
                 let q = q.to_string();
-                annas.search(http, m.as_str(), &wd, &key, &cookies, &q).await
+                annas.search(http, m.as_str(), &aa.webdriver_url, &aa.secret_key, &cookies, &q).await
             }));
             let libgen_search = failover("LibGen", crate::mirrors::ordered(&libgen.base_url, &libgen_known), |m| Box::pin(async move {
                 LibGen::search(http, m.as_str(), q).await

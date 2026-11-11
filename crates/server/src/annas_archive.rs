@@ -109,7 +109,35 @@ pub fn extract_aacid(text: &str) -> Option<String> {
 /// Browser profile folder); after the user passes the bot check in the
 /// browser, its `cookies.sqlite` holds the solved session, so Discover can
 /// search with zero copy-paste. Returns the `Cookie` header value.
-pub async fn harvest_browser_cookies(profile_dir: &str) -> Option<String> {
+///
+/// Per-mirror: DDoS-Guard sets same-named cookies with different values per
+/// mirror (verified: `__ddg*` differ across .gl/.gd/.pk), so only the target
+/// mirror's cookies are returned — mixing hosts corrupts the session both
+/// for direct HTTP (duplicate names) and for WebDriver planting (wrong
+/// mirror's value wins on the cookie's domain).
+pub async fn harvest_browser_cookies_for(profile_dir: &str, mirror: &str) -> Option<String> {
+    let rows = harvest_aa_rows(profile_dir).await?;
+    let want = mirror_host(mirror);
+    let mut out = Vec::new();
+    for (host, name, value) in rows {
+        let h = host.trim_start_matches('.').to_lowercase();
+        if want.is_empty() || want == h || want.ends_with(&format!(".{h}")) {
+            out.push(format!("{name}={value}"));
+        }
+    }
+    if out.is_empty() {
+        return None;
+    }
+    Some(out.join("; "))
+}
+
+/// "https://annas-archive.gl/search?q=x" -> "annas-archive.gl".
+fn mirror_host(mirror: &str) -> String {
+    let rest = mirror.split_once("://").map(|(_, r)| r).unwrap_or(mirror);
+    rest.split('/').next().unwrap_or("").to_lowercase()
+}
+
+async fn harvest_aa_rows(profile_dir: &str) -> Option<Vec<(String, String, String)>> {
     let dir = profile_dir.trim().to_string();
     if dir.is_empty() {
         return None;
@@ -147,8 +175,8 @@ pub async fn harvest_browser_cookies(profile_dir: &str) -> Option<String> {
         let _ = tokio::fs::copy(&src, &dst).await;
     }
     let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=ro", tmp.display())).await.ok()?;
-    let rows: Vec<(String, String)> =
-        sqlx::query_as("SELECT name, value FROM moz_cookies WHERE host LIKE '%annas-archive%'")
+    let rows: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT host, name, value FROM moz_cookies WHERE host LIKE '%annas-archive%'")
             .fetch_all(&pool)
             .await
             .unwrap_or_default();
@@ -159,7 +187,7 @@ pub async fn harvest_browser_cookies(profile_dir: &str) -> Option<String> {
     if rows.is_empty() {
         return None;
     }
-    Some(rows.into_iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join("; "))
+    Some(rows)
 }
 
 /// Splits an AACID into (collection, second-timestamp).
@@ -329,10 +357,15 @@ impl AnnasArchive {
         // Fast path: member key or a harvested/pasted session, plain HTTP.
         let direct = self.fetch_search_page(http, &mirror, key, browser_cookies, q, false).await;
         let html = match direct {
-            Ok(html) => html,
+            Ok(html) => {
+                tracing::debug!("AA search via direct HTTP");
+                html
+            }
             Err(e) if e.to_string().contains("BOT_CHECK") && !wd_url.trim().is_empty() => {
-                // Driven path: the remote-controlled Firefox searches with a
-                // real session. A human only steps in for manual checks.
+                // Driven path: the remote-controlled Firefox IS the human's
+                // visible browser, so its session is native. A human steps in
+                // for manual checks in the viewer.
+                tracing::info!("AA search via driven browser");
                 self.search_via_selenium(http, wd_url, &mirror, q).await?
             }
             Err(e) => return Err(e),

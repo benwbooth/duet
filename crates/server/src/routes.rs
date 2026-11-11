@@ -87,6 +87,12 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/downloads/{id}", delete(clear_download))
         .route("/inbox", get(inbox_status).post(inbox_import))
         .route("/annas_archive/test_cookies", post(aa_test_cookies))
+        .route("/annas_archive/open_browser", post(aa_open_browser))
+        .route("/browser/restart", post(browser_restart))
+        .route("/browser/go", post(browser_go))
+        .route("/vpn/status", get(vpn_status))
+        .route("/vpn/renew", post(vpn_renew))
+        .route("/vpn/ip", get(vpn_ip))
         .route("/ai/models", post(ai_models))
         .route("/ai/v1/chat/completions", post(chat_proxy))
         .route("/ai/setup", get(ai_detect))
@@ -671,6 +677,135 @@ async fn inbox_import(AxState(s): AxState<State>) -> ApiResult<Json<serde_json::
 #[derive(Deserialize)]
 struct AaCookieTest {
     cookies: String,
+}
+
+/// Current VPN renewal status (idle/running/done/error + old/new exit IP).
+async fn vpn_status() -> Json<crate::vpn::VpnStatus> {
+    Json(crate::vpn::status())
+}
+
+/// Current public exit IP (through the proxy), for display.
+async fn vpn_ip(AxState(s): AxState<State>) -> Json<serde_json::Value> {
+    let site = s.site_client().await;
+    Json(serde_json::json!({ "ip": crate::vpn::current_ip(&site).await }))
+}
+
+/// Starts a VPN exit-IP renewal in the background; returns the status
+/// immediately. The UI polls `/vpn/status` until it leaves `running`.
+async fn vpn_renew(AxState(s): AxState<State>) -> Json<crate::vpn::VpnStatus> {
+    let settings = s.settings.read().await.clone();
+    let site = s.site_client().await;
+    crate::vpn::renew(site, settings.vpn).await;
+    Json(crate::vpn::status())
+}
+#[derive(Deserialize)]
+struct BrowserRestart {
+    /// true: launch with --marionette (duet can drive it);
+    /// false: clean browser (for logins that refuse automation flags).
+    marionette: bool,
+}
+
+/// Restarts the visible remote Firefox in place (no container recreate)
+/// with or without the Marionette flag. Same profile either way, so all
+/// cookies survive. Used for logins that refuse automation-flagged
+/// browsers: restart clean, log in, restart driven.
+async fn browser_restart(AxState(s): AxState<State>, Json(body): Json<BrowserRestart>) -> ApiResult<Json<serde_json::Value>> {
+    let settings = s.settings.read().await.clone();
+    let mirror = settings.annas_archive.mirror.trim().trim_end_matches('/').to_string();
+    if mirror.is_empty() {
+        return Err(ApiError::bad_request("set the Anna's Archive mirror first"));
+    }
+    match crate::browser::restart(body.marionette, &mirror).await {
+        Ok(crate::browser::Mode::Driven) => Ok(Json(serde_json::json!({ "ok": true, "marionette": true }))),
+        Ok(_) => Ok(Json(serde_json::json!({ "ok": true, "marionette": false }))),
+        Err(e) => Err(ApiError::bad_request(format!("{e:#}"))),
+    }
+}
+
+#[derive(Deserialize)]
+struct BrowserGo {
+    url: String,
+}
+
+/// Navigates the visible browser to any http(s) URL: a quick WebDriver hop
+/// when it's already driven, otherwise a clean restart AT that URL (a clean
+/// browser can't be driven at all).
+async fn browser_go(AxState(s): AxState<State>, Json(body): Json<BrowserGo>) -> ApiResult<Json<serde_json::Value>> {
+    let _ = s;
+    let url = body.url.trim().to_string();
+    let parsed = reqwest::Url::parse(&url).map_err(|_| ApiError::bad_request("not a URL"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(ApiError::bad_request("only http(s) URLs"));
+    }
+    if crate::browser::mode().await == crate::browser::Mode::Driven {
+        let wd = "http://127.0.0.1:4444";
+        let http = reqwest::Client::new();
+        let resp: serde_json::Value = http
+            .post(format!("{wd}/session"))
+            .json(&serde_json::json!({ "capabilities": { "alwaysMatch": { "browserName": "firefox" } } }))
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| ApiError::bad_request(format!("browser driver unreachable: {e:#}")))?
+            .json()
+            .await
+            .map_err(|e| ApiError::bad_request(format!("browser driver gave no session: {e:#}")))?;
+        let session = resp["value"]["sessionId"]
+            .as_str()
+            .ok_or_else(|| ApiError::bad_request("browser driver gave no session"))?
+            .to_string();
+        let _ = http
+            .post(format!("{wd}/session/{session}/url"))
+            .json(&serde_json::json!({ "url": url }))
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await;
+        let _ = http.delete(format!("{wd}/session/{session}")).timeout(std::time::Duration::from_secs(10)).send().await;
+        return Ok(Json(serde_json::json!({ "ok": true, "restarted": false })));
+    }
+    crate::browser::restart(false, &url).await.map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    Ok(Json(serde_json::json!({ "ok": true, "restarted": true })))
+}
+
+#[derive(Deserialize)]
+struct OpenBrowser {
+    url: String,
+}
+
+/// Loads a URL in the visible remote Firefox (bot-check modal): a bare
+/// `firefox <url>` forwards to the running instance with no automation
+/// flags, so the check triggers exactly as if the user typed the search.
+/// Only the configured Anna's Archive mirror is allowed.
+async fn aa_open_browser(AxState(s): AxState<State>, Json(body): Json<OpenBrowser>) -> ApiResult<Json<serde_json::Value>> {
+    let settings = s.settings.read().await.clone();
+    let mirror = settings.annas_archive.mirror.trim().to_string();
+    let want = mirror.split_once("://").map(|(_, r)| r).unwrap_or(&mirror).split('/').next().unwrap_or("").to_lowercase();
+    let url = body.url.trim().to_string();
+    let parsed = reqwest::Url::parse(&url).map_err(|_| ApiError::bad_request("not a URL"))?;
+    let host = parsed.host_str().unwrap_or_default().to_lowercase();
+    if !matches!(parsed.scheme(), "http" | "https") || host != want || want.is_empty() {
+        return Err(ApiError::bad_request("only the configured Anna's Archive mirror can be opened"));
+    }
+    // Detached: the remote Firefox forwards the URL to its window and the
+    // exec returns at once. DISPLAY is the desktop session's (see the
+    // Firefox process environ); without it the open silently goes nowhere.
+    // A timeout guards the call either way — the modal must never hang here.
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::process::Command::new("docker")
+            .args(["exec", "-d", "--user", "abc", "-e", "DISPLAY=:1", "aa_browser", "/usr/bin/firefox", &url])
+            .output(),
+    )
+    .await
+    .map_err(|_| ApiError::bad_request("browser navigation timed out"))?
+    .map_err(|e| ApiError::bad_request(format!("couldn't reach the browser container: {e}")))?;
+    if !out.status.success() {
+        return Err(ApiError::bad_request(format!(
+            "browser didn't open the page: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 /// Tests browser cookies with a live search. Returns how many results

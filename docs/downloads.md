@@ -40,13 +40,23 @@ Two consequences:
 
 So duet does it in the order that actually works:
 
-1. **Search (Discover → Anna's Archive).** The mirror's own search page is scraped for title /
-   author / format / MD5. The site puts anonymous visitors behind a DDoS-Guard challenge, so
-   this needs your **member secret key** (your account page → Settings → Free sources; it is
-   the same key the fast-download API uses). duet trades it for a session cookie in memory
-   and never logs it. Results download straight through the member fast-download API as
-   individual files (`/dyn/api/fast_download.json`). No multi-terabyte torrents involved.
-2. Magnets: if you already have a magnet for a big torrent, add it in qBittorrent, let its
+1. **Search (Discover → Anna's Archive).** The mirror's own search page is
+   scraped for title / author / format / MD5 / AACID. Anna's Archive puts
+   anonymous visitors behind a DDoS-Guard challenge, so duet searches with
+   your solved session:
+   - Direct HTTP first, using cookies harvested from your browser (see below)
+     or a member secret key if set (Settings → Free sources; your account
+     page → Settings → Free sources — same key the fast-download API uses).
+   - If the check blocks direct HTTP, the driven visible browser below
+     retries with its native session.
+   - If the manual checkbox is up, duet shows the browser in a modal. Solve
+     it there, then retry — the solve lives in that same browser.
+2. **Download per record:** LibGen MD5 bridge (`libgen.li/ads.php?md5=…`,
+   no session) → keyless shard torrent (AACID → shard URL derived
+   arithmetically, added paused, single file selected, resumed) →
+   keyed fast-download (`/dyn/api/fast_download.json`) → friendly failure
+   naming the bot check. The failure reason is stored on the download row.
+3. Magnets: if you already have a magnet for a big torrent, add it in qBittorrent, let its
    metadata arrive (once), then use qBittorrent's own file list: uncheck everything except
    the file you want.
 
@@ -62,7 +72,7 @@ API summary:
 
 | SLUM source | duet | How |
 | --- | --- | --- |
-| Anna's Archive | ✅ search + fast download | above |
+| Anna's Archive | ✅ search + LibGen bridge / shard torrent / fast download | above |
 | Library Genesis (libgen.li/bz/vg/…) | ✅ search + direct download | below |
 | RandomBook (randombook.org, libgen.pw/.me/.xyz) | ✅ same source as above | LibGen's "Mirrors" column links RandomBook for every file; it's the same database |
 | Z-Library | ⚠️ no scraper — every mirror is PROTECTED | its books are indexed by Anna's Archive search |
@@ -117,50 +127,77 @@ whichever mirror you pick.
 Tip: a book's page on the Anna's Archive site ends in its MD5. Paste that page's URL into
 LibGen search or into your own qBittorrent client to get the same file another way.
 
-## Remote browser (solves the check when Discover needs a human)
+## Remote browser (one Firefox, driven in the open)
 
 Anna's Archive challenges server-side searches (DDoS-Guard, currently with
-a manual checkbox no headless solver can click), so duet drives a real
-Firefox through the `selenium` sidecar (same pattern as the avistaz
-project: shares pia's network, so it browses from the VPN IP):
+a manual checkbox). A headless solver can't pass it — and neither can
+cookies harvested for server-side requests (proven: a fresh solved session
+still gets `?check=1` over plain HTTP, and a headless driven browser stays
+on the check page for the full 45s wait). So duet drives the same visible
+Firefox you see:
 
-1. Search in Discover as normal. duet tries plain HTTP first (works with a
-   member key or a fresh session), else drives the selenium Firefox to the
-   search URL.
-2. If the manual check is up, duet pops that Firefox's screen in a modal.
-   Click the checkbox there, then press **I've solved it — retry search**.
-   The same browser keeps its session, so the retry loads results with no
-   further clicks — and later searches skip the modal until the session
-   expires.
-3. Downloads use the keyless shard torrent (AACID → shard URL derived
-   arithmetically), so the human click is the only manual step.
+- **One browser:** visible Firefox in the `aa-browser` container, opened
+  straight at the mirror, with Marionette on `127.0.0.1:2828`. geckodriver
+  (same `pia-vpn` netns, published as `:4444`) drives it; you watch every
+  search happen in the viewer. A completed manual check clears in that
+  same browser, so its session is native — nothing to harvest or plant.
+- **Direct HTTP first** (member key or pasted/harvested cookies when set),
+  then the driven visible browser. duet ensures driven mode itself before
+  every search (relaunching with Marionette if you left it clean for a
+  login), so clean mode is only ever a temporary excursion.
+
+Flow:
+
+1. Search in Discover as normal. Direct HTTP with a member key when set;
+   else the driven visible browser below.
+2. If the manual check is up, duet shows that same browser in a modal
+   (`viewer_url`, default built from duet's host, port 3001). Solve the
+   checkbox there, then press **I've solved it — retry search**.
+3. Downloads use the LibGen bridge → shard torrent chain above, so the
+   human click is the only manual step.
 
 Setup (home-services repo):
 
 ```bash
 cd ~/src/home-services
-docker compose up -d selenium
+docker compose up -d aa-browser geckodriver
 ```
 
-Settings → Free sources: Selenium WebDriver address
-(`http://localhost:8191`-style default `http://localhost:4444`) and screen
-address (default built from duet's own host, port 7900). One search at a
-time goes through it — deliberately gentle.
+Settings → Free sources: WebDriver address (default
+`http://127.0.0.1:4444`), browser screen address (port 3001), Browser
+profile folder (`/mnt/stuff/browser-profile`). One search at a time goes
+through the driven browser — serialized in `selenium.rs`, deliberately
+gentle (at most 1 concurrent connection per host). Phones and tablets reach
+duet and the viewer over LAN HTTPS (`https://<duckdns-name>` for duet,
+`:4443` for the viewer, via the `tls-proxy` service which reuses
+screentime's Let's Encrypt cert) — plain HTTP would trip the viewer's
+secure-context requirement. Set Settings → Free sources → Browser screen
+address to the full https viewer URL when using it. Every WebDriver session
+is deleted in the same command that created it: geckodriver allows exactly
+one, and an orphaned session bricks all later searches until the
+containers restart. All site traffic goes through the VPN proxy
+(`http://localhost:8888`, Settings configurable); qBittorrent is at
+`:8080`.
 
 Notes:
 
-- The old `aa-browser` sidecar and cookie harvest remain as fallback but
-  are no longer part of the flow; they'll be removed once selenium has
-  proven itself.
+- Firefox autoconfig `navigator.webdriver` patching was proven inert in
+  this build (no marker ever executed) — do not rely on it. The split
+  browsers are the fix: the human side never shows automation.
 - Keep automated traffic off banned sites while a ban is active — even the
   proxy IP can get banned by hammering. The browser is for hands, not bots:
   one page at a time.
-- Fresh VPN IP: `docker compose restart pia-vpn` reconnects (usually a new
-  exit IP), but it drops the shared network namespace — restart the
-  dependents after (`qbittorrent-vpn slskd prowlarr vpn-proxy aa-browser
-  selenium`), otherwise they sit running with no network.
-  Verify with the proxy:
-  `curl -x http://127.0.0.1:8888 https://api.ipify.org`.
+- Fresh VPN IP: Settings → VPN → **Get new VPN IP** (configure the VPN
+  container, compose folder, and sidecars there first — every setup names
+  them differently). duet restarts the tunnel, waits for it (polling the
+  exit IP through the proxy), then recreates the sidecars on the new
+  network namespace — otherwise they sit running with no network and the
+  driven-browser state goes stale. Takes a couple of minutes; the button
+  reports old → new IP. Manual equivalent: `docker restart <vpn>`, then
+  `docker compose up -d` the sidecars in the compose folder. Verify with
+  the proxy: `curl -x http://127.0.0.1:8888 https://api.ipify.org`.
+- AA cookies expire quickly (~20 min). A solve must be followed promptly
+  by search/download, otherwise the modal flow repeats.
 
 ## Legal note
 

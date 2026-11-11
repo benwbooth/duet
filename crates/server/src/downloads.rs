@@ -109,7 +109,7 @@ pub async fn start(state: &State, req: NewDownload) -> anyhow::Result<()> {
             let md5 = url.rsplit('/').next().unwrap_or("").split('?').next().unwrap_or("").to_string();
             let site = state.site_client().await;
             let mirror = settings.annas_archive.mirror.clone();
-            let cookies = crate::annas_archive::harvest_browser_cookies(&settings.annas_archive.browser_profile_dir).await
+            let cookies = crate::annas_archive::harvest_browser_cookies_for(&settings.annas_archive.browser_profile_dir, &mirror).await
                 .filter(|h| !h.trim().is_empty())
                 .unwrap_or_else(|| settings.annas_archive.browser_cookies.clone());
             let wd = settings.annas_archive.webdriver_url.clone();

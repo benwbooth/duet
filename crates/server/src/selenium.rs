@@ -31,17 +31,24 @@ impl Selenium {
     /// Loads `url` in the remote browser and waits for result links.
     /// Returns the page HTML, or NeedHuman when the manual check is up.
     /// Serialized: concurrent searches queue instead of colliding.
+    /// The remote browser IS the human's visible browser (same profile), so
+    /// its session is native — nothing to plant. A human clicks through
+    /// manual checks in the viewer; the next attempt finds them solved.
     pub async fn fetch_search(&self, http: &reqwest::Client, wd_url: &str, url: &str) -> anyhow::Result<DrivenPage> {
         let _guard = self.lock.lock().await;
+        // Clean mode (user's login excursion) can't be driven: relaunch
+        // with Marionette first. Usually a no-op.
+        if crate::browser::ensure_driven(url).await? {
+            tracing::info!("browser relaunched driven for this search");
+        }
         let wd = wd_url.trim_end_matches('/');
         let session = Self::create(http, wd).await?;
         let page = Self::fetch_once(http, wd, &session, url).await;
-        // Best-effort cleanup: with --connect-existing the browser (and its
-        // cookies) survives; only the control channel closes.
+        // Best-effort cleanup: the browser (and its cookies) survives;
+        // only the control channel closes.
         let _ = Self::delete(http, wd, &session).await;
         page
     }
-
     async fn fetch_once(http: &reqwest::Client, wd: &str, session: &str, url: &str) -> anyhow::Result<DrivenPage> {
         // A fresh navigation: with the solved session the results just load.
         let _: Value = http
@@ -79,7 +86,7 @@ impl Selenium {
         Ok(DrivenPage::Results(html))
     }
 
-    async fn create(http: &reqwest::Client, wd: &str) -> anyhow::Result<String> {
+    async fn open(http: &reqwest::Client, wd: &str) -> anyhow::Result<String> {
         let resp: Value = http
             .post(format!("{wd}/session"))
             .json(&json!({
@@ -88,40 +95,39 @@ impl Selenium {
             .timeout(std::time::Duration::from_secs(60))
             .send()
             .await
-            .context("selenium session failed (is the sidecar running?)")?
+            .context("selenium session failed (is geckodriver up at the WebDriver address?)")?
             .error_for_status()
             .context("selenium session failed")?
             .json()
             .await?;
-        if resp["value"].get("sessionId").and_then(Value::as_str).is_none() {
-            // Another client (or a crashed run) holds the driver's single
-            // slot: drop the stale session recorded on disk, then retry once.
-            if let Some(stale) = Self::recorded_session() {
-                let _ = http.delete(format!("{wd}/session/{stale}")).timeout(std::time::Duration::from_secs(10)).send().await;
-                std::fs::remove_file(Self::session_file()).ok();
-                let retry: Value = http
-                    .post(format!("{wd}/session"))
-                    .json(&json!({
-                        "capabilities": {"alwaysMatch": {"browserName": "firefox"}},
-                    }))
-                    .timeout(std::time::Duration::from_secs(60))
-                    .send()
-                    .await
-                    .context("selenium session failed (is the sidecar running?)")?
-                    .error_for_status()
-                    .context("selenium session failed")?
-                    .json()
-                    .await?;
-                if let Some(id) = retry["value"]["sessionId"].as_str() {
-                    std::fs::write(Self::session_file(), id).ok();
-                    return Ok(id.to_string());
-                }
-            }
-            anyhow::bail!("selenium gave no session");
-        }
-        let id = resp["value"]["sessionId"].as_str().context("selenium gave no session")?.to_string();
+        let id = resp["value"].get("sessionId").and_then(Value::as_str).context("selenium gave no session")?.to_string();
         std::fs::write(Self::session_file(), &id).ok();
         Ok(id)
+    }
+
+    async fn create(http: &reqwest::Client, wd: &str) -> anyhow::Result<String> {
+        // Geckodriver allows exactly one session. A previous server life
+        // restarted mid-search leaves its session behind holding the slot;
+        // the id on disk lets this life clean it up and retry once.
+        match Self::open(http, wd).await {
+            Ok(id) => return Ok(id),
+            Err(first) => {
+                if let Some(stale) = Self::recorded_session() {
+                    let _ = http.delete(format!("{wd}/session/{stale}")).timeout(std::time::Duration::from_secs(10)).send().await;
+                    std::fs::remove_file(Self::session_file()).ok();
+                    if let Ok(id) = Self::open(http, wd).await {
+                        return Ok(id);
+                    }
+                }
+                // Either an unknown orphan (manual test sessions do this)
+                // or the sidecar is down: say exactly that, with the fix.
+                anyhow::bail!(
+                    "selenium failed ({first:#}). If geckodriver reports \"Session already started\", \
+                     an orphaned session is holding its single slot — restart the aa-browser and \
+                     geckodriver sidecars, then retry the search"
+                );
+            }
+        }
     }
 
     /// Where the active session id is recorded, so a restarted server can

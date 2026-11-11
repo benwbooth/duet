@@ -113,6 +113,34 @@ pub fn SettingsPage() -> impl IntoView {
             }
         });
     };
+    let vpn_msg = RwSignal::new(None::<String>);
+    let browser_msg = RwSignal::new(None::<String>);
+    let restart_browser = move |marionette: bool| {
+        browser_msg.set(Some(if marionette { "Restarting browser for duet driving…" } else { "Restarting clean browser…" }.into()));
+        spawn_local(async move {
+            #[derive(serde::Deserialize)]
+            struct RestartResult {
+                #[serde(default)]
+                marionette: bool,
+            }
+            match api::post::<_, RestartResult>("/api/browser/restart", &serde_json::json!({ "marionette": marionette })).await {
+                Ok(r) => browser_msg.set(Some(if r.marionette {
+                    "Browser back with Marionette — duet can drive searches."
+                } else {
+                    "Browser back clean — do the picky login now, then restart for duet driving."
+                }.into())),
+                Err(e) => browser_msg.set(Some(format!("Restart failed: {}", e.0))),
+            }
+        });
+    };
+    let restart_clean = move |_| restart_browser(false);
+    let restart_driven = move |_| restart_browser(true);
+    let renew_vpn = move |_| {
+        vpn_msg.set(Some("Starting VPN renewal…".into()));
+        spawn_local(async move {
+            api::renew_vpn_ip(move |m| vpn_msg.set(Some(m))).await;
+        });
+    };
     let add_indexer = move |_| {
         s.update(|x| {
             x.indexers.push(Indexer {
@@ -169,7 +197,7 @@ pub fn SettingsPage() -> impl IntoView {
                 <p class="hint">"Only needed if neither automatic method below is set up. These expire fast."</p>
                 {text(s, "WebDriver address", "Remote-controlled Firefox on the VPN: duet drives Anna's Archive searches through it when challenged. Empty: disabled.",
                     |x| x.annas_archive.webdriver_url.clone(), |x, v| x.annas_archive.webdriver_url = v)}
-                {text(s, "Browser screen address", "The Firefox screen, shown to you only when a manual check needs a click. Empty: built from this page's own host (port 7900).",
+                {text(s, "Browser screen address", "The Firefox screen, shown to you only when a manual check needs a click. Empty: built from this page's own host (port 3001, or 4443 over HTTPS). Set the full URL to override (e.g. an https:// viewer address).",
                     |x| x.annas_archive.viewer_url.clone(), |x, v| x.annas_archive.viewer_url = v)}
                 {secret(s, "Anna's Archive secret key (optional)", |x| x.annas_archive.secret_key.clone(), |x, v| x.annas_archive.secret_key = v)}
                 <p class="hint">"Only for the fast-download API. The shard torrent works without it, so you can leave this empty. If set, it is sent to the mirror above when you search."</p>
@@ -187,6 +215,31 @@ pub fn SettingsPage() -> impl IntoView {
                 {text(s, "Host save path", "If qBittorrent runs in Docker, where this machine mounts the folder it sees as its save path (e.g. /mnt/stuff/Downloads). Empty: same machine.", |x| x.qbittorrent.host_save_path.clone(), |x, v| x.qbittorrent.host_save_path = v)}
                 {toggle(s, "Import finished downloads automatically", |x| x.qbittorrent.auto_import, |x, v| x.qbittorrent.auto_import = v)}
                 <button on:click=test_qbit>"Test connection"</button>
+            </section>
+
+            <section>
+                <h2>"VPN"</h2>
+                <p class="hint">"For docker-based setups where the sidecars share one VPN container's network. Renewing restarts the tunnel for a fresh exit IP, then recreates the sidecars below. Takes a couple of minutes; searches and downloads pause meanwhile."</p>
+                {toggle(s, "Renew VPN exit IP on demand", |x| x.vpn.enabled, |x, v| x.vpn.enabled = v)}
+                {text(s, "VPN container", "Container running the tunnel (e.g. pia_vpn).", |x| x.vpn.container.clone(), |x, v| x.vpn.container = v)}
+                {text(s, "Compose folder", "Folder holding the docker-compose.yaml that drives the VPN and its sidecars (e.g. ~/src/home-services). Empty: feature off.", |x| x.vpn.compose_dir.clone(), |x, v| x.vpn.compose_dir = v)}
+                {text(s, "Sidecars to restart", "Space-separated compose service names sharing the VPN network (proxy, browsers, qBittorrent, …).", |x| x.vpn.dependents.clone(), |x, v| x.vpn.dependents = v)}
+                <div class="field">
+                    <span>"Browser"</span>
+                    <div>
+                        <button on:click=restart_clean>"Restart clean (for logins)"</button>
+                        <button on:click=restart_driven>"Restart for duet driving"</button>
+                        {move || browser_msg.get().map(|m| view! { <small>{m}</small> })}
+                    </div>
+                    <small>"Restarts the remote Firefox in place — same profile and cookies either way. Clean mode drops the automation flag for picky logins (X via Google); driven mode restores it for Discover searches."</small>
+                </div>
+                <div class="field">
+                    <span>"Exit IP"</span>
+                    <div>
+                        <button on:click=renew_vpn>"Get new VPN IP"</button>
+                        {move || vpn_msg.get().map(|m| view! { <small>{m}</small> })}
+                    </div>
+                </div>
             </section>
 
             <section>
