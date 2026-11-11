@@ -32,7 +32,7 @@ async fn exec(args: &[&str]) -> anyhow::Result<String> {
 /// Process up? Marionette port open? Both read straight from the container.
 pub async fn mode() -> Mode {
     let probe = exec(&["exec", "aa_browser", "sh", "-c",
-        "pgrep -f 'firefox https://' >/dev/null && echo UP; ss -tln 2>/dev/null | grep -q 127.0.0.1:2828 && echo PORT",
+        "pgrep -x firefox >/dev/null && echo UP; ss -tln 2>/dev/null | grep -q 127.0.0.1:2828 && echo PORT",
     ])
     .await
     .unwrap_or_default();
@@ -52,11 +52,13 @@ pub async fn restart(marionette: bool, start_url: &str) -> anyhow::Result<Mode> 
     // TERM lets Firefox flush session and cookies; poll for the exit.
     let _ = exec(&[
         "exec", "aa_browser", "sh", "-c",
-        "pkill -TERM -f 'firefox .*https://'; rm -f /config/.mozilla/firefox/*.default-release/lock /config/.mozilla/firefox/*.default-release/.parentlock",
+        // Every Firefox, however it was started (`--marionette about:blank`
+        // too); one left running would just take the new URL itself.
+        "pkill -TERM -x firefox; for d in /config/.mozilla/firefox /config/.config/mozilla/firefox; do rm -f $d/*.default-release/lock $d/*.default-release/.parentlock; done",
     ])
     .await?;
     for _ in 0..20 {
-        let left = exec(&["exec", "aa_browser", "sh", "-c", "pgrep -f 'firefox https://' || true"]).await.unwrap_or_default();
+        let left = exec(&["exec", "aa_browser", "sh", "-c", "pgrep -x firefox || true"]).await.unwrap_or_default();
         if left.is_empty() {
             break;
         }
