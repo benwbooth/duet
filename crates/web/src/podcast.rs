@@ -846,6 +846,15 @@ fn source_label(s: &PodcastSource) -> String {
     s.value.clone()
 }
 
+fn site_name(site: &str) -> &'static str {
+    match site {
+        "x" => "X",
+        "instagram" => "Instagram",
+        "reddit" => "Reddit",
+        _ => "the site",
+    }
+}
+
 /// Logging in to the sites read through the remote browser: the login page opens in a tab of
 /// the remote Firefox, shown here, and duet checks it worked.
 #[component]
@@ -854,10 +863,23 @@ fn Logins(settings: RwSignal<Option<PodcastSettings>>, save: impl Fn(Box<dyn FnO
     let open = RwSignal::new(None::<&'static str>);
     let status = RwSignal::new(std::collections::HashMap::<&'static str, Option<bool>>::new());
     let busy = RwSignal::new(false);
+    // The duet-wide browser screen address (Settings → Free sources) is
+    // the shared default, so this viewer agrees with Discover's; a podcast
+    // setting here overrides it for this section only.
+    let shared_viewer = RwSignal::new(String::new());
+    spawn_local(async move {
+        if let Ok(s) = api::get::<duet_common::Settings>("/api/settings").await {
+            shared_viewer.set(s.annas_archive.viewer_url);
+        }
+    });
     let viewer = move || {
         let configured = settings.get().map(|s| s.viewer_url).unwrap_or_default();
         if !configured.trim().is_empty() {
             return configured;
+        }
+        let shared = shared_viewer.get();
+        if !shared.trim().is_empty() {
+            return shared;
         }
         let loc = web_sys::window().and_then(|w| w.location().href().ok()).unwrap_or_default();
         let (proto, host) = match loc.split_once("://") {
@@ -874,14 +896,8 @@ fn Logins(settings: RwSignal<Option<PodcastSettings>>, save: impl Fn(Box<dyn FnO
                     status.update(|m| {
                         m.insert(site, Some(ok));
                     });
-                    if ok {
-                        toast.show("Logged in");
-                        if open.get_untracked() == Some(site) {
-                            open.set(None);
-                        }
-                    } else {
-                        toast.show("Not logged in yet");
-                    }
+                    let name = site_name(site);
+                    toast.show(if ok { format!("Logged in to {name}") } else { format!("{name} login not found — try again") });
                 }
                 Err(e) => toast.show(e.0),
             }
@@ -915,8 +931,16 @@ fn Logins(settings: RwSignal<Option<PodcastSettings>>, save: impl Fn(Box<dyn FnO
             <Show when=move || open.get().is_some()>
                 <div class="login-viewer">
                     <div class="login-bar">
-                        <span>{move || format!("Log in to {} below, then press Done.", match open.get() { Some("x") => "X", Some("instagram") => "Instagram", Some("reddit") => "Reddit", _ => "the site" })}</span>
-                        <button class="primary" disabled=move || busy.get() on:click=move |_| { if let Some(s) = open.get_untracked() { check(s) } }>"Done"</button>
+                        <span>{move || format!("Log in to {} below, then press Done.", open.get().map(site_name).unwrap_or("the site"))}</span>
+                        // Done hides the browser at once; checking means switching the browser
+                        // back to driven mode first (a restart), so it runs behind.
+                        <button class="primary" on:click=move |_| {
+                            if let Some(s) = open.get_untracked() {
+                                open.set(None);
+                                toast.show(format!("Checking your {} login…", site_name(s)));
+                                check(s);
+                            }
+                        }>"Done"</button>
                         <button class="icon-button" aria-label="Close" on:click=move |_| open.set(None)>"×"</button>
                     </div>
                     <iframe src=viewer title="Remote Firefox" allow="clipboard-read; clipboard-write"></iframe>
@@ -932,8 +956,9 @@ fn Logins(settings: RwSignal<Option<PodcastSettings>>, save: impl Fn(Box<dyn FnO
                 </label>
                 <label class="field">
                     <span>"Remote browser viewer"</span>
-                    <input type="url" placeholder="(this host, port 3001)" prop:value=move || settings.get().map(|s| s.viewer_url).unwrap_or_default()
+                    <input type="url" placeholder="(Discover's browser screen address)" prop:value=move || settings.get().map(|s| s.viewer_url).unwrap_or_default()
                         on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| s.viewer_url = v)) }/>
+                    <small>"Empty: use Discover's browser screen (the aa.* address), which works on phones too."</small>
                 </label>
                 <label class="field">
                     <span>"RSSHub (optional fallback)"</span>

@@ -34,6 +34,11 @@ struct Session {
 
 impl Session {
     async fn start(http: &reqwest::Client, webdriver: &str) -> anyhow::Result<Session> {
+        // Clean mode (a manual login excursion) can't be driven: relaunch
+        // with Marionette first. Usually a no-op.
+        if crate::browser::ensure_driven("about:blank").await? {
+            tracing::info!("browser relaunched driven for podcast reading");
+        }
         let base = webdriver.trim_end_matches('/').to_string();
         anyhow::ensure!(!base.is_empty(), "Set the browser's WebDriver address (Briefing → Sources)");
         let mut last = String::new();
@@ -98,18 +103,15 @@ impl Session {
     }
 }
 
-/// Opens the site's login page in a tab of its own, for you to log in through the viewer.
-pub async fn open_login(state: &State, webdriver: &str, site: &str) -> anyhow::Result<()> {
+/// Opens the site's login page by restarting the browser clean AT that
+/// page: no WebDriver involved, so it works from clean mode, and the login
+/// flow never sees an automation flag. Duet flips it back to driven the
+/// next time it needs to drive anything.
+pub async fn open_login(_state: &State, _webdriver: &str, site: &str) -> anyhow::Result<()> {
     let url = login_url(site).context("no login page for that site")?;
     let _one = ONE_AT_A_TIME.lock().await;
-    let s = Session::start(&state.http, webdriver).await?;
-    let r = async {
-        s.new_tab().await?;
-        s.go(url).await
-    }
-    .await;
-    s.end().await;
-    r
+    crate::browser::restart(false, url).await?;
+    Ok(())
 }
 
 /// Whether you're logged in to the site in the remote browser.
