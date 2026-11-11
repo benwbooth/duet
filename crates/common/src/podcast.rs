@@ -28,6 +28,58 @@ pub struct PodcastSettings {
     pub rsshub_url: String,
     /// Listen to linked videos and reels (yt-dlp + speech recognition) to cover what's said in them.
     pub watch_videos: bool,
+    /// Which defaults these settings have been brought up to (see `upgrade`).
+    pub version: u32,
+}
+
+/// What a briefing is about until the listener says otherwise.
+pub const DEFAULT_INTERESTS: &str = "Deep dives, not headlines: tech, AI, retro video games and new games, movies, TV, books, \
+     sci-fi, fantasy and horror, what's in my X feed, and anything cool going on in the world. Some world news, and a \
+     little politics, but not too much.";
+
+/// The default host: one man, a deep baritone.
+pub fn default_host() -> PodcastHost {
+    PodcastHost {
+        name: "Cole".into(),
+        voice: "A man in his forties with a deep, rich, resonant baritone voice and a General American accent: smooth, \
+                unhurried and warm, quietly confident and wry, like a late-night public radio host or a great \
+                audiobook narrator."
+            .into(),
+    }
+}
+
+/// The settings version this build brings saved settings up to.
+pub const SETTINGS_VERSION: u32 = 2;
+
+impl PodcastSettings {
+    /// Brings settings saved by an older duet up to today's defaults, keeping what the
+    /// listener chose: version 2 makes deep dives with a baritone host and adds the games,
+    /// screen, books and AI sources.
+    pub fn upgrade(&mut self) -> bool {
+        if self.version >= SETTINGS_VERSION {
+            return false;
+        }
+        if self.version < 2 {
+            if self.interests.trim().is_empty() {
+                self.interests = DEFAULT_INTERESTS.into();
+            }
+            // The old default host (Maya) gives way to the baritone; a host the listener
+            // named or described themselves stays.
+            if self.hosts.len() == 1 && self.hosts[0].name == "Maya" && self.hosts[0].voice.starts_with("A woman in her thirties with a warm, bright American voice") {
+                self.hosts = vec![default_host()];
+            }
+            if self.minutes == 20 {
+                self.minutes = 30;
+            }
+            for c in CATALOG.iter().filter(|c| ADDED_IN_2.contains(&c.name)) {
+                if !self.sources.iter().any(|s| s.kind == c.kind && s.value == c.value) {
+                    self.sources.push(PodcastSource { kind: c.kind.into(), value: c.value.into(), enabled: true });
+                }
+            }
+        }
+        self.version = SETTINGS_VERSION;
+        true
+    }
 }
 
 impl Default for PodcastSettings {
@@ -38,21 +90,15 @@ impl Default for PodcastSettings {
                 .filter(|c| DEFAULT_ON.contains(&c.name))
                 .map(|c| PodcastSource { kind: c.kind.into(), value: c.value.into(), enabled: true })
                 .collect(),
-            interests: String::new(),
-            minutes: 20,
-            hosts: vec![
-                PodcastHost {
-                    name: "Maya".into(),
-                    voice: "A woman in her thirties with a warm, bright American voice: quick, curious and funny, \
-                            like a favourite morning radio host."
-                        .into(),
-                },
-            ],
+            interests: DEFAULT_INTERESTS.into(),
+            minutes: 30,
+            hosts: vec![default_host()],
             daily_at: "06:30".into(),
             webdriver_url: "http://127.0.0.1:4444".into(),
             viewer_url: String::new(),
             rsshub_url: String::new(),
             watch_videos: true,
+            version: SETTINGS_VERSION,
         }
     }
 }
@@ -112,7 +158,30 @@ pub const CATALOG: &[CatalogEntry] = &[
     c("Tech", "Phoronix", "feed", "https://www.phoronix.com/rss.php"),
     c("Tech", "LWN.net", "feed", "https://lwn.net/headlines/rss"),
     c("Tech", "9to5Mac", "feed", "https://9to5mac.com/feed/"),
-    c("Tech", "Polygon (games)", "feed", "https://www.polygon.com/rss/index.xml"),
+    c("AI", "Reddit r/LocalLLaMA", "reddit", "LocalLLaMA"),
+    c("AI", "Reddit r/singularity", "reddit", "singularity"),
+    c("AI", "Simon Willison", "feed", "https://simonwillison.net/atom/everything/"),
+    c("AI", "The Decoder", "feed", "https://the-decoder.com/feed/"),
+    c("AI", "Hugging Face blog", "feed", "https://huggingface.co/blog/feed.xml"),
+    c("Games", "Polygon (games)", "feed", "https://www.polygon.com/rss/index.xml"),
+    c("Games", "Time Extension (retro)", "feed", "https://www.timeextension.com/feeds/latest"),
+    c("Games", "Retro Dodo", "feed", "https://retrododo.com/feed/"),
+    c("Games", "Reddit r/retrogaming", "reddit", "retrogaming"),
+    c("Games", "Reddit r/gaming", "reddit", "gaming"),
+    c("Games", "Rock Paper Shotgun", "feed", "https://www.rockpapershotgun.com/feed"),
+    c("Games", "Eurogamer", "feed", "https://www.eurogamer.net/feed"),
+    c("Games", "Kotaku", "feed", "https://kotaku.com/rss"),
+    c("Games", "Game Developer", "feed", "https://www.gamedeveloper.com/rss.xml"),
+    c("Screen & books", "Deadline", "feed", "https://deadline.com/feed/"),
+    c("Screen & books", "/Film", "feed", "https://www.slashfilm.com/feed/"),
+    c("Screen & books", "Bloody Disgusting (horror)", "feed", "https://bloody-disgusting.com/feed/"),
+    c("Screen & books", "Reactor (sci-fi & fantasy)", "feed", "https://reactormag.com/feed/"),
+    c("Screen & books", "Locus (sci-fi & fantasy books)", "feed", "https://locusmag.com/feed/"),
+    c("Screen & books", "Reddit r/movies", "reddit", "movies"),
+    c("Screen & books", "Reddit r/television", "reddit", "television"),
+    c("Screen & books", "Reddit r/printSF", "reddit", "printSF"),
+    c("Screen & books", "Reddit r/Fantasy", "reddit", "Fantasy"),
+    c("Screen & books", "Reddit r/horror", "reddit", "horror"),
     c("Science", "Quanta Magazine", "feed", "https://www.quantamagazine.org/feed/"),
     c("Science", "Science Daily", "feed", "https://www.sciencedaily.com/rss/top.xml"),
     c("Science", "New Scientist", "feed", "https://www.newscientist.com/feed/"),
@@ -122,8 +191,16 @@ pub const CATALOG: &[CatalogEntry] = &[
 
 /// What a new briefing starts with: a broad mix, to be tuned.
 const DEFAULT_ON: &[&str] = &[
-    "Hacker News", "Lobsters", "Techmeme", "Slashdot", "Reddit r/worldnews", "BBC News (world)", "NPR",
+    "X (your timeline)", "Hacker News", "Lobsters", "Techmeme", "Slashdot", "Reddit r/worldnews", "BBC News (world)", "NPR",
     "The Guardian (international)", "Al Jazeera", "The Verge", "Ars Technica", "Engadget", "Quanta Magazine",
+    "Simon Willison", "Reddit r/LocalLLaMA", "Time Extension (retro)", "Reddit r/retrogaming", "Rock Paper Shotgun",
+    "Polygon (games)", "Deadline", "/Film", "Bloody Disgusting (horror)", "Reactor (sci-fi & fantasy)", "Reddit r/printSF",
+];
+
+/// Switched on for settings saved before version 2 (games, screen, books, AI).
+const ADDED_IN_2: &[&str] = &[
+    "X (your timeline)", "Simon Willison", "Reddit r/LocalLLaMA", "Time Extension (retro)", "Reddit r/retrogaming", "Rock Paper Shotgun",
+    "Polygon (games)", "Deadline", "/Film", "Bloody Disgusting (horror)", "Reactor (sci-fi & fantasy)", "Reddit r/printSF",
 ];
 
 /// One place stories come from.

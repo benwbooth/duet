@@ -78,7 +78,14 @@ async fn write_json<T: serde::Serialize>(path: &std::path::Path, v: &T) -> anyho
 }
 
 pub async fn settings(state: &State) -> PodcastSettings {
-    read_json(&base(state).join("settings.json")).await.unwrap_or_default()
+    let path = base(state).join("settings.json");
+    let Some(mut s) = read_json::<PodcastSettings>(&path).await else {
+        return PodcastSettings::default();
+    };
+    if s.upgrade() {
+        let _ = write_json(&path, &s).await;
+    }
+    s
 }
 
 /// The voice server's name for a host's voice (its clip is `voices/<name>.wav`).
@@ -180,6 +187,16 @@ struct Pick {
     title: String,
     #[serde(default)]
     items: Vec<usize>,
+    /// "roundup": a run through the best posts and comments (your X feed today); otherwise a
+    /// deep dive.
+    #[serde(default)]
+    kind: String,
+}
+
+impl Pick {
+    fn roundup(&self) -> bool {
+        self.kind.eq_ignore_ascii_case("roundup")
+    }
 }
 
 #[derive(Deserialize)]
@@ -225,7 +242,8 @@ async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> a
     items.truncate(400);
 
     // Choosing.
-    let stories = ((s.minutes.max(5) as f64) / 2.5).round().clamp(3.0, 15.0) as usize;
+    // Deep dives, not headlines: a few stories, each given room.
+    let stories = ((s.minutes.max(5) as f64) / 6.0).round().clamp(3.0, 10.0) as usize;
     update(state, ep, |e| {
         e.stage = "choosing".into();
         e.doing = format!("Choosing from {} posts and articles", items.len());
@@ -236,8 +254,10 @@ async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> a
 
     let mut segments = vec![Segment { key: "intro".into(), title: "Today's briefing".into(), kind: "intro".into(), writing: true, ..Default::default() }];
     let mut chosen: Vec<Vec<feeds::Item>> = Vec::new();
+    let mut roundups: Vec<bool> = Vec::new();
+    let mut titles: Vec<String> = Vec::new();
     for p in &picks.stories {
-        let its: Vec<feeds::Item> = p.items.iter().filter_map(|&i| items.get(i).cloned()).take(4).collect();
+        let its: Vec<feeds::Item> = p.items.iter().filter_map(|&i| items.get(i).cloned()).take(if p.roundup() { 10 } else { 4 }).collect();
         if its.is_empty() {
             continue;
         }
@@ -250,6 +270,8 @@ async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> a
             lines: Vec::new(),
         });
         chosen.push(its);
+        roundups.push(p.roundup());
+        titles.push(p.title.clone());
     }
     segments.push(Segment { key: "outro".into(), title: "Sign-off".into(), kind: "outro".into(), writing: true, ..Default::default() });
     let title = picks.title.trim().to_string();
@@ -324,7 +346,6 @@ async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> a
         let hosts = s.hosts.clone();
         tokio::spawn(async move { record(&st, &ep, &hosts, None).await })
     };
-    let titles: Vec<String> = picks.stories.iter().map(|p| p.title.clone()).collect();
     let total = notes.len() + 2;
     let words = (s.minutes.max(5) as usize * 155) / notes.len().max(1);
     let mut jobs = Vec::new();
@@ -333,7 +354,8 @@ async fn make(state: &State, ep: &Arc<Mutex<Episode>>, s: &PodcastSettings) -> a
         let s = s.clone();
         let titles = titles.clone();
         let note = if k == 0 || k == total - 1 { String::new() } else { notes[k - 1].clone() };
-        jobs.push(async move { (k, write(&st, &s, &titles, k, total, &note, words).await) });
+        let roundup = k > 0 && k < total - 1 && roundups[k - 1];
+        jobs.push(async move { (k, write(&st, &s, &titles, k, total, &note, words, roundup).await) });
     }
     let mut writes = futures_util::stream::iter(jobs).buffered(3);
     let mut written = 0;
@@ -379,6 +401,20 @@ fn source_link(i: &feeds::Item) -> SourceLink {
     SourceLink { title: i.title.clone(), url, site: i.source.clone(), image: i.image.clone() }
 }
 
+/// Today as said aloud: "Wednesday, November 11th".
+fn spoken_date() -> String {
+    let now = chrono::Local::now();
+    let d = now.format("%-d").to_string().parse::<u32>().unwrap_or(1);
+    let suffix = match (d % 10, d % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{}, {} {d}{suffix}", now.format("%A"), now.format("%B"))
+}
+
 fn today() -> String {
     chrono::Local::now().format("%A, %B %-d, %Y").to_string()
 }
@@ -398,9 +434,19 @@ fn hosts_blurb(s: &PodcastSettings) -> String {
 
 /// Pulls the JSON out of a model's answer (it may wrap it in a code fence or a sentence).
 fn json_in<T: serde::de::DeserializeOwned>(text: &str, open: char, close: char) -> anyhow::Result<T> {
-    let start = text.find(open).context("the chat model didn't answer in JSON")?;
     let end = text.rfind(close).context("the chat model didn't answer in JSON")?;
-    serde_json::from_str(&text[start..=end]).context("the chat model's JSON didn't parse")
+    // Notes from research can come first, with brackets of their own: try each opening in turn.
+    let mut last = None;
+    for (start, _) in text[..end].match_indices(open) {
+        match serde_json::from_str(&text[start..=end]) {
+            Ok(v) => return Ok(v),
+            Err(e) => last = Some(e),
+        }
+    }
+    match last {
+        Some(e) => Err(anyhow::Error::from(e)).context("the chat model's JSON didn't parse"),
+        None => bail!("the chat model didn't answer in JSON"),
+    }
 }
 
 async fn choose(state: &State, s: &PodcastSettings, items: &[feeds::Item], stories: usize) -> anyhow::Result<Picks> {
@@ -425,12 +471,17 @@ async fn choose(state: &State, s: &PodcastSettings, items: &[feeds::Item], stori
     let interests = if s.interests.trim().is_empty() { "Not said yet: go for what's most important and most interesting.".into() } else { s.interests.clone() };
     let system = format!(
         "You're the producer of a personal daily news podcast for one listener, made by AI. Today is {}. \
-         From the posts and articles in the listener's own feeds, pick the {stories} stories most worth their time this \
-         morning: what matters most, what they'd most enjoy, and a mix (not all one topic). Group items that are \
-         about the same story together. Skip ads, self-promotion, duplicates and anything with nothing to say.\n\n\
+         The show is deep dives, not a headline read: from the posts and articles in the listener's own feeds, pick the \
+         {stories} stories most worth really digging into this morning: ones with substance, a story behind them, or \
+         something genuinely cool, that this listener would love, in a mix across their interests (not all one topic). \
+         Group items about the same story together. Skip ads, self-promotion, duplicates, thin news with nothing more to say, \
+         and keep politics to a small share.\n\n\
+         Also, if there are posts from the listener's X timeline (source \"X (your timeline)\") or Reddit with interesting \
+         takes, add one extra \"roundup\" story, placed second, titled like \"What's on your X feed today\": up to ten of \
+         the most interesting posts and insightful comments, to be read out and reacted to.\n\n\
          What the listener cares about: {interests}\n\n\
-         Answer with JSON only, in running order (lead with the biggest story, end on something light): \
-         {{\"title\": \"a short, catchy name for today's episode\", \"stories\": [{{\"title\": \"a short spoken headline\", \"items\": [numbers of the items]}}]}}",
+         Answer with JSON only, in running order (lead with the strongest story, end on something fun): \
+         {{\"title\": \"a short, catchy name for today's episode\", \"stories\": [{{\"title\": \"a short spoken headline\", \"kind\": \"deep\" or \"roundup\", \"items\": [numbers of the items]}}]}}",
         today()
     );
     let answer = crate::llm::chat(state, &system, &[("user".into(), list)]).await?;
@@ -446,17 +497,18 @@ struct RawLine {
 }
 
 /// The script for one part: the intro (k = 0), a story, or the sign-off (the last).
-async fn write(state: &State, s: &PodcastSettings, titles: &[String], k: usize, total: usize, notes: &str, words: usize) -> anyhow::Result<Vec<Line>> {
+#[allow(clippy::too_many_arguments)]
+async fn write(state: &State, s: &PodcastSettings, titles: &[String], k: usize, total: usize, notes: &str, words: usize, roundup: bool) -> anyhow::Result<Vec<Line>> {
     let names: Vec<String> = s.hosts.iter().map(|h| h.name.clone()).collect();
     let interests = if s.interests.trim().is_empty() { String::new() } else { format!("\nThe listener cares about: {}", s.interests) };
     let system = format!(
-        "You write a personal daily news podcast for one listener, made and voiced by AI from their own feeds. Today is {}. \
+        "You write a personal daily podcast of deep dives for one listener, made and voiced by AI from their own feeds. Today is {}. \
          {}{interests}\n\n\
          Write for the ear: natural, lively spoken English with contractions, short sentences, real reactions, \
          questions to each other, a joke where one fits, and plain explanations of anything technical. Never read out \
          addresses or say \"link\". Say where things come from (\"a post on r/worldnews\", \"according to The Verge\", \
          \"someone on X\"), and say plainly when something is a rumour or one person's unverified claim. Use only \
-         facts in the material given; never make up quotes, numbers or details. If the material is thin, keep it short.\n\n\
+         facts from the material given or from your own research; never make up quotes, numbers or details.\n\n\
          Begin every line with an acting direction in square brackets for the voice actor, describing how it's said, \
          e.g. [amused], [genuinely surprised], [leaning in, conspiratorial], [warmly]. Keep the delivery varied and \
          expressive.\n\n\
@@ -468,9 +520,11 @@ async fn write(state: &State, s: &PodcastSettings, titles: &[String], k: usize, 
     let running: String = titles.iter().enumerate().map(|(i, t)| format!("{}. {t}\n", i + 1)).collect();
     let prompt = if k == 0 {
         format!(
-            "Write the opening, about 90 words: hello, the day, and a quick, enticing taste of what's coming (the first \
-             three or four stories), then straight into the first story's hand-off. Mention once, lightly, that you're \
-             AI hosts putting together their feeds.\n\nToday's running order:\n{running}"
+            "Write the opening, about 90 words. Start with a greeting and today's date said in full, the way a person \
+             says it (\"It's {}.\"). Then a quick, enticing taste of what's coming (the first three or four stories), \
+             then straight into the first story's hand-off. Mention once, lightly, that this is AI putting together \
+             their feeds.\n\nToday's running order:\n{running}",
+            spoken_date()
         )
     } else if k == total - 1 {
         format!("Write the sign-off, about 50 words: a warm, quick goodbye that wishes them a good day (no summary of every story).\n\nToday's stories were:\n{running}")
@@ -478,14 +532,41 @@ async fn write(state: &State, s: &PodcastSettings, titles: &[String], k: usize, 
         let story = &titles[k - 1];
         let prev = if k >= 2 { format!("The story before was \"{}\" (don't greet the listener; pick up from there).", titles[k - 2]) } else { "This follows straight on from the opening.".into() };
         let next = titles.get(k).map(|t| format!("End with a quick, natural hand-off towards the next story, \"{t}\".")).unwrap_or_else(|| "This is the last story before the sign-off.".into());
-        format!(
-            "Write story {k} of {}: \"{story}\". About {words} words. {prev} {next}\n\n\
-             Tell the listener what happened and why it matters, what people are saying (the best comments are fair game), \
-             and anything surprising.\n\nThe material:\n\"\"\"\n{notes}\n\"\"\"",
-            total - 2
-        )
+        if roundup {
+            format!(
+                "Write part {k} of {}: \"{story}\", a run through the most interesting posts and comments from the \
+                 listener's feeds today. About {words} words. {prev} {next}\n\n\
+                 For each, say who posted it (by name or handle, said naturally) and read the post out, or its best part, \
+                 word for word, then react: what's interesting, funny or insightful about it, and a line of context where \
+                 it helps. Include insightful replies and comments. Keep it moving, like reading a friend the good bits.\n\n\
+                 The posts:\n\"\"\"\n{notes}\n\"\"\"",
+                total - 2
+            )
+        } else {
+            format!(
+                "Write story {k} of {}: \"{story}\", as a deep dive. About {words} words. {prev} {next}\n\n\
+                 Don't just read the headline. First research it on the web: the background and history, how the thing \
+                 actually works, who's involved, what came before, what experts and the sharpest commenters are saying, and \
+                 what it could mean next. Then tell it as a story: what happened, the context that makes it interesting, \
+                 the details a fan would love, the best insightful comments from the discussion (say who and where), and \
+                 your own take. Facts from your research count as material; say where they come from.\n\n\
+                 The material from the feeds:\n\"\"\"\n{notes}\n\"\"\"",
+                total - 2
+            )
+        }
     };
-    let answer = crate::llm::chat(state, &system, &[("user".into(), prompt)]).await?;
+    // Deep dives look things up; the rest is written from what's in hand.
+    let answer = if k > 0 && k < total - 1 && !roundup {
+        match crate::llm::chat_web(state, &system, &[("user".into(), prompt.clone())]).await {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!("researching story {k}: {e:#}; writing it from the feeds alone");
+                crate::llm::chat(state, &system, &[("user".into(), prompt)]).await?
+            }
+        }
+    } else {
+        crate::llm::chat(state, &system, &[("user".into(), prompt)]).await?
+    };
     let raw: Vec<RawLine> = json_in(&answer, '[', ']')?;
     let mut out = Vec::new();
     for (n, l) in raw.into_iter().enumerate() {
