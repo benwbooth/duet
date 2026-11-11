@@ -68,6 +68,14 @@ pub async fn current(state: &State, asset: i64) -> serde_json::Value {
     json!({ "what": what, "done": done, "total": total, "secs": since.elapsed().as_secs() })
 }
 
+/// Whether the performer is loaded and ready (not starting, not stopped).
+async fn performer_ready(state: &State) -> bool {
+    let tts = state.settings.read().await.ai.tts_url.clone();
+    let url = format!("{}/status", tts.trim_end_matches('/'));
+    let Ok(r) = state.http.get(url).timeout(std::time::Duration::from_secs(5)).send().await else { return false };
+    r.json::<serde_json::Value>().await.ok().is_some_and(|v| v["fish_ready"].as_bool() == Some(true))
+}
+
 /// While the performer is starting: (seconds so far, seconds it's expected to take).
 async fn warming(state: &State) -> Option<(f64, f64)> {
     let tts = state.settings.read().await.ai.tts_url.clone();
@@ -921,6 +929,22 @@ fn direct_ahead(state: &State, asset: i64, chapter: usize) {
                     crate::activity::set(&key, "AI full cast", &title, format!("Directing {what} {} (who says what, and how){then}", c + 1), part as u32, parts as u32);
                     if let Err(e) = prepared(&state, asset, c, part * CHUNK, &sentences, true).await {
                         tracing::warn!("directing ahead ({c}, part {part}): {e:#}");
+                    }
+                    // Near the listener, anyone new gets their voice made now, while the performer
+                    // is still starting (or not loaded): making a voice needs the whole card, and
+                    // made later it would stop the performer mid-chapter for minutes.
+                    if k < 2 && !performer_ready(&state).await {
+                        let cast: Cast = read_json(&base.join("cast.json")).await.unwrap_or_default();
+                        if !cast.narrator.is_empty() {
+                            if let Err(e) = ensure_voices(&state, asset, &Script::new(), &cast).await {
+                                tracing::warn!("casting ahead: {e:#}");
+                            }
+                            // (Its "Finding a voice for ..." goes, unless a line has said more since.)
+                            let mut st = STATUS.lock().unwrap();
+                            if st.get(&asset).is_some_and(|s| s.0.starts_with("Finding a voice")) {
+                                st.remove(&asset);
+                            }
+                        }
                     }
                 }
             }

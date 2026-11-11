@@ -168,6 +168,8 @@ class Fish:
         self.proc = None
         self.starting_since = None
         self.start_lock = threading.Lock()
+        # Set when a start is called off (a voice to make first): not a broken install.
+        self.cancelled = False
 
     def expected_start(self):
         """How long starting is likely to take: as long as last time (the first start ever tunes
@@ -186,6 +188,7 @@ class Fish:
             return False
 
     def start(self):
+        self.cancelled = False
         # One start at a time: two at once (the warm-up and a line asking together) both
         # loaded the model, ran the card out of memory and fought over the port.
         with self.start_lock:
@@ -253,9 +256,21 @@ class Fish:
                 self.starting_since = None
                 return
             if self.proc.poll() is not None:
+                if self.cancelled:
+                    raise FishCancelled("fish-speech start called off")
                 raise RuntimeError("fish-speech server exited while starting")
             time.sleep(1)
         raise RuntimeError("fish-speech server didn't come up")
+
+    def cancel_start(self):
+        """Calls off a start under way, at once, without waiting for the lock its caller holds:
+        a voice that has to be made first would otherwise wait out the whole start (minutes, and
+        longest the first time) only to stop Fish again straight after."""
+        p = self.proc
+        if self.starting_since is not None and p is not None and p.poll() is None:
+            print("Fish: start called off (a voice is wanted first)", flush=True)
+            self.cancelled = True
+            p.terminate()
 
     def stop(self):
         if self.proc and self.proc.poll() is None:
@@ -295,6 +310,10 @@ class Fish:
             raise RuntimeError(f"fish-speech: {e.read()[:300]!r}") from e
         wav, sr = sf.read(io.BytesIO(data), dtype="float32")
         return (wav.mean(axis=1) if wav.ndim > 1 else wav), sr
+
+
+class FishCancelled(RuntimeError):
+    pass
 
 
 fish = Fish()
@@ -536,6 +555,8 @@ def synthesize(text, voice, description, language, engine=None):
     if args.engine == "fish" and time.time() >= fish_broken_until:
         try:
             return fish.tts(text, ref_wav, ref_text)
+        except FishCancelled:
+            raise
         except Exception as e:
             fish.stop()
             fish_broken_until = time.time() + 600
@@ -876,7 +897,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.rstrip("/") in ("/v1/status", "/status"):
             since = fish.starting_since
-            body = {"fish_starting": since is not None}
+            body = {"fish_starting": since is not None, "fish_ready": since is None and fish.proc is not None and fish.proc.poll() is None}
             if since is not None:
                 body.update(elapsed=time.time() - since, expected=fish.expected_start())
             return self.reply(200, json.dumps(body).encode(), "application/json")
@@ -916,6 +937,8 @@ class Handler(BaseHTTPRequestHandler):
                                 # (The full cast comes before the pictures: they don't both fit.)
                                 stop_drawing()
                                 fish.start()
+                        except FishCancelled:
+                            pass
                         except Exception as e:
                             # (The lines asked for next go to Qwen3-TTS straight away, rather
                             # than waiting minutes on another start that fails the same way.)
@@ -954,6 +977,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, json.dumps({"made": made}).encode(), "application/json")
             if path in ("/v1/voices", "/voices"):
                 # Cast voices ahead of time, so a long recording never switches models midway.
+                # (Making one needs the card: a Fish start under way is called off first rather
+                # than waited for.)
+                if any(v.get("replace") or not os.path.exists(os.path.join(args.voices, slug(v["voice"]) + ".wav")) for v in body.get("voices", [])):
+                    fish.cancel_start()
                 with lock:
                     for v in body.get("voices", []):
                         if v.get("replace"):
