@@ -821,7 +821,7 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .dl-dismiss { flex: none; }
 /* Sidebar downloads button with active-count badge. */
 /* Downloads: pinned to the foot of the sidebar, just above "Hide sidebar". */
-.tabs .dl-tab { position: relative; margin-top: auto; display: flex; align-items: center; gap: 0.6rem; width: 100%; justify-content: flex-start; padding: 0.55rem 0.8rem; border-radius: 12px; font-size: 0.9rem; color: var(--muted); background: transparent; border: 0; box-shadow: none; cursor: pointer; font-family: inherit; }
+.tabs .dl-tab { position: relative; margin-top: auto; display: flex; align-items: center; width: 100%; justify-content: flex-start; padding: 0.55rem 0.8rem; border-radius: 12px; font-size: 1rem; font-weight: 500; color: var(--muted); background: transparent; border: 0; box-shadow: none; cursor: pointer; font-family: inherit; }
 .tabs .dl-tab:hover { color: var(--text); background: var(--surface-2); }
 .tabs .dl-tab .dl-badge { margin-left: auto; }
 /* Same icon size and gap as the nav links so the labels line up. */
@@ -1308,8 +1308,8 @@ input, select { border-radius: 12px; }
 
 /* "Hide sidebar", at the foot of the sidebar while reading. */
 .tabs .tabs-hide {
-  margin-top: auto; display: flex; align-items: center; gap: 0.6rem; width: 100%; justify-content: flex-start;
-  background: transparent; border: 0; box-shadow: none; color: var(--muted); padding: 0.55rem 0.8rem; border-radius: 12px; font-size: 0.9rem;
+  margin-top: auto; display: flex; align-items: center; width: 100%; justify-content: flex-start;
+  background: transparent; border: 0; box-shadow: none; color: var(--muted); padding: 0.55rem 0.8rem; border-radius: 12px; font-size: 1rem; font-weight: 500;
 }
 .tabs .tabs-hide:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
 @media (max-width: 760px) { .tabs .tabs-hide { display: none; } }
