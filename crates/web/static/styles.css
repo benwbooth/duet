@@ -824,6 +824,9 @@ button.primary:hover::after, .button.primary:hover::after { transform: translate
 .tabs .dl-tab { position: relative; margin-top: auto; display: flex; align-items: center; gap: 0.6rem; width: 100%; justify-content: flex-start; padding: 0.55rem 0.8rem; border-radius: 12px; font-size: 0.9rem; color: var(--muted); background: transparent; border: 0; box-shadow: none; cursor: pointer; font-family: inherit; }
 .tabs .dl-tab:hover { color: var(--text); background: var(--surface-2); }
 .tabs .dl-tab .dl-badge { margin-left: auto; }
+/* Same icon size and gap as the nav links so the labels line up. */
+.tabs .dl-tab, .tabs .tabs-hide { gap: 0.75rem; }
+.tabs .dl-tab .icon, .tabs .tabs-hide .icon { width: 21px; height: 21px; }
 .tabs .dl-tab + .tabs-hide { margin-top: 0; }
 @media (max-width: 760px) {
   .tabs .dl-tab { margin-top: 0; width: auto; flex-direction: column; gap: 3px; font-size: 0.68rem; padding: 0.5rem 0.6rem; }
@@ -1309,7 +1312,6 @@ input, select { border-radius: 12px; }
   background: transparent; border: 0; box-shadow: none; color: var(--muted); padding: 0.55rem 0.8rem; border-radius: 12px; font-size: 0.9rem;
 }
 .tabs .tabs-hide:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
-.tabs .tabs-hide .icon { width: 18px; height: 18px; }
 @media (max-width: 760px) { .tabs .tabs-hide { display: none; } }
 
 /* The hidden sidebar's tab, on the window's left edge: a slim, quiet handle that slides out a
