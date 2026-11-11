@@ -314,6 +314,7 @@ pub fn Briefing() -> impl IntoView {
                 }}
             </div>
             <Show when=move || show_episodes.get()>
+                <leptos::portal::Portal>
                 <div class="brief-scrim" on:click=move |_| show_episodes.set(false)></div>
                 <aside class="brief-pane brief-episodes" role="dialog" aria-label="Episodes">
                     <div class="pane-head">
@@ -337,8 +338,10 @@ pub fn Briefing() -> impl IntoView {
                         }
                     </For>
                 </aside>
+                </leptos::portal::Portal>
             </Show>
             <Show when=move || show_settings.get()>
+                <leptos::portal::Portal>
                 <div class="brief-scrim" on:click=move |_| show_settings.set(false)></div>
                 <aside class="brief-pane brief-settings-pane" role="dialog" aria-label="Briefing settings">
                     <div class="pane-head">
@@ -347,6 +350,7 @@ pub fn Briefing() -> impl IntoView {
                     </div>
                     <BriefingSettings settings/>
                 </aside>
+                </leptos::portal::Portal>
             </Show>
         </div>
     }
