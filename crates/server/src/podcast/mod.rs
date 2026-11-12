@@ -8,7 +8,7 @@
 //! `episode.json`, `notes.json` (what the hosts read, for questions) and a recording per line.
 
 mod browser;
-mod feeds;
+pub mod feeds;
 
 use std::{
     collections::{HashMap, HashSet},

@@ -917,6 +917,31 @@ def _track_words(body):
     return {"segments": out}
 
 
+def transcribe_window(body):
+    with audio_first():
+        return _transcribe_window(body)
+
+
+def _transcribe_window(body):
+    """What's said in a stretch of a podcast episode, for finding its ads: segments of
+    {start, end, text}, timed from the start of the file. Whisper on the graphics card (taking
+    turns with the pictures, as the reader's listening does); no word timings, which it doesn't
+    need and which cost a lot more."""
+    from common import load_audio_window
+
+    start = float(body.get("start", 0.0))
+    samples = load_audio_window(body["audio"], start, float(body.get("duration", 300.0)))
+    with listen_lock:
+        touch("whisper")
+        segments, _ = listen_model().transcribe(samples, vad_filter=True, language=body.get("language") or "en")
+        out = []
+        for seg in segments:
+            text = seg.text.strip()
+            if text:
+                out.append({"start": round(seg.start + start, 2), "end": round(seg.end + start, 2), "text": text})
+    return {"segments": out, "end": round(start + len(samples) / 16000, 2)}
+
+
 def multipart(content_type, body):
     """Fields of a multipart/form-data body: name -> bytes."""
     from email.parser import BytesParser
@@ -995,6 +1020,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, json.dumps(align_words(body)).encode(), "application/json")
             if path in ("/v1/track-words", "/track-words"):
                 return self.reply(200, json.dumps(track_words(body)).encode(), "application/json")
+            if path in ("/v1/transcribe-window", "/transcribe-window"):
+                return self.reply(200, json.dumps(transcribe_window(body)).encode(), "application/json")
             if path in ("/v1/sync-window", "/sync-window"):
                 return self.reply(200, json.dumps(sync_window(body)).encode(), "application/json")
             language = body.get("language", "English")

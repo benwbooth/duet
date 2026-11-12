@@ -106,6 +106,7 @@ pub fn router(state: State, web_dir: &FsPath) -> Router {
         .route("/assistant/transcribe", post(transcribe))
         .merge(crate::editions::routes())
         .merge(crate::podcast::routes())
+        .merge(crate::shows::routes())
         // Positions, sync maps and job status change under the browser; covers and book
         // resources set their own caching.
         .layer(SetResponseHeaderLayer::if_not_present(header::CACHE_CONTROL, header::HeaderValue::from_static("no-cache")))

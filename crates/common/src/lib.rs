@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub mod podcast;
+pub mod shows;
 pub mod text;
 
 /// A work is one book, which may have any number of ebook and audiobook editions linked to it.

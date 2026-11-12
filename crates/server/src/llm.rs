@@ -46,6 +46,20 @@ pub async fn chat(state: &State, system: &str, turns: &[Turn]) -> anyhow::Result
     })
 }
 
+/// Like [`chat`], but always the local model (Settings → AI's local address and model, Ollama or
+/// similar), whichever provider the chat itself uses: for background work kept on this machine.
+pub async fn chat_local(state: &State, system: &str, turns: &[Turn]) -> anyhow::Result<String> {
+    let ai = state.settings.read().await.ai.clone();
+    if ai.llm_url.is_empty() || ai.llm_model.is_empty() {
+        bail!("No local model set up (Settings → AI)");
+    }
+    let text = openai_compatible(state, &ai.llm_url, &ai.llm_api_key, &ai.llm_model, system, turns).await?;
+    Ok(match text.find("</think>") {
+        Some(end) => text[end + "</think>".len()..].trim().to_string(),
+        None => text.trim().to_string(),
+    })
+}
+
 async fn openai_compatible(
     state: &State,
     url: &str,

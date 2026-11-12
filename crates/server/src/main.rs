@@ -31,6 +31,7 @@ mod resegment;
 mod routes;
 mod selenium;
 mod setup;
+mod shows;
 mod torznab;
 mod vpn;
 
@@ -176,6 +177,7 @@ async fn main() -> anyhow::Result<()> {
     }
     tokio::spawn(mirrors::refresh_loop(state.clone()));
     tokio::spawn(podcast::daily(state.clone()));
+    tokio::spawn(shows::hourly(state.clone()));
 
     let app = routes::router(state, &args.web_dir);
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
