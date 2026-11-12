@@ -492,7 +492,7 @@ async fn shows(state: &State) -> anyhow::Result<Vec<Show>> {
     Ok(rows.iter().map(show_from).collect())
 }
 
-const EPISODE_COLUMNS: &str = "e.id, e.show_id, s.title AS show_title, e.title, e.notes, e.published, e.duration, e.audio_url,
+const EPISODE_COLUMNS: &str = "e.id, e.show_id, s.title AS show_title, s.skip_ads AS show_skip_ads, e.title, e.notes, e.published, e.duration, e.audio_url,
     COALESCE(e.image, s.image) AS image, e.position, e.finished";
 
 fn episode_from(state: &State, r: &sqlx::sqlite::SqliteRow) -> ShowEpisode {
@@ -502,6 +502,7 @@ fn episode_from(state: &State, r: &sqlx::sqlite::SqliteRow) -> ShowEpisode {
         id,
         show_id: r.get("show_id"),
         show_title: r.get("show_title"),
+        show_skip_ads: r.get::<i64, _>("show_skip_ads") != 0,
         title: r.get("title"),
         description: clip(&strip_html(&notes), 400),
         notes_html: String::new(),

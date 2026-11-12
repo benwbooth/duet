@@ -9,6 +9,7 @@ mod podcast;
 mod reader;
 mod settings;
 mod setup;
+mod shows;
 
 use duet_common::{Asset, AssetKind, Job, JobKind, NewJob, ScanReport, WorkDetail, WorkSummary};
 
@@ -75,7 +76,7 @@ extern "C" {
     #[wasm_bindgen(js_name = stopAnswer)]
     fn stop_answer();
     #[wasm_bindgen(js_name = formatTime)]
-    fn format_time(secs: f64) -> String;
+    pub fn format_time(secs: f64) -> String;
     #[wasm_bindgen(js_name = setMediaSession)]
     fn set_media_session(title: &str, artist: &str, artwork: &str);
     #[wasm_bindgen(js_name = pagerInit)]
@@ -150,6 +151,7 @@ enum Route {
     Read(i64, Option<reader::Mode>),
     Discover,
     Briefing,
+    Podcasts(shows::PodRoute),
     Jobs,
     Settings,
     Setup,
@@ -164,6 +166,7 @@ impl Route {
             Some("read") => id().map(|i| Route::Read(i, parts.get(2).and_then(|m| reader::Mode::parse(m)))).unwrap_or(Route::Library),
             Some("discover") => Route::Discover,
             Some("briefing") => Route::Briefing,
+            Some("podcasts") => Route::Podcasts(shows::PodRoute::parse(&parts[1..])),
             Some("jobs") => Route::Jobs,
             Some("settings") => Route::Settings,
             Some("setup") => Route::Setup,
@@ -176,6 +179,7 @@ impl Route {
             Route::Library | Route::Work(_) | Route::Read(..) => "library",
             Route::Discover => "discover",
             Route::Briefing => "briefing",
+            Route::Podcasts(_) => "podcasts",
             Route::Jobs => "jobs",
             Route::Settings | Route::Setup => "settings",
         }
@@ -525,12 +529,14 @@ pub mod icons {
     pub const ALERT: &str = "M12 4 3 20h18zM12 10v4M12 17h.01";
     pub const PERSON: &str = "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM5 20a7 7 0 0 1 14 0";
     pub const COMIC: &str = "M4 4h16v16H4zM4 11h9M13 4v16";
+    pub const PODCAST: &str = "M12 13.5a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6zM10.8 15.5h2.4l-.5 5h-1.4zM7.6 15.6a6 6 0 1 1 8.8 0M5 18.2a9.5 9.5 0 1 1 14 0";
     pub const RADIO: &str = "M4 9h16v11H4zM8 9l9-5M8 14.5h.01M15 13a2 2 0 1 0 0 4 2 2 0 0 0 0-4z";
 }
 
-const TABS: [(&str, &str, &str); 5] = [
+const TABS: [(&str, &str, &str); 6] = [
     ("library", "Library", icons::LIBRARY),
     ("discover", "Discover", icons::DISCOVER),
+    ("podcasts", "Podcasts", icons::PODCAST),
     ("briefing", "Briefing", icons::RADIO),
     ("jobs", "Jobs", icons::JOBS),
     ("settings", "Settings", icons::SETTINGS),
@@ -583,6 +589,7 @@ fn App() -> impl IntoView {
     let sidebar_hidden = RwSignal::new(sidebar_hidden());
     provide_context(SidebarHidden(sidebar_hidden));
     provide_context(Eink(RwSignal::new(eink_on())));
+    let pod = shows::provide_player();
     // Long-lived tabs run stale builds forever; offer a reload when the
     // server reports a different UI fingerprint.
     let update_ready = RwSignal::new(false);
@@ -611,7 +618,8 @@ fn App() -> impl IntoView {
     }
 
     view! {
-        <div class="app" class:immersive=immersive class:no-sidebar=move || immersive() && sidebar_hidden.get()>
+        <div class="app" class:immersive=immersive class:no-sidebar=move || immersive() && sidebar_hidden.get()
+            class:has-mini=move || pod.active() && !immersive()>
             <nav class="tabs">
                 <a class="brand" href="#/" aria-label="duet"><span class="wordmark" aria-hidden="true"><span class="initial"></span><span class="rest">"uet"</span></span></a>
                 {TABS.map(|(id, label, path)| view! {
@@ -661,11 +669,14 @@ fn App() -> impl IntoView {
                     },
                     Route::Discover => view! { <discover::Discover/> }.into_any(),
                     Route::Briefing => view! { <podcast::Briefing/> }.into_any(),
+                    Route::Podcasts(r) => view! { <shows::Podcasts route=r/> }.into_any(),
                     Route::Jobs => view! { <discover::Jobs/> }.into_any(),
                     Route::Settings => view! { <settings::SettingsPage/> }.into_any(),
                     Route::Setup => view! { <setup::SetupPage/> }.into_any(),
                 }}
             </main>
+            <shows::MiniPlayer hidden=Signal::derive(immersive)/>
+            <shows::NowPlaying/>
             <DownloadsPane/>
             <ActivityPane/>
             <Show when=move || toast_sig.get().is_some()>

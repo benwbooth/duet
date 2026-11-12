@@ -31,6 +31,8 @@ pub struct ShowEpisode {
     pub id: i64,
     pub show_id: i64,
     pub show_title: String,
+    /// The show's ads are skipped (its own switch).
+    pub show_skip_ads: bool,
     pub title: String,
     /// The show notes, as plain text.
     pub description: String,
