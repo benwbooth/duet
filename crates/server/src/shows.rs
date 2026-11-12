@@ -427,8 +427,9 @@ async fn refresh(state: &State) -> anyhow::Result<usize> {
 
 /// Every hour: new episodes, and old downloads cleared away.
 pub async fn hourly(state: State) {
-    tokio::time::sleep(Duration::from_secs(90)).await;
     tokio::spawn(scanner(state.clone()));
+    // (Not in the first moments after starting, while everything else gets going.)
+    tokio::time::sleep(Duration::from_secs(90)).await;
     loop {
         if let Err(e) = refresh(&state).await {
             tracing::warn!("refreshing podcasts: {e:#}");
@@ -458,6 +459,19 @@ async fn tidy(state: &State) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Show notes as plain text (scripts and styles dropped whole, not just their tags).
+fn plain(html: &str) -> String {
+    let mut out = html.to_string();
+    for tag in ["script", "style"] {
+        while let Some(a) = out.to_ascii_lowercase().find(&format!("<{tag}")) {
+            let lower = out.to_ascii_lowercase();
+            let end = lower[a..].find(&format!("</{tag}>")).map(|e| a + e + tag.len() + 3).unwrap_or(out.len());
+            out.replace_range(a..end, " ");
+        }
+    }
+    strip_html(&out)
 }
 
 // ---- Reading the database ----
@@ -504,7 +518,7 @@ fn episode_from(state: &State, r: &sqlx::sqlite::SqliteRow) -> ShowEpisode {
         show_title: r.get("show_title"),
         show_skip_ads: r.get::<i64, _>("show_skip_ads") != 0,
         title: r.get("title"),
-        description: clip(&strip_html(&notes), 400),
+        description: clip(&plain(&notes), 400),
         notes_html: String::new(),
         published: r.get("published"),
         duration: r.get("duration"),
@@ -755,7 +769,7 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
             .bind(id)
             .fetch_one(&state.db)
             .await?;
-        (r.get::<String, _>("show_title"), r.get::<String, _>("title"), clip(&strip_html(&r.get::<String, _>("notes")), 1500), settings(state).await.skip_promos)
+        (r.get::<String, _>("show_title"), r.get::<String, _>("title"), clip(&plain(&r.get::<String, _>("notes")), 1500), settings(state).await.skip_promos)
     };
     let tts = state.settings.read().await.ai.tts_url.clone();
     let mut checked = scan_of(state, id).await.checked;
@@ -1100,7 +1114,7 @@ async fn preview(AxState(s): AxState<State>, Query(q): Query<PreviewQ>) -> ApiRe
         .map(|e| ShowEpisode {
             show_title: feed.title.clone(),
             title: e.title.clone(),
-            description: clip(&strip_html(&e.notes), 400),
+            description: clip(&plain(&e.notes), 400),
             notes_html: e.notes.clone(),
             published: e.published.map(|d| d.to_rfc3339()),
             duration: e.duration,
@@ -1336,6 +1350,11 @@ mod tests {
     fn reads_opml() {
         let xml = r#"<opml><body><outline text="A" xmlUrl="https://a/feed"/><outline text="group"><outline xmlUrl="https://b/rss"></outline></outline></body></opml>"#;
         assert_eq!(opml_feeds(xml), vec!["https://a/feed".to_string(), "https://b/rss".to_string()]);
+    }
+
+    #[test]
+    fn notes_without_scripts() {
+        assert_eq!(plain("<p>Hi</p><script>alert(1)</script><STYLE>x{}</STYLE> there"), "Hi there");
     }
 
     #[test]

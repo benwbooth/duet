@@ -118,6 +118,7 @@ export function spCleanNotes(html) {
   const walk = (node) => {
     for (const c of [...node.childNodes]) {
       if (c.nodeType === 1) {
+        if (["SCRIPT", "STYLE", "IFRAME", "OBJECT", "NOSCRIPT"].includes(c.tagName)) { c.remove(); continue; }
         walk(c);
         if (!keep.has(c.tagName)) { c.replaceWith(...c.childNodes); continue; }
         for (const a of [...c.attributes]) if (!(c.tagName === "A" && a.name === "href")) c.removeAttribute(a.name);
@@ -478,7 +479,7 @@ fn length(secs: f64) -> String {
 fn ad_summary(scan: &AdScan) -> Option<String> {
     match scan.state.as_str() {
         "done" if scan.ads.is_empty() => Some("No ads found".into()),
-        "done" => Some(format!("{} ad{} ({}) skipped", scan.ads.len(), if scan.ads.len() == 1 { "" } else { "s" }, format_time(scan.ad_seconds()))),
+        "done" => Some(format!("Ad-free: {} ad{} ({}) will be skipped", scan.ads.len(), if scan.ads.len() == 1 { "" } else { "s" }, format_time(scan.ad_seconds()))),
         "queued" => Some("Waiting to check for ads".into()),
         "downloading" | "listening" => Some(if scan.doing.is_empty() { "Finding ads…".into() } else { scan.doing.clone() }),
         "failed" => Some("Couldn't check for ads".into()),
@@ -558,6 +559,7 @@ fn Home() -> impl IntoView {
     let refreshing = RwSignal::new(false);
     let show_add = RwSignal::new(false);
     let show_settings = RwSignal::new(false);
+    let all_new = RwSignal::new(false);
 
     let load = move || {
         spawn_local(async move {
@@ -681,14 +683,6 @@ fn Home() -> impl IntoView {
                                     </div>
                                 </section>
                             })}
-                            {(!h.latest.is_empty()).then(|| view! {
-                                <section class="pods-section">
-                                    <div class="section-head"><h2>"New episodes"</h2></div>
-                                    <ul class="pod-episodes">
-                                        {h.latest.iter().cloned().map(|e| view! { <EpisodeRow ep=e show_name=true/> }).collect_view()}
-                                    </ul>
-                                </section>
-                            })}
                             {(!empty).then(|| view! {
                                 <section class="pods-section">
                                     <div class="section-head"><h2>"Your shows"</h2></div>
@@ -701,6 +695,16 @@ fn Home() -> impl IntoView {
                                             </a>
                                         }).collect_view()}
                                     </div>
+                                </section>
+                            })}
+                            {(!h.latest.is_empty()).then(|| view! {
+                                <section class="pods-section">
+                                    <div class="section-head"><h2>"New episodes"</h2>
+                                        {(h.latest.len() > 8).then(|| view! { <button class="link" on:click=move |_| all_new.update(|v| *v = !*v)>{move || if all_new.get() { "Show fewer" } else { "Show all" }}</button> })}
+                                    </div>
+                                    <ul class="pod-episodes">
+                                        {h.latest.iter().take(if all_new.get() { 100 } else { 8 }).cloned().map(|e| view! { <EpisodeRow ep=e show_name=true/> }).collect_view()}
+                                    </ul>
                                 </section>
                             })}
                             {empty.then(|| view! {
@@ -880,7 +884,7 @@ fn EpisodeRow(ep: ShowEpisode, #[prop(optional)] show_name: bool) -> impl IntoVi
                         view! {
                             <svg viewBox="0 0 36 36" class="ring" aria-hidden="true">
                                 <circle cx="18" cy="18" r="15" class="ring-bg"/>
-                                <circle cx="18" cy="18" r="15" class="ring-fg" stroke-dasharray=format!("{:.2} {:.2}", c * frac, c)/>
+                                {(frac > 0.005).then(|| view! { <circle cx="18" cy="18" r="15" class="ring-fg" stroke-dasharray=format!("{:.2} {:.2}", c * frac, c)/> })}
                                 <path d=if now() && p.playing() { "M13.5 12h3v12h-3zM19.5 12h3v12h-3z" } else { "M15 11.5v13l10-6.5z" } class="ring-glyph"/>
                             </svg>
                         }
