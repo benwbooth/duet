@@ -1043,6 +1043,10 @@ class Handler(BaseHTTPRequestHandler):
                 # Several voices in one clip (a sentence with dialogue and narration), for the live full cast.
                 import numpy as np
 
+                # Someone's listening: pictures being drawn give up the card now (they carry on
+                # later) rather than finishing their batch first.
+                stop_drawing()
+
                 out, rate = [], None
                 with lock:
                     for p in body.get("pieces", []):

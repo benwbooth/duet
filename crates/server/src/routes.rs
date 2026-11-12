@@ -354,22 +354,28 @@ async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResul
 /// (`start: false`: only keep it loaded if it is, while you're reading in another mode.)
 async fn cast_warm(AxState(s): AxState<State>, Json(body): Json<serde_json::Value>) -> Json<serde_json::Value> {
     let tts = s.settings.read().await.ai.tts_url.clone();
-    let start = body["start"].as_bool().unwrap_or(true);
-    if start {
-        crate::cast::cast_open();
-    }
-    let _ = s.http.post(format!("{}/warm", tts.trim_end_matches('/'))).json(&serde_json::json!({ "start": start })).timeout(std::time::Duration::from_secs(5)).send().await;
+    let mut start = body["start"].as_bool().unwrap_or(true);
     // A book open in full cast mode: its lines from where you are are performed now, while the
-    // voices warm up and before play is pressed (it sat idle for minutes, ready, until then).
+    // voices warm up and before play is pressed. Once those are ready, the card is left to the
+    // pictures until play is pressed (they waited for as long as the reader was open, while the
+    // performer sat idle): play starts on the lines already made while the voices come back.
     if let (true, Some(id)) = (start, body["asset"].as_i64()) {
         if let Ok(Some(a)) = db::asset(&s.db, id).await {
             let (chapter, sentence) = match db::get_position(&s.db, a.work_id).await.ok().flatten() {
                 Some(p) => (p.chapter, p.sentence),
                 None => (0, 0),
             };
-            crate::cast::prepare(&s, id, chapter, sentence);
+            if crate::cast::opening_ready(&s, id, chapter, sentence).await {
+                start = false;
+            } else {
+                crate::cast::prepare(&s, id, chapter, sentence);
+            }
         }
     }
+    if start {
+        crate::cast::cast_open();
+    }
+    let _ = s.http.post(format!("{}/warm", tts.trim_end_matches('/'))).json(&serde_json::json!({ "start": start })).timeout(std::time::Duration::from_secs(5)).send().await;
     Json(serde_json::json!({ "ok": true }))
 }
 

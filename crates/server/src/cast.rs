@@ -1056,6 +1056,17 @@ fn work_ahead(state: &State, asset: i64, chapter: usize, n: usize) {
     });
 }
 
+/// Whether the lines from here (as many as are performed ahead of time) are all made already.
+pub async fn opening_ready(state: &State, asset: i64, chapter: usize, sentence: usize) -> bool {
+    if PREPARING.lock().unwrap().contains(&asset) {
+        return false;
+    }
+    let Ok(sentences) = sentences_of(state, asset, chapter).await else { return false };
+    let from = if sentence < sentences.len() { sentence } else { 0 };
+    let base = dir(state, asset);
+    (from..(from + OPENING).min(sentences.len())).all(|k| base.join(format!("{chapter}-{k}.mp3")).exists())
+}
+
 /// How many lines are performed ahead of time from where the reader will start.
 const OPENING: usize = 40;
 
