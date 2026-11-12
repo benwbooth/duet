@@ -122,8 +122,10 @@ def age_of(text):
 
 
 # Children's voices sit around 220-300 Hz; a man's is about 85-155 and a woman's 165-255.
-# A child's take below this is a grown-up's voice, whatever was asked for.
-CHILD_HZ = 190
+# A child's take below CHILD_HZ is a grown-up's voice, whatever was asked for. One far above
+# CHILD_MAX_HZ is a squeak Fish can't copy: George's 449 Hz clip came out of Fish as a man's
+# mumble at 70-90 Hz.
+CHILD_HZ, CHILD_MAX_HZ, CHILD_TYPICAL_HZ = 190, 340, 260
 
 
 def pitch_hz(wav):
@@ -292,11 +294,11 @@ def main():
             clarity = ears.clarity(wav, text) if ears else 1.0
             score, top = judge.score(wav, label) if judge else (0.0, None)
             hz = pitch_hz(wav) if min_hz else 0.0
-            clear, young = clarity >= 0.85, hz >= min_hz
-            pitch_note = f"; pitch {hz:.0f} Hz" + ("" if young else f" (a child is above {min_hz})") if min_hz else ""
+            clear, young = clarity >= 0.85, not min_hz or min_hz <= hz <= CHILD_MAX_HZ
+            pitch_note = f"; pitch {hz:.0f} Hz" + ("" if young else f" (a child is {min_hz}-{CHILD_MAX_HZ})") if min_hz else ""
             print(f"  take {i + 1}: says {clarity:.0%} of the line; {label} {score:.2f} (sounds most like {top}){pitch_note}", file=sys.stderr, flush=True)
-            # Clear and the right age first; then clear; then the most child-like of the rest.
-            key = (clear and young, clear, score if clear and young else (hz if clear else clarity))
+            # Clear and the right age first; then clear and nearest a child's pitch; then clearest.
+            key = (clear and young, clear, score if clear and young else (-abs(hz - CHILD_TYPICAL_HZ) if clear else clarity))
             if best is None or key > best[0]:
                 best = (key, wav, engine, score, clarity)
             if clear and young and (judge is None or top == label):
