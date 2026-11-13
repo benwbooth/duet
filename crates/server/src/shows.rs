@@ -1262,9 +1262,9 @@ async fn cut_point(state: &State, audio: &std::path::Path, line: &Heard, quote: 
 // ---- Outlines ----
 
 /// How outlines are made now: 2 names who's talking, 3 splits lines where the voice changes,
-/// 4 times every word first.
+/// 4 times every word first, 5 times the lines the aligner failed on before.
 /// Older ones are made again when opened.
-const OUTLINE_VERSION: u32 = 4;
+const OUTLINE_VERSION: u32 = 5;
 
 /// Outlines being made right now.
 static OUTLINING: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
@@ -1442,12 +1442,16 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
     let before: Outline = read_json(&episode_dir(state, id).join("outline.json")).await.unwrap_or_default();
     // Word times, for a transcript written before they were kept (lighting up the word being
     // said, and lines that start where the words do, not in the music before them).
-    if heard.iter().all(|h| h.words.is_empty())
+    // (Only the lines without them: the rest were timed already.)
+    let untimed: Vec<usize> = (0..heard.len()).filter(|&i| heard[i].words.is_empty()).collect();
+    if !untimed.is_empty()
         && let Some(audio) = audio_file(state, id)
     {
-        match time_lines(state, &audio, &heard).await {
-            Ok(timed) if timed.len() == heard.len() => {
-                for (h, t) in heard.iter_mut().zip(timed) {
+        let these: Vec<Heard> = untimed.iter().map(|&i| heard[i].clone()).collect();
+        match time_lines(state, &audio, &these).await {
+            Ok(timed) if timed.len() == these.len() => {
+                for (&i, t) in untimed.iter().zip(timed) {
+                    let h = &mut heard[i];
                     if !t.words.is_empty() {
                         h.start = t.start;
                         h.end = t.end;
