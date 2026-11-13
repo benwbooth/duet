@@ -183,7 +183,8 @@ class ForcedAligner:
         import unicodedata
 
         w = unicodedata.normalize("NFKD", word.lower())
-        return "".join(c for c in w if c in self.dictionary and c != "*")
+        # ("-" is the model's blank, not a letter: "855-KESEMTA" must not spell it.)
+        return "".join(c for c in w if c in self.dictionary and c not in "*-")
 
     def align(self, samples, words, rate=16000):
         """(start, end) in seconds for each word, or None for one it can't spell (a number).
@@ -262,7 +263,8 @@ class ForcedAligner:
         import unicodedata
 
         w = unicodedata.normalize("NFKD", word.lower())
-        return "".join(c for c in w if c in self.dictionary and c != "*")
+        # ("-" is the model's blank, not a letter: "855-KESEMTA" must not spell it.)
+        return "".join(c for c in w if c in self.dictionary and c not in "*-")
 
     def align(self, samples, words, rate=16000):
         """(start, end) in seconds for each word, or None for one it can't spell (a number).

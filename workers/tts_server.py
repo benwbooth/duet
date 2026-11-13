@@ -962,10 +962,19 @@ def time_words(samples, offset, lines, rate=16000):
         ws = line["text"].split()
         if not ws or b - a < 0.3:
             continue
-        try:
-            times = listen_aligner().align(samples[int(a * rate):int(b * rate)], ws)
-        except Exception as e:  # (a line the aligner can't take keeps Whisper's times)
-            print(f"aligning a podcast line: {e}", flush=True)
+        times = None
+        # (Whisper's edges can be well off, leaving too little audio for the words: wider, then
+        # give up and keep Whisper's times.)
+        for pad in (0.0, 2.0, 5.0):
+            try:
+                times = listen_aligner().align(samples[int(max(0.0, a - pad) * rate):int(min(total, b + pad) * rate)], ws)
+                a = max(0.0, a - pad)
+                break
+            except Exception as e:
+                if "too long" not in str(e):
+                    print(f"aligning a podcast line: {e}", flush=True)
+                    break
+        if times is None:
             continue
         if not any(times):
             continue
