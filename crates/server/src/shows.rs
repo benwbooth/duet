@@ -52,6 +52,9 @@ const FIRST_WINDOW: f64 = 240.0;
 const WINDOW: f64 = 900.0;
 /// Each stretch is read with the end of the one before it, so an ad across the join is whole.
 const OVERLAP: f64 = 120.0;
+/// The way ads are found now: 2 cuts inside a transcript line. Episodes checked an older way are
+/// read again (from the transcript they have) when they're played.
+const CUTS: u32 = 2;
 
 pub fn routes() -> Router<State> {
     Router::new()
@@ -980,6 +983,27 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
             end: f64,
         }
         let started = std::time::Instant::now();
+        // Already written down (the ads are being read again): no need to listen.
+        let want_to = (checked + len).min(duration);
+        if heard.last().is_some_and(|h| h.end >= want_to - 15.0) && want_to < duration - 1.0 || heard.last().is_some_and(|h| h.end >= duration - 15.0) {
+            let end = if want_to >= duration - 1.0 { duration } else { want_to };
+            let new_checked = end;
+            if !marked {
+                take(reading.take()).await?;
+                let from = (checked - OVERLAP).max(0.0);
+                let lines: Vec<Heard> = heard.iter().filter(|h| h.end > from && h.start < end).cloned().collect();
+                let (st, show_title, title, notes, audio) = (state.clone(), show_title.clone(), title.clone(), notes.clone(), path.clone());
+                reading = Some((
+                    tokio::spawn(async move {
+                        let refs: Vec<&Heard> = lines.iter().collect();
+                        find_ads(&st, &audio, &show_title, &title, &notes, &refs, skip_promos).await
+                    }),
+                    new_checked,
+                ));
+            }
+            checked = new_checked;
+            continue;
+        }
         let resp = state
             .http
             .post(format!("{}/transcribe-window", tts.trim_end_matches('/')))
@@ -1019,6 +1043,7 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
     }
     take(reading.take()).await?;
     set_scan(state, id, |s| {
+        s.version = CUTS;
         s.state = "done".into();
         s.doing.clear();
         s.progress = 1.0;
@@ -1258,6 +1283,7 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
     let (show_title, title, notes, duration) =
         (r.get::<String, _>("show_title"), r.get::<String, _>("title"), clip(&plain(&r.get::<String, _>("notes")), 1500), r.get::<f64, _>("duration"));
     let duration = duration.max(heard.last().map(|h| h.end).unwrap_or(0.0));
+    let heard = split_at_ads(heard, &scan.ads);
     let parts = passages(&heard, &scan.ads);
     if parts.is_empty() {
         bail!("the transcript is all ads");
@@ -1813,6 +1839,15 @@ struct PrepareReq {
 /// Downloads an episode and finds its ads (first, if it's about to be played).
 async fn prepare(AxState(s): AxState<State>, Path(id): Path<i64>, Json(r): Json<PrepareReq>) -> ApiResult<Json<AdScan>> {
     let scan = scan_of(&s, id).await;
+    // Checked the old way (ads cut only at whole transcript lines): read again, from the
+    // transcript it already has, so it's quick.
+    if scan.state == "done" && scan.version < CUTS && episode_dir(&s, id).join("transcript.json").exists() {
+        set_scan(&s, id, |x| *x = AdScan::default()).await;
+        queue(&s, id, true);
+        let mut scan = scan_of(&s, id).await;
+        scan.state = "queued".into();
+        return Ok(Json(scan));
+    }
     if scan.state == "done" || (scan.busy() && !r.now) {
         return Ok(Json(scan));
     }
@@ -1857,15 +1892,54 @@ async fn rescan(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Js
     if SCANS.lock().unwrap().get(&id).is_some_and(AdScan::busy) {
         return Err(ApiError::bad_request("It's being checked right now"));
     }
+    // (The transcript's kept: the ads are read from it again.)
     set_scan(&s, id, |x| *x = AdScan::default()).await;
-    let _ = tokio::fs::remove_file(episode_dir(&s, id).join("transcript.json")).await;
-    let _ = tokio::fs::remove_file(episode_dir(&s, id).join("outline.json")).await;
     queue(&s, id, true);
     Ok(Json(scan_of(&s, id).await))
 }
 
 async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<Vec<Heard>> {
-    Json(read_json(&episode_dir(&s, id).join("transcript.json")).await.unwrap_or_default())
+    let heard: Vec<Heard> = read_json(&episode_dir(&s, id).join("transcript.json")).await.unwrap_or_default();
+    Json(split_at_ads(heard, &scan_of(&s, id).await.ads))
+}
+
+/// Lines that run an ad and the show together, split where the ad starts or ends, so each is
+/// all ad or all show.
+fn split_at_ads(heard: Vec<Heard>, ads: &[AdSpan]) -> Vec<Heard> {
+    let cuts: Vec<f64> = ads.iter().flat_map(|a| [a.start, a.end]).collect();
+    let mut out = Vec::with_capacity(heard.len());
+    for h in heard {
+        let mut rest = h;
+        loop {
+            let Some(&t) = cuts.iter().filter(|&&t| t > rest.start + 0.3 && t < rest.end - 0.3).min_by(|a, b| a.total_cmp(b)) else { break };
+            let words = if rest.words.is_empty() { spread(&rest) } else { rest.words.clone() };
+            // The first word that starts at (or after) the cut begins the second part.
+            let k = words.iter().position(|w| (w.0 + w.1) / 2.0 >= t).unwrap_or(words.len());
+            if k == 0 || k >= words.len() {
+                break;
+            }
+            let (a, b) = words.split_at(k);
+            let text = |ws: &[(f64, f64, String)]| ws.iter().map(|w| w.2.as_str()).collect::<Vec<_>>().join(" ");
+            out.push(Heard { start: rest.start, end: t, text: text(a), words: if rest.words.is_empty() { vec![] } else { a.to_vec() } });
+            rest = Heard { start: t, end: rest.end, text: text(b), words: if rest.words.is_empty() { vec![] } else { b.to_vec() } };
+        }
+        out.push(rest);
+    }
+    out
+}
+
+/// A line's words with its time shared out by their lengths (when Whisper didn't time them).
+fn spread(h: &Heard) -> Vec<(f64, f64, String)> {
+    let ws: Vec<&str> = h.text.split_whitespace().collect();
+    let total: f64 = ws.iter().map(|w| w.chars().count() as f64 + 1.0).sum::<f64>().max(1.0);
+    let mut t = h.start;
+    ws.into_iter()
+        .map(|w| {
+            let d = (h.end - h.start) * (w.chars().count() as f64 + 1.0) / total;
+            t += d;
+            (t - d, t, w.to_string())
+        })
+        .collect()
 }
 
 /// The outline; one that was never made is started now, for an episode whose transcript is
@@ -1962,6 +2036,15 @@ Line two</media:description></media:group></entry>
         assert!(e.published.is_some());
         assert_eq!(e.notes, "Line one<br>Line two");
         assert_eq!(f.image.as_deref(), Some("https://i.ytimg.com/vi/abc/hqdefault.jpg"));
+    }
+
+    #[test]
+    fn splits_lines_at_ads() {
+        let h = Heard { start: 0.0, end: 10.0, text: "call 855-KESEMTA. Hello again. It's me.".into(), words: vec![] };
+        let out = split_at_ads(vec![h], &[AdSpan { start: -20.0, end: 4.0, label: String::new() }]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].text, "call 855-KESEMTA.");
+        assert!(out[1].text.starts_with("Hello again."));
     }
 
     #[test]

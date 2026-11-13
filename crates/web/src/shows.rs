@@ -16,7 +16,7 @@ function st(s) { if (cb.state) cb.state(s); }
 function inAd(t) {
   for (let i = 0; i < ads.length; i++) {
     const a = ads[i];
-    if (!allowed.has(i) && t >= a.start - 0.25 && t < a.end - 0.75) return i;
+    if (!allowed.has(a.start) && t >= a.start - 0.25 && t < a.end - 0.75) return i;
   }
   return -1;
 }
@@ -42,12 +42,8 @@ export function spInit(onTick, onState, onSkip) {
     }
     if (cb.tick) cb.tick(el.currentTime, isFinite(el.duration) ? el.duration : 0);
   });
-  // A seek you make into an ad means you want to hear it.
-  el.addEventListener("seeking", () => {
-    if (ours) { ours = false; return; }
-    const i = inAd(el.currentTime);
-    if (i >= 0) allowed.add(i);
-  });
+  // (Seeking into an ad skips it too, with Undo; only "play this ad" lets one play.)
+  el.addEventListener("seeking", () => { ours = false; });
   el.addEventListener("playing", () => { st("playing"); ms(); });
   el.addEventListener("pause", () => { if (!el.ended) st("paused"); });
   el.addEventListener("waiting", () => st("waiting"));
@@ -90,7 +86,7 @@ export function spRate(r) { if (el) { el.playbackRate = r; ms(); } }
 export function spTime() { return el ? el.currentTime : 0; }
 export function spAds(json, on) { ads = JSON.parse(json); skipping = on; }
 // Undo a skip: back to where the ad started, and it plays this time.
-export function spAllow(i) { if (!ads[i]) return; allowed.add(i); ours = true; el.currentTime = ads[i].start; }
+export function spAllow(i) { if (!ads[i]) return; allowed.add(ads[i].start); ours = true; el.currentTime = ads[i].start; }
 export function spStop() { if (el) { el.pause(); el.removeAttribute("src"); el.load(); } }
 // Stop after `mins` minutes (0: off).
 export function spSleep(mins) { sleepAt = mins > 0 ? Date.now() + mins * 60000 : 0; }

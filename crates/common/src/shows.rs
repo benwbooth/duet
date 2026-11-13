@@ -73,6 +73,8 @@ pub struct AdScan {
     pub duration: f64,
     pub ads: Vec<AdSpan>,
     pub error: Option<String>,
+    /// How the ads were found (the server's newest way is read again over older checks).
+    pub version: u32,
 }
 
 impl AdScan {
