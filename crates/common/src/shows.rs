@@ -221,3 +221,28 @@ pub struct ShowPosition {
     pub duration: f64,
     pub finished: bool,
 }
+
+/// An episode's AI-made outline: what it's about, and a table of contents of its transcript.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Outline {
+    /// "" (not made), "waiting" (for the transcript), "making", "done" or "failed".
+    pub state: String,
+    /// A few sentences on what the episode's about.
+    pub summary: String,
+    pub sections: Vec<OutlineSection>,
+    pub error: Option<String>,
+}
+
+/// A part of an episode, with its own parts.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct OutlineSection {
+    pub title: String,
+    /// One sentence on what's said in it.
+    pub summary: String,
+    /// Seconds.
+    pub start: f64,
+    pub end: f64,
+    pub subsections: Vec<OutlineSection>,
+}

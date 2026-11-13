@@ -925,20 +925,24 @@ def transcribe_window(body):
 def _transcribe_window(body):
     """What's said in a stretch of a podcast episode, for finding its ads: segments of
     {start, end, text}, timed from the start of the file. Whisper on the graphics card (taking
-    turns with the pictures, as the reader's listening does); no word timings, which it doesn't
-    need and which cost a lot more."""
+    turns with the pictures, as the reader's listening does). With "words", each segment also
+    has its words' times ([start, end, word]), so the transcript can light up word by word."""
     from common import load_audio_window
 
     start = float(body.get("start", 0.0))
     samples = load_audio_window(body["audio"], start, float(body.get("duration", 300.0)))
     with listen_lock:
         touch("whisper")
-        segments, _ = listen_model().transcribe(samples, vad_filter=True, language=body.get("language") or "en")
+        want_words = bool(body.get("words"))
+        segments, _ = listen_model().transcribe(samples, vad_filter=True, language=body.get("language") or "en", word_timestamps=want_words)
         out = []
         for seg in segments:
             text = seg.text.strip()
             if text:
-                out.append({"start": round(seg.start + start, 2), "end": round(seg.end + start, 2), "text": text})
+                line = {"start": round(seg.start + start, 2), "end": round(seg.end + start, 2), "text": text}
+                if want_words and seg.words:
+                    line["words"] = [[round(w.start + start, 2), round(w.end + start, 2), w.word.strip()] for w in seg.words if w.word.strip()]
+                out.append(line)
     return {"segments": out, "end": round(start + len(samples) / 16000, 2)}
 
 

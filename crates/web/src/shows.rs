@@ -2,7 +2,7 @@
 //! around duet (a bar along the bottom that opens into a full now-playing screen) and skips the
 //! ads the server has found.
 
-use duet_common::shows::{AdScan, Chart, GENRES, Show, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
+use duet_common::shows::{AdScan, Chart, GENRES, Outline, OutlineSection, Show, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::prelude::*;
@@ -973,6 +973,82 @@ fn EpisodeRow(ep: ShowEpisode, #[prop(optional)] show_name: bool) -> impl IntoVi
     }
 }
 
+/// An episode's AI outline, fetched again when `key` (its id and how far its check has got)
+/// changes, and every few seconds while it's being made.
+fn outline_for(key: Signal<(i64, String)>) -> RwSignal<Outline> {
+    let outline = RwSignal::new(Outline::default());
+    let asked = StoredValue::new(0u32);
+    Effect::new(move |_| {
+        let (id, _) = key.get();
+        asked.update_value(|n| *n += 1);
+        let me = asked.get_value();
+        if id == 0 {
+            outline.set(Outline::default());
+            return;
+        }
+        spawn_local(async move {
+            loop {
+                let Ok(o) = api::get::<Outline>(&format!("/api/shows/episodes/{id}/outline")).await else { return };
+                if asked.get_value() != me {
+                    return;
+                }
+                let more = o.state == "making";
+                outline.set(o);
+                if !more {
+                    return;
+                }
+                gloo_timers::future::TimeoutFuture::new(4000).await;
+                if asked.get_value() != me {
+                    return;
+                }
+            }
+        });
+    });
+    outline
+}
+
+/// Asks for the outline to be made (or made again).
+fn remake_outline(id: i64, outline: RwSignal<Outline>) {
+    let toast = toast();
+    spawn_local(async move {
+        match api::post::<_, Outline>(&format!("/api/shows/episodes/{id}/outline"), &()).await {
+            Ok(o) => {
+                let making = o.state == "making";
+                outline.set(o);
+                // (Watch it until it's done.)
+                while making {
+                    gloo_timers::future::TimeoutFuture::new(4000).await;
+                    let Ok(o) = api::get::<Outline>(&format!("/api/shows/episodes/{id}/outline")).await else { return };
+                    let still = o.state == "making";
+                    outline.set(o);
+                    if !still {
+                        break;
+                    }
+                }
+            }
+            Err(e) => toast.show(e.0),
+        }
+    });
+}
+
+/// The AI's few sentences on what the episode's about.
+#[component]
+fn EpisodeSummary(outline: RwSignal<Outline>) -> impl IntoView {
+    move || {
+        outline.with(|o| match o.state.as_str() {
+            "done" if !o.summary.is_empty() => view! {
+                <div class="ep-summary">
+                    <div class="ep-summary-head"><span>"Summary"</span><span class="ai-badge" title="Written by AI from the transcript">"AI"</span></div>
+                    <p>{o.summary.clone()}</p>
+                </div>
+            }
+            .into_any(),
+            "making" => view! { <div class="ep-summary muted"><span class="spinner tiny"></span>" Writing a summary and outline…"</div> }.into_any(),
+            _ => ().into_any(),
+        })
+    }
+}
+
 /// An episode's show notes (fetched whole when they weren't in the list).
 #[component]
 fn Notes(id: i64, ep: Signal<ShowEpisode>) -> impl IntoView {
@@ -999,11 +1075,15 @@ fn Notes(id: i64, ep: Signal<ShowEpisode>) -> impl IntoView {
             }
         }
     };
+    let outline = outline_for(Signal::derive(move || ep.with(|e| (id, e.ads.state.clone()))));
     view! {
-        <div class="pod-notes" on:click=on_click inner_html=move || {
-            let h = html.get();
-            if h.trim().is_empty() { ep.with(|e| e.description.clone()) } else { sp_clean_notes(&h) }
-        }></div>
+        <div class="pod-notes-wrap">
+            <EpisodeSummary outline/>
+            <div class="pod-notes" on:click=on_click inner_html=move || {
+                let h = html.get();
+                if h.trim().is_empty() { ep.with(|e| e.description.clone()) } else { sp_clean_notes(&h) }
+            }></div>
+        </div>
     }
 }
 
@@ -1508,6 +1588,8 @@ pub fn NowPlaying() -> impl IntoView {
         });
     };
     let transcript = RwSignal::new(Vec::<(f64, String)>::new());
+    // Each line's words' times (when Whisper gave them), to light up the word being said.
+    let words = RwSignal::new(Vec::<Vec<(f64, f64, String)>>::new());
     Effect::new(move |_| {
         if tab.get() != "transcript" {
             return;
@@ -1518,9 +1600,13 @@ pub fn NowPlaying() -> impl IntoView {
             #[derive(serde::Deserialize)]
             struct Heard {
                 start: f64,
+                end: f64,
                 text: String,
+                #[serde(default)]
+                words: Vec<(f64, f64, String)>,
             }
             if let Ok(h) = api::get::<Vec<Heard>>(&format!("/api/shows/episodes/{id}/transcript")).await {
+                words.set(h.iter().map(|h| if h.words.is_empty() { spread_words(h.start, h.end, &h.text) } else { h.words.clone() }).collect());
                 transcript.set(h.into_iter().map(|h| (h.start, h.text)).collect());
             }
         });
@@ -1531,6 +1617,7 @@ pub fn NowPlaying() -> impl IntoView {
         transcript.with(|all| all.iter().rposition(|(t, _)| *t <= x))
     });
     let ep_id = Memo::new(move |_| p.ep.with(|e| e.as_ref().map(|e| e.id).unwrap_or(0)));
+    let outline = outline_for(Signal::derive(move || p.ep.with(|e| e.as_ref().map(|e| (e.id, e.ads.state.clone())).unwrap_or_default())));
     // Swipe the sheet down to close it (phones).
     let drag = RwSignal::new(None::<(f64, f64)>);
     let skipping = move || p.skipping();
@@ -1676,7 +1763,7 @@ pub fn NowPlaying() -> impl IntoView {
                                     </div>
                                 }.into_any()
                             }
-                            "transcript" => view! { <Transcript lines=transcript said/> }.into_any(),
+                            "transcript" => view! { <Transcript lines=transcript words said outline/> }.into_any(),
                             _ => {
                                 let id = ep_id.get();
                                 view! { <Notes id ep=Signal::derive(move || p.ep.get().unwrap_or_default())/> }.into_any()
@@ -1761,23 +1848,52 @@ fn Discover(genre: Option<i64>) -> impl IntoView {
     }
 }
 
-/// The episode's transcript: follows along as it plays (or not, while you're reading back),
-/// marks the ads, searches, and jumps to any line you tap.
+/// The episode's transcript: as an AI table of contents whose sections open into what's said
+/// in them, or whole. Follows along as it plays (or not, while you're reading back), marks the
+/// ads, searches, and jumps to any line you tap.
 #[component]
-fn Transcript(lines: RwSignal<Vec<(f64, String)>>, said: Memo<Option<usize>>) -> impl IntoView {
+fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64, f64, String)>>>, said: Memo<Option<usize>>, outline: RwSignal<Outline>) -> impl IntoView {
     let p = player();
     let toast = toast();
     let query = RwSignal::new(String::new());
     let follow = RwSignal::new(true);
+    let whole = RwSignal::new(false);
+    let opened = RwSignal::new(std::collections::HashSet::<usize>::new());
     let list = NodeRef::<leptos::html::Div>::new();
     let ads = move || p.ep.with(|e| e.as_ref().map(|e| e.ads.ads.clone()).unwrap_or_default());
-    // Which ad (if any) each line is in.
-    let ad_of = move |t: f64, all: &[duet_common::shows::AdSpan]| all.iter().position(|a| t >= a.start - 0.5 && t < a.end - 0.5);
+    let has_outline = move || outline.with(|o| o.state == "done" && !o.sections.is_empty());
+    let contents = move || has_outline() && !whole.get() && query.with(|q| q.trim().is_empty());
+    // The section playing now.
+    let now_section = Memo::new(move |_| {
+        let t = p.time.get();
+        outline.with(|o| o.sections.iter().position(|s| t >= s.start && t < s.end))
+    });
+    // Following along opens the section being played, and closes the one it opened before.
+    let auto_opened = StoredValue::new(None::<usize>);
+    Effect::new(move |_| {
+        if let Some(k) = now_section.get()
+            && follow.get()
+            && contents()
+        {
+            let before = auto_opened.get_value();
+            if before == Some(k) && opened.with_untracked(|o| o.contains(&k)) {
+                return;
+            }
+            opened.update(|o| {
+                if let Some(j) = before.filter(|j| *j != k) {
+                    o.remove(&j);
+                }
+                o.insert(k);
+            });
+            auto_opened.set_value(Some(k));
+        }
+    });
     Effect::new(move |_| {
         let Some(i) = said.get() else { return };
         if !follow.get() || !query.with(String::is_empty) {
             return;
         }
+        let _ = opened.get();
         let Some(el) = list.get() else { return };
         if let Ok(Some(line)) = el.query_selector(&format!("[data-i=\"{i}\"]")) {
             let opts = web_sys::ScrollIntoViewOptions::new();
@@ -1799,6 +1915,17 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, said: Memo<Option<usize>>) ->
             }
         });
     };
+    let remake = move |_| {
+        let id = p.ep.with_untracked(|e| e.as_ref().map(|e| e.id).unwrap_or(0));
+        if id != 0 {
+            remake_outline(id, outline);
+        }
+    };
+    let jump = move |t: f64| {
+        sp_seek(t);
+        sp_play();
+        follow.set(true);
+    };
     view! {
         <div class="np-transcript">
             <div class="tr-tools">
@@ -1806,6 +1933,12 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, said: Memo<Option<usize>>) ->
                     {icon(icons::DISCOVER)}
                     <input type="search" placeholder="Search the transcript" prop:value=move || query.get() on:input=move |ev| query.set(event_target_value(&ev))/>
                 </label>
+                <Show when=has_outline>
+                    <div class="seg tr-mode">
+                        <button class:on=move || !whole.get() on:click=move |_| whole.set(false) title="AI table of contents">"Contents"</button>
+                        <button class:on=move || whole.get() on:click=move |_| whole.set(true)>"Full text"</button>
+                    </div>
+                </Show>
                 <button class="ghost small tr-follow" class:selected=move || follow.get() on:click=move |_| follow.update(|f| *f = !*f)
                     title="Keep the line being said in view">
                     {move || if follow.get() { "Following along" } else { "Follow along" }}
@@ -1821,7 +1954,7 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, said: Memo<Option<usize>>) ->
                         } else {
                             view! {
                                 <div class="tr-empty">
-                                    <p class="muted">"No transcript yet. It's written when the episode's checked for ads."</p>
+                                    <p class="muted">"No transcript yet. It's written when the episode's checked for ads, then AI makes a summary and a table of contents from it."</p>
                                     {(e.id != 0).then(|| view! { <button class="ghost" on:click=prepare>"Make the transcript"</button> })}
                                 </div>
                             }.into_any()
@@ -1830,34 +1963,171 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, said: Memo<Option<usize>>) ->
                     let q = query.get().trim().to_lowercase();
                     let all_ads = ads();
                     let all = lines.get();
+                    if contents() {
+                        let o = outline.get();
+                        let open = opened.get();
+                        let sections = o.sections.into_iter().enumerate().map(|(k, sec)| {
+                            let is_open = open.contains(&k);
+                            let len = sec.end - sec.start;
+                            let start = sec.start;
+                            let toggle = move |_| {
+                                let closing = opened.with_untracked(|o| o.contains(&k));
+                                if closing && now_section.get_untracked() == Some(k) {
+                                    follow.set(false);
+                                }
+                                opened.update(|o| if !o.remove(&k) { o.insert(k); });
+                            };
+                            let subs_list = (!is_open && !sec.subsections.is_empty()).then(|| view! {
+                                <ul class="ptoc-subs">
+                                    {sec.subsections.iter().cloned().map(|sub| { let t = sub.start; view! {
+                                        <li><button class="link ts" on:click=move |_| jump(t)>{format_time(t)}</button><span>{sub.title}</span></li>
+                                    }}).collect_view()}
+                                </ul>
+                            });
+                            let body = is_open.then(|| {
+                                let mine: Vec<(usize, f64, String)> = all.iter().enumerate()
+                                    .filter(|(_, (t, _))| *t >= sec.start - 0.5 && *t < sec.end - 0.5)
+                                    .map(|(i, (t, x))| (i, *t, x.clone())).collect();
+                                view! { <div class="ptoc-body">{transcript_rows(mine, &all_ads, "", &sec.subsections, said, follow, words)}</div> }
+                            });
+                            view! {
+                                <section class="ptoc-sec" class:open=is_open class:now=move || now_section.get() == Some(k)>
+                                    <div class="ptoc-head">
+                                        <button class="ptoc-toggle" on:click=toggle aria-expanded=is_open.to_string()>
+                                            <svg viewBox="0 0 24 24" class="icon ptoc-chev" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+                                            <span class="ptoc-title">{sec.title.clone()}</span>
+                                        </button>
+                                        <button class="link ts" title="Play from here" on:click=move |_| jump(start)>{format_time(start)}</button>
+                                        <small class="muted ptoc-len">{format!("{} min", (len / 60.0).round().max(1.0))}</small>
+                                    </div>
+                                    {(!sec.summary.is_empty()).then(|| view! { <p class="ptoc-sum">{sec.summary.clone()}</p> })}
+                                    {subs_list}
+                                    {body}
+                                </section>
+                            }
+                        }).collect_view();
+                        return view! {
+                            <EpisodeSummary outline/>
+                            <div class="ptoc-head-row">
+                                <span class="muted small">"Contents"<span class="ai-badge" title="Titles and summaries written by AI from the transcript">"AI"</span></span>
+                                <button class="link small" on:click=move |_| { let n = outline.with_untracked(|o| o.sections.len()); opened.update(|o| if o.len() == n { o.clear() } else { o.extend(0..n) }) }>
+                                    {move || if opened.with(|o| o.len()) == outline.with(|o| o.sections.len()) { "Close all" } else { "Open all" }}
+                                </button>
+                            </div>
+                            <div class="ptoc">{sections}</div>
+                            <button class="link small ptoc-remake" on:click=remake>"Write the outline again"</button>
+                        }.into_any();
+                    }
                     let shown: Vec<(usize, f64, String)> = all.into_iter().enumerate().filter(|(_, (_, t))| q.is_empty() || t.to_lowercase().contains(&q)).map(|(i, (t, x))| (i, t, x)).collect();
                     if shown.is_empty() {
                         return view! { <p class="muted">"No lines match."</p> }.into_any();
                     }
                     let count = (!q.is_empty()).then(|| view! { <p class="tr-count muted small">{format!("{} line{} match", shown.len(), if shown.len() == 1 { "" } else { "s" })}</p> });
-                    let mut prev_ad = None;
-                    let rows = shown.into_iter().map(|(i, t, text)| {
-                        let ad = ad_of(t, &all_ads);
-                        let starts = ad.is_some() && ad != prev_ad;
-                        prev_ad = ad;
-                        let tag = ad.filter(|_| starts).map(|k| {
-                            let a = &all_ads[k];
-                            view! { <span class="tr-ad-tag">{format!("Ad · {} · {}", if a.label.is_empty() { "Ad" } else { &a.label }, format_time(a.end - a.start))}</span> }
-                        });
-                        let text = if q.is_empty() { view! { <span>{text}</span> }.into_any() } else { highlight(&text, &q).into_any() };
-                        view! {
-                            <p data-i=i.to_string() class:now=move || said.get() == Some(i) class:ad=ad.is_some()
-                                on:click=move |_| { sp_seek(t); sp_play(); follow.set(true) }>
-                                {tag}
-                                <span class="ts">{format_time(t)}</span>{text}
-                            </p>
+                    // (While there's no outline: how it's going, or a way to make one.)
+                    let e = p.ep.get_untracked().unwrap_or_default();
+                    let note = q.is_empty().then(|| outline.with(|o| match o.state.as_str() {
+                        "making" => view! { <p class="tr-outline-note muted small"><span class="spinner tiny"></span>" AI is writing a summary and table of contents…"</p> }.into_any(),
+                        "waiting" => view! { <p class="tr-outline-note muted small">"The summary and table of contents are written once the whole episode's transcribed."</p> }.into_any(),
+                        "done" => ().into_any(),
+                        _ if e.ads.busy() => view! { <p class="tr-outline-note muted small">"A summary and table of contents are written once the whole episode's transcribed."</p> }.into_any(),
+                        st => {
+                            let failed = (st == "failed").then(|| o.error.clone().unwrap_or_default());
+                            view! {
+                                <p class="tr-outline-note muted small">
+                                    {failed.map(|e| format!("Couldn't write the outline: {e}. "))}
+                                    <button class="link" on:click=remake>"Write a summary and table of contents"</button>
+                                </p>
+                            }.into_any()
                         }
-                    }).collect_view();
-                    view! { {count}{rows} }.into_any()
+                    }));
+                    let subs: Vec<OutlineSection> = if q.is_empty() && has_outline() { outline.with(|o| o.sections.clone()) } else { vec![] };
+                    view! { {note}{count}{transcript_rows(shown, &all_ads, &q, &subs, said, follow, words)} }.into_any()
                 }}
             </div>
         </div>
     }
+}
+
+/// Times for a line's words when Whisper didn't give them (asking costs a lot more on AMD cards):
+/// the line's time shared out by the words' lengths, which is close enough to light them up.
+fn spread_words(start: f64, end: f64, text: &str) -> Vec<(f64, f64, String)> {
+    let ws: Vec<&str> = text.split_whitespace().collect();
+    let total: f64 = ws.iter().map(|w| w.chars().count() as f64 + 1.0).sum();
+    let span = (end - start).max(0.1);
+    let mut t = start;
+    ws.into_iter()
+        .map(|w| {
+            let d = span * (w.chars().count() as f64 + 1.0) / total.max(1.0);
+            let out = (t, t + d, w.to_string());
+            t += d;
+            out
+        })
+        .collect()
+}
+
+/// Transcript lines, ads marked, with a heading where each of `heads` starts.
+fn transcript_rows(
+    shown: Vec<(usize, f64, String)>,
+    all_ads: &[duet_common::shows::AdSpan],
+    q: &str,
+    heads: &[OutlineSection],
+    said: Memo<Option<usize>>,
+    follow: RwSignal<bool>,
+    words: RwSignal<Vec<Vec<(f64, f64, String)>>>,
+) -> impl IntoView + use<> {
+    let time = player().time;
+    let ad_of = |t: f64| all_ads.iter().position(|a| t >= a.start - 0.5 && t < a.end - 0.5);
+    let mut prev_ad = None;
+    let mut next_head = 0;
+    shown
+        .into_iter()
+        .map(|(i, t, text)| {
+            let mut head = None;
+            while next_head < heads.len() && heads[next_head].start <= t + 0.5 {
+                head = Some(heads[next_head].title.clone());
+                next_head += 1;
+            }
+            let head = head.map(|h| view! { <h4 class="tr-head">{h}</h4> });
+            let ad = ad_of(t);
+            let starts = ad.is_some() && ad != prev_ad;
+            prev_ad = ad;
+            let tag = ad.filter(|_| starts).map(|k| {
+                let a = &all_ads[k];
+                view! { <span class="tr-ad-tag">{format!("Ad · {} · {}", if a.label.is_empty() { "Ad" } else { &a.label }, format_time(a.end - a.start))}</span> }
+            });
+            let text = if q.is_empty() {
+                // The line being said lights up word by word, as the audiobooks do.
+                (move || {
+                    let mine = (said.get() == Some(i)).then(|| words.with_untracked(|w| w.get(i).cloned().unwrap_or_default())).unwrap_or_default();
+                    if mine.is_empty() {
+                        return view! { <span>{text.clone()}</span> }.into_any();
+                    }
+                    let n = mine.len();
+                    let starts: Vec<f64> = mine.iter().map(|w| w.0).collect();
+                    view! {
+                        <span>{mine.into_iter().enumerate().map(|(k, (a, b, w))| {
+                            let next = starts.get(k + 1).copied().unwrap_or(b + 0.3);
+                            view! {
+                                <span class="tr-w" class:said={move || time.get() >= a} class:now={move || { let t = time.get(); t >= a && (t < next || k + 1 == n && t < b + 0.3) }}>{w}</span>
+                                " "
+                            }
+                        }).collect_view()}</span>
+                    }.into_any()
+                })
+                .into_any()
+            } else {
+                highlight(&text, q).into_any()
+            };
+            view! {
+                {head}
+                <p data-i=i.to_string() class:now=move || said.get() == Some(i) class:ad=ad.is_some()
+                    on:click=move |_| { sp_seek(t); sp_play(); follow.set(true) }>
+                    {tag}
+                    <span class="ts">{format_time(t)}</span>{text}
+                </p>
+            }
+        })
+        .collect_view()
 }
 
 /// `text` with each match of `q` (lowercase) marked.

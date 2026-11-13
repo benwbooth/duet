@@ -31,7 +31,7 @@ use axum::{
     routing::{get, post, put},
 };
 use chrono::{DateTime, Utc};
-use duet_common::shows::{AdScan, AdSpan, Chart, GENRES, Show, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
+use duet_common::shows::{AdScan, AdSpan, Chart, GENRES, Outline, OutlineSection, Show, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
 use futures_util::StreamExt;
 use quick_xml::{Reader, events::Event};
 use serde::{Deserialize, Serialize};
@@ -49,7 +49,7 @@ use crate::{
 
 /// The first stretch listened to is short, so the opening ads are known quickly.
 const FIRST_WINDOW: f64 = 240.0;
-const WINDOW: f64 = 600.0;
+const WINDOW: f64 = 900.0;
 /// Each stretch is read with the end of the one before it, so an ad across the join is whole.
 const OVERLAP: f64 = 120.0;
 
@@ -73,6 +73,7 @@ pub fn routes() -> Router<State> {
         .route("/shows/episodes/{id}/ads/{n}/remove", post(not_an_ad))
         .route("/shows/episodes/{id}/rescan", post(rescan))
         .route("/shows/episodes/{id}/transcript", get(transcript))
+        .route("/shows/episodes/{id}/outline", get(get_outline).post(remake_outline))
 }
 
 fn base(state: &State) -> PathBuf {
@@ -676,7 +677,12 @@ async fn scanner(state: State) {
             continue;
         };
         match scan(&state, id).await {
-            Ok(true) => {}
+            // The whole transcript is in: its outline next (on the same model, so in turn).
+            Ok(true) => {
+                if outline_of(&state, id).await.state != "done" && episode_dir(&state, id).join("transcript.json").exists() {
+                    let _ = make_outline(&state, id).await;
+                }
+            }
             // Set aside for one being played: back in line after it.
             Ok(false) => QUEUE.lock().unwrap().push_back(id),
             Err(e) => {
@@ -853,6 +859,9 @@ struct Heard {
     start: f64,
     end: f64,
     text: String,
+    /// Each word's (start, end, word), for lighting the transcript up as it plays.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    words: Vec<(f64, f64, String)>,
 }
 
 fn mmss(t: f64) -> String {
@@ -903,30 +912,49 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
     };
     // A YouTube video SponsorBlock's community has already marked: no need to listen.
     let audio_url: String = sqlx::query_scalar("SELECT audio_url FROM show_episodes WHERE id = ?").bind(id).fetch_one(&state.db).await?;
-    if is_youtube(&audio_url) && settings(state).await.sponsorblock && heard.is_empty() {
+    // A YouTube video SponsorBlock's community has already marked: its ads are known, so the
+    // listening only writes the transcript (for reading along and the outline).
+    let mut marked = false;
+    if is_youtube(&audio_url) && settings(state).await.sponsorblock && current.checked == 0.0 {
         let found = sponsorblock(state, &audio_url, skip_promos).await;
         if !found.is_empty() {
+            marked = true;
             set_scan(state, id, |s| {
                 s.ads = found;
-                s.state = "done".into();
-                s.doing.clear();
-                s.progress = 1.0;
                 s.checked = duration;
                 s.duration = duration;
             })
             .await;
-            SCANS.lock().unwrap().remove(&id);
-            return Ok(true);
         }
     }
+    marked |= is_youtube(&audio_url) && current.checked >= duration - 1.0 && !current.ads.is_empty();
     let tts = state.settings.read().await.ai.tts_url.clone();
-    let mut checked = scan_of(state, id).await.checked;
+    // How far the transcript (and, unless SponsorBlock marked them, the ads) has got.
+    let mut checked = if marked { heard.last().map(|h| h.end).unwrap_or(0.0) } else { scan_of(state, id).await.checked };
+    // The model reads one stretch while Whisper writes down the next: the stretch being read,
+    // and where it ends.
+    let mut reading: Option<(tokio::task::JoinHandle<anyhow::Result<Vec<AdSpan>>>, f64)> = None;
+    // Puts what the model found in, and moves "checked" past it.
+    let take = |reading: Option<(tokio::task::JoinHandle<anyhow::Result<Vec<AdSpan>>>, f64)>| async move {
+        let Some((task, upto)) = reading else { return anyhow::Ok(()) };
+        let found = task.await.context("reading the transcript")??;
+        set_scan(state, id, |s| {
+            for a in found {
+                add_span(&mut s.ads, a);
+            }
+            s.checked = upto;
+            s.duration = duration;
+        })
+        .await;
+        Ok(())
+    };
     loop {
         if checked >= duration - 1.0 {
             break;
         }
         let wanted = WANTED.load(Ordering::SeqCst);
         if wanted != 0 && wanted != id {
+            take(reading.take()).await?;
             set_scan(state, id, |s| {
                 s.state = "queued".into();
                 s.doing = "Paused for the episode you're playing".into();
@@ -939,7 +967,11 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
             s.state = "listening".into();
             s.duration = duration;
             s.progress = checked / duration.max(1.0);
-            s.doing = format!("Listening for ads: {} of {}", mmss(checked), mmss(duration));
+            s.doing = if marked {
+                format!("Writing the transcript: {} of {}", mmss(checked), mmss(duration))
+            } else {
+                format!("Listening for ads: {} of {}", mmss(checked), mmss(duration))
+            };
         })
         .await;
         #[derive(Deserialize)]
@@ -947,6 +979,7 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
             segments: Vec<Heard>,
             end: f64,
         }
+        let started = std::time::Instant::now();
         let resp = state
             .http
             .post(format!("{}/transcribe-window", tts.trim_end_matches('/')))
@@ -961,24 +994,30 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
         }
         let reply: Reply = resp.json().await?;
         let end = if reply.end > checked { reply.end } else { checked + len };
+        tracing::info!("episode {id}: transcribed {}–{} in {:.0}s", mmss(checked), mmss(end), started.elapsed().as_secs_f64());
         heard.retain(|h| h.start < checked);
         heard.extend(reply.segments);
         write_json(&transcript_path, &heard).await?;
-        // This stretch, with the end of the last for context.
-        let from = (checked - OVERLAP).max(0.0);
-        let lines: Vec<&Heard> = heard.iter().filter(|h| h.end > from && h.start < end).collect();
-        let found = find_ads(state, &show_title, &title, &notes, &lines, skip_promos).await?;
         let new_checked = end.min(duration);
-        set_scan(state, id, |s| {
-            for a in found {
-                add_span(&mut s.ads, a);
-            }
-            s.checked = new_checked;
-            s.duration = duration;
-        })
-        .await;
+        if !marked {
+            // The stretch before is read by now (or soon): in, before this one goes to the model.
+            take(reading.take()).await?;
+            // This stretch, with the end of the last for context.
+            let from = (checked - OVERLAP).max(0.0);
+            let lines: Vec<Heard> = heard.iter().filter(|h| h.end > from && h.start < end).cloned().collect();
+            let (st, show_title, title, notes) = (state.clone(), show_title.clone(), title.clone(), notes.clone());
+            let task = tokio::spawn(async move {
+                let started = std::time::Instant::now();
+                let refs: Vec<&Heard> = lines.iter().collect();
+                let found = find_ads(&st, &show_title, &title, &notes, &refs, skip_promos).await;
+                tracing::info!("episode {id}: read {} lines for ads in {:.0}s", refs.len(), started.elapsed().as_secs_f64());
+                found
+            });
+            reading = Some((task, new_checked));
+        }
         checked = new_checked;
     }
+    take(reading.take()).await?;
     set_scan(state, id, |s| {
         s.state = "done".into();
         s.doing.clear();
@@ -1069,6 +1108,155 @@ async fn find_ads(state: &State, show: &str, title: &str, notes: &str, lines: &[
             (last.end - first.start >= 8.0).then(|| AdSpan { start: first.start, end: last.end, label: f.label.trim().to_string() })
         })
         .collect())
+}
+
+// ---- Outlines ----
+
+/// Outlines being made right now.
+static OUTLINING: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
+
+async fn outline_of(state: &State, id: i64) -> Outline {
+    if OUTLINING.lock().unwrap().contains(&id) {
+        return Outline { state: "making".into(), ..Default::default() };
+    }
+    read_json(&episode_dir(state, id).join("outline.json")).await.unwrap_or_default()
+}
+
+/// Has the model read the whole transcript and write a summary and a table of contents
+/// (sections, and subsections in the longer ones), saved beside the transcript.
+async fn make_outline(state: &State, id: i64) -> anyhow::Result<Outline> {
+    if !OUTLINING.lock().unwrap().insert(id) {
+        bail!("It's being made right now");
+    }
+    let made = outline_inner(state, id).await;
+    OUTLINING.lock().unwrap().remove(&id);
+    let o = match made {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!("outlining episode {id}: {e:#}");
+            Outline { state: "failed".into(), error: Some(format!("{e:#}")), ..Default::default() }
+        }
+    };
+    write_json(&episode_dir(state, id).join("outline.json"), &o).await?;
+    Ok(o)
+}
+
+/// The transcript in stretches of about half a minute (what the outline points at), with the
+/// ads left out.
+fn passages(heard: &[Heard], ads: &[AdSpan]) -> Vec<(f64, f64, String)> {
+    let mut out: Vec<(f64, f64, String)> = Vec::new();
+    for h in heard {
+        let mid = (h.start + h.end) / 2.0;
+        if ads.iter().any(|a| mid >= a.start && mid < a.end) {
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if h.start - last.0 < 30.0 => {
+                last.1 = h.end;
+                last.2.push(' ');
+                last.2.push_str(h.text.trim());
+            }
+            _ => out.push((h.start, h.end, h.text.trim().to_string())),
+        }
+    }
+    out
+}
+
+async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
+    let heard: Vec<Heard> = read_json(&episode_dir(state, id).join("transcript.json")).await.unwrap_or_default();
+    if heard.is_empty() {
+        bail!("there's no transcript yet");
+    }
+    let scan = scan_of(state, id).await;
+    let r = sqlx::query("SELECT s.title AS show_title, e.title, e.notes, e.duration FROM show_episodes e JOIN shows s ON s.id = e.show_id WHERE e.id = ?")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    let (show_title, title, notes, duration) =
+        (r.get::<String, _>("show_title"), r.get::<String, _>("title"), clip(&plain(&r.get::<String, _>("notes")), 1500), r.get::<f64, _>("duration"));
+    let duration = duration.max(heard.last().map(|h| h.end).unwrap_or(0.0));
+    let parts = passages(&heard, &scan.ads);
+    if parts.is_empty() {
+        bail!("the transcript is all ads");
+    }
+    let system = "You write the outline of a podcast episode from its transcript, for a podcast player: a summary, and a \
+        table of contents someone can skim and jump around in. You get the transcript in numbered passages, each with its \
+        time (ads are left out). Write:\n\
+        - summary: 2 to 4 plain sentences on what the episode is about: the subjects, guests, and the main points or \
+        conclusions. No \"In this episode\" opener.\n\
+        - sections: the episode's parts in order, as the topic changes: roughly one every 5 to 15 minutes (fewer for a \
+        short episode). Each has a short, specific title (2 to 7 words, Title Case not needed, no numbering) that says \
+        what's discussed, not \"Discussion\" or \"Part 2\"; a one-sentence summary; and \"at\": the number of the passage \
+        it starts at. The first section starts at passage 0 (call it the intro if that's what it is).\n\
+        - subsections: in sections longer than about 6 minutes that cover several things, the smaller topics within it, \
+        same shape (title, summary, at), in order, each starting at or after its section. Otherwise an empty list.\n\
+        The transcript is speech recognition, so spell names as they're most likely meant. Reply with only JSON, no \
+        prose: {\"summary\": \"...\", \"sections\": [{\"title\": \"...\", \"summary\": \"...\", \"at\": 0, \"subsections\": \
+        [{\"title\": \"...\", \"summary\": \"...\", \"at\": 3}]}]}";
+    let mut text = format!("Show: {show_title}\nEpisode: {title}\nLength: {}\n", mmss(duration));
+    if !notes.is_empty() {
+        text.push_str(&format!("Show notes: {notes}\n"));
+    }
+    text.push_str("\nTranscript:\n");
+    for (i, (t, _, words)) in parts.iter().enumerate() {
+        text.push_str(&format!("[{i}] {} {}\n", mmss(*t), words));
+    }
+    let turns = vec![("user".to_string(), text)];
+    let reply = if settings(state).await.ad_model == "local" {
+        crate::llm::chat_local(state, system, &turns).await?
+    } else {
+        crate::llm::chat(state, system, &turns).await?
+    };
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Part {
+        title: String,
+        summary: String,
+        at: serde_json::Value,
+        subsections: Vec<Part>,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Reply {
+        summary: String,
+        sections: Vec<Part>,
+    }
+    let json = match (reply.find('{'), reply.rfind('}')) {
+        (Some(a), Some(b)) if b > a => &reply[a..=b],
+        _ => bail!("the model didn't answer with an outline: {}", clip(&reply, 200)),
+    };
+    let got: Reply = serde_json::from_str(json).with_context(|| format!("the model's outline wasn't readable: {}", clip(&reply, 200)))?;
+    let start_of = |v: &serde_json::Value| {
+        let n = v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim_matches(['[', ']']).parse().ok())).unwrap_or(0) as usize;
+        parts[n.min(parts.len() - 1)].0
+    };
+    // In order, each running to where the next one starts; subsections within their section,
+    // the first starting with it (and a lone one dropped: it says nothing the section doesn't).
+    fn place(list: Vec<Part>, from: f64, to: f64, start_of: &dyn Fn(&serde_json::Value) -> f64, nested: bool) -> Vec<OutlineSection> {
+        let mut found: Vec<(f64, Part)> = list.into_iter().filter(|p| !p.title.trim().is_empty()).map(|p| (start_of(&p.at).clamp(from, to), p)).collect();
+        found.sort_by(|a, b| a.0.total_cmp(&b.0));
+        found.dedup_by(|b, a| (b.0 - a.0).abs() < 1.0);
+        if let Some(first) = found.first_mut() {
+            first.0 = from;
+        }
+        let ends: Vec<f64> = (0..found.len()).map(|i| found.get(i + 1).map(|n| n.0).unwrap_or(to)).collect();
+        found
+            .into_iter()
+            .zip(ends)
+            .map(|((start, p), end)| {
+                let mut subsections = if nested { place(p.subsections, start, end, start_of, false) } else { vec![] };
+                if subsections.len() < 2 {
+                    subsections.clear();
+                }
+                OutlineSection { title: p.title.trim().to_string(), summary: p.summary.trim().to_string(), start, end, subsections }
+            })
+            .collect()
+    }
+    let sections = place(got.sections, 0.0, duration, &start_of, true);
+    if got.summary.trim().is_empty() && sections.is_empty() {
+        bail!("the model's outline was empty");
+    }
+    Ok(Outline { state: "done".into(), summary: got.summary.trim().to_string(), sections, error: None })
 }
 
 // ---- Apple's directory ----
@@ -1588,12 +1776,42 @@ async fn rescan(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Js
     }
     set_scan(&s, id, |x| *x = AdScan::default()).await;
     let _ = tokio::fs::remove_file(episode_dir(&s, id).join("transcript.json")).await;
+    let _ = tokio::fs::remove_file(episode_dir(&s, id).join("outline.json")).await;
     queue(&s, id, true);
     Ok(Json(scan_of(&s, id).await))
 }
 
 async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<Vec<Heard>> {
     Json(read_json(&episode_dir(&s, id).join("transcript.json")).await.unwrap_or_default())
+}
+
+async fn get_outline(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<Outline> {
+    Json(outline_of(&s, id).await)
+}
+
+/// Makes (or remakes) the outline: now if the transcript's whole, otherwise once it is.
+async fn remake_outline(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Json<Outline>> {
+    if OUTLINING.lock().unwrap().contains(&id) {
+        return Ok(Json(outline_of(&s, id).await));
+    }
+    let scan = scan_of(&s, id).await;
+    let has_transcript = episode_dir(&s, id).join("transcript.json").exists();
+    if scan.state == "done" && !has_transcript {
+        // (Its ads came from SponsorBlock before transcripts were written for those: listen now.)
+        set_scan(&s, id, |x| x.state = "queued".into()).await;
+        queue(&s, id, true);
+    } else if scan.state != "done" {
+        queue(&s, id, true);
+    } else {
+        let st = s.clone();
+        OUTLINING.lock().unwrap().insert(id);
+        tokio::spawn(async move {
+            OUTLINING.lock().unwrap().remove(&id);
+            let _ = make_outline(&st, id).await;
+        });
+        return Ok(Json(Outline { state: "making".into(), ..Default::default() }));
+    }
+    Ok(Json(Outline { state: "waiting".into(), ..Default::default() }))
 }
 
 #[cfg(test)]

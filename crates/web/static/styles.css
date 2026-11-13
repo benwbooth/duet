@@ -2385,3 +2385,47 @@ html.eink .np-backdrop { display: none; }
   .tr-lines { max-height: 65vh; }
   .pscrub-tip { display: none; }
 }
+
+/* AI summary and table of contents (podcast transcripts) */
+.ai-badge { display: inline-block; margin-left: 0.4rem; padding: 0 0.35rem; border-radius: 5px; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.04em; color: var(--accent); background: var(--accent-soft); vertical-align: 1px; }
+.ep-summary { margin: 0 0 0.9rem; padding: 0.75rem 0.9rem; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); }
+.ep-summary.muted { display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; }
+.ep-summary-head { display: flex; align-items: center; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.3rem; }
+.ep-summary p { margin: 0; line-height: 1.55; font-size: 0.95rem; }
+.tr-tools { flex-wrap: wrap; }
+.tr-mode button { min-height: 32px; padding: 0 0.7rem; font-size: 0.85rem; }
+.ptoc-head-row { display: flex; justify-content: space-between; align-items: center; margin: 0 0 0.3rem; }
+.ptoc { display: grid; gap: 0.15rem; }
+.ptoc-sec { border-radius: 12px; padding: 0.15rem 0; border-left: 3px solid transparent; transition: background 0.2s; }
+.ptoc-sec.now { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.ptoc-sec.open { background: var(--surface); }
+.ptoc-head { display: flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.5rem 0.1rem 0.2rem; }
+.ptoc-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.35rem; border: 0; background: none; padding: 0.25rem 0; text-align: left; color: var(--text); cursor: pointer; font: inherit; }
+.ptoc-chev { width: 16px; height: 16px; flex: none; color: var(--muted); transition: transform 0.2s; }
+.ptoc-sec.open .ptoc-chev { transform: rotate(90deg); }
+.ptoc-title { font-weight: 650; font-size: 0.98rem; line-height: 1.3; }
+.ptoc-head .ts { font-size: 0.8rem; font-variant-numeric: tabular-nums; color: var(--accent); }
+.ptoc-len { flex: none; font-size: 0.75rem; white-space: nowrap; }
+.np-transcript .ptoc-sum { margin: 0 0.6rem 0.25rem 1.75rem; padding: 0; cursor: default; color: var(--muted); font-size: 0.88rem; line-height: 1.45; }
+.np-transcript .ptoc-sum:hover { background: none; }
+.ptoc-subs { list-style: none; margin: 0.1rem 0.5rem 0.35rem 1.75rem; padding: 0; display: grid; gap: 0.1rem; font-size: 0.86rem; }
+.ptoc-subs li { display: flex; gap: 0.5rem; align-items: baseline; }
+.ptoc-subs .ts { min-width: 2.8rem; font-size: 0.78rem; color: var(--accent); font-variant-numeric: tabular-nums; }
+.ptoc-body { margin: 0.2rem 0.3rem 0.4rem 1.2rem; border-top: 1px solid var(--line); padding-top: 0.3rem; }
+.tr-head { margin: 0.7rem 0.6rem 0.2rem; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); }
+.ptoc-body .tr-head:first-child { margin-top: 0.3rem; }
+.ptoc-remake { margin: 0.8rem 0 0.3rem; color: var(--muted); }
+.tr-outline-note { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; margin: 0 0 0.4rem !important; padding: 0 0.6rem !important; cursor: default !important; }
+@media (max-width: 760px) {
+  .ptoc-len { display: none; }
+  .np-transcript .ptoc-sum, .ptoc-subs { margin-left: 1.5rem; }
+  .ptoc-body { margin-left: 0.4rem; }
+}
+/* The word being said, lit as the audiobooks light it. */
+.tr-lines p.now .tr-w { transition: background 0.12s, color 0.12s; border-radius: 4px; padding: 0 1px; margin: 0 -1px; }
+.tr-lines p.now .tr-w:not(.said) { color: color-mix(in srgb, var(--text) 62%, transparent); }
+.tr-lines p.now .tr-w.now { background: color-mix(in srgb, var(--accent-soft) 40%, #f0a020 60%); color: var(--text); }
+.ptoc-toggle { justify-content: flex-start; }
+@media (max-width: 760px) { .tr-search { flex-basis: 100%; } }
+.ep-summary { flex: none; height: auto; }
+.ptoc-toggle, .ptoc-toggle:hover { background: none !important; box-shadow: none !important; border: 0 !important; }
