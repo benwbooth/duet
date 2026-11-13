@@ -2077,9 +2077,13 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64,
         }
         let _ = opened.get();
         let Some(el) = list.get() else { return };
-        // (Only the transcript scrolls: scrolling the line into view would move the whole
-        // screen with it.)
-        if let Ok(Some(line)) = el.query_selector(&format!("[data-i=\"{i}\"]")) {
+        // (After the next frame: a section just opened for this line, or the one before just
+        // closed, isn't laid out yet, and the line wouldn't be found or would be measured where
+        // it was.)
+        request_animation_frame(move || {
+            // (Only the transcript scrolls: scrolling the line into view would move the whole
+            // screen with it.)
+            let Ok(Some(line)) = el.query_selector(&format!("[data-i=\"{i}\"]")) else { return };
             let (a, b) = (line.get_bounding_client_rect(), el.get_bounding_client_rect());
             if a.height() == 0.0 {
                 return; // (folded away: an ad)
@@ -2089,7 +2093,7 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64,
             opts.set_top(top.max(0.0));
             opts.set_behavior(web_sys::ScrollBehavior::Smooth);
             el.scroll_to_with_scroll_to_options(&opts);
-        }
+        });
     });
     let prepare = move |_| {
         let Some(id) = p.ep.with_untracked(|e| e.as_ref().map(|e| e.id)) else { return };
