@@ -967,10 +967,22 @@ def time_words(samples, offset, lines, rate=16000):
         except Exception as e:  # (a line the aligner can't take keeps Whisper's times)
             print(f"aligning a podcast line: {e}", flush=True)
             continue
-        timed = [[round(t[0] + a + offset, 2), round(t[1] + a + offset, 2), w] for w, t in zip(ws, times) if t]
-        if timed:
-            line["words"] = timed
-            line["start"], line["end"] = timed[0][0], timed[-1][1]
+        if not any(times):
+            continue
+        # Words the aligner can't spell (numbers, "855-KESEMTA") are kept, placed between
+        # their neighbours, so no word drops out of the line.
+        import align
+
+        heard = {i: (0, t[0] + a + offset) for i, t in enumerate(times) if t}
+        starts = align.word_times(heard, len(ws), 0, a + offset, b + offset)
+        ends = {i: t[1] + a + offset for i, t in enumerate(times) if t}
+        timed = []
+        for i, w in enumerate(ws):
+            nxt = starts[i + 1] if i + 1 < len(ws) else b + offset
+            end = ends.get(i, nxt)
+            timed.append([round(starts[i], 2), round(max(starts[i], min(end, nxt)), 2), w])
+        line["words"] = timed
+        line["start"], line["end"] = timed[0][0], timed[-1][1]
 
 
 def align_lines(body):

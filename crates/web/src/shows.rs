@@ -1758,12 +1758,17 @@ pub fn NowPlaying() -> impl IntoView {
                                                 <ul>
                                                     {e.ads.ads.iter().cloned().enumerate().map(|(i, a)| view! {
                                                         <li>
-                                                            <button class="link ts" on:click=move |_| { sp_allow(i); sp_play() } title="Play this ad">{format!("{} – {}", format_time(a.start), format_time(a.end))}</button>
-                                                            <span class="ad-label">{if a.label.is_empty() { "Ad".to_string() } else { a.label.clone() }}<small class="muted">{format!(" · {}", format_time(a.end - a.start))}</small></span>
+                                                            <div class="ad-main">
+                                                                <span class="ad-label">{if a.label.is_empty() { "Ad".to_string() } else { a.label.clone() }}</span>
+                                                                <span class="ad-when">
+                                                                    <button class="link ts" on:click=move |_| { sp_allow(i); sp_play() } title="Play this ad">{format!("{} – {}", format_time(a.start), format_time(a.end))}</button>
+                                                                    <small class="muted">{format!(" · {}", format_time(a.end - a.start))}</small>
+                                                                </span>
+                                                            </div>
                                                             <span class="ad-state" class:done=move || p.skipped_ads.with(|v| v.contains(&i))>
                                                                 {move || if p.skipped_ads.with(|v| v.contains(&i)) { "Skipped" } else if p.time.get() > a.end { "Played" } else { "Coming up" }}
                                                             </span>
-                                                            <button class="link" on:click=move |_| not_ad(i) title="This isn't an ad: always play it">"Not an ad"</button>
+                                                            <button class="ghost small ad-wrong" on:click=move |_| not_ad(i) title="This part is the show, not an ad: always play it">"Mark as not an ad"</button>
                                                         </li>
                                                     }).collect_view()}
                                                 </ul>

@@ -1068,7 +1068,10 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
         checked = new_checked;
     }
     take(reading.take()).await?;
+    let mut ads = scan_of(state, id).await.ads;
+    snap_ads(&mut ads, &heard);
     set_scan(state, id, |s| {
+        s.ads = ads;
         s.version = CUTS;
         s.state = "done".into();
         s.doing.clear();
@@ -1440,6 +1443,11 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
                     }
                 }
                 write_json(&path, &heard).await?;
+                // (The ads' edges, to sentence ends, now the words are timed.)
+                let mut ads = scan_of(state, id).await.ads;
+                if snap_ads(&mut ads, &heard) && scan_of(state, id).await.state == "done" {
+                    set_scan(state, id, |s| s.ads = ads).await;
+                }
             }
             Ok(_) => {}
             Err(e) => tracing::warn!("timing the words in episode {id}: {e:#}"),
@@ -2106,7 +2114,45 @@ async fn rescan(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Js
 
 async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<Vec<Heard>> {
     let heard: Vec<Heard> = read_json(&episode_dir(&s, id).join("transcript.json")).await.unwrap_or_default();
-    Json(split_at_ads(heard, &scan_of(&s, id).await.ads))
+    let mut ads = scan_of(&s, id).await.ads;
+    snap_ads(&mut ads, &heard);
+    Json(split_at_ads(heard, &ads))
+}
+
+/// Moves each ad's start and end to the nearest end of a sentence within a second or so (ads
+/// begin and end with sentences, and a cut a word off leaves "Hello" in the ad). Returns
+/// whether anything moved.
+fn snap_ads(ads: &mut [AdSpan], heard: &[Heard]) -> bool {
+    // Every word, with whether a sentence ends just before it.
+    let mut words: Vec<(f64, bool)> = Vec::new();
+    for h in heard {
+        let ws = if h.words.is_empty() { spread(h) } else { h.words.clone() };
+        for w in ws {
+            words.push((w.0, false));
+            // (Marked below: whether this word ends a sentence.)
+            if let Some(l) = words.last_mut() {
+                l.1 = w.2.trim_end_matches(['"', '\'', ')', '\u{201d}']).ends_with(['.', '?', '!']);
+            }
+        }
+    }
+    let mut moved = false;
+    let snap = |t: f64| -> Option<f64> {
+        (1..words.len())
+            .filter(|&k| words[k - 1].1 && (words[k].0 - t).abs() <= 1.2)
+            .min_by(|&a, &b| (words[a].0 - t).abs().total_cmp(&(words[b].0 - t).abs()))
+            .map(|k| words[k].0 - 0.05)
+    };
+    for a in ads.iter_mut() {
+        if let Some(t) = snap(a.start).filter(|t| (t - a.start).abs() > 0.05) {
+            a.start = t;
+            moved = true;
+        }
+        if let Some(t) = snap(a.end).filter(|t| (t - a.end).abs() > 0.05 && *t > a.start + 1.0) {
+            a.end = t;
+            moved = true;
+        }
+    }
+    moved
 }
 
 /// Lines that run an ad and the show together, split where the ad starts or ends, so each is
@@ -2120,7 +2166,7 @@ fn split_at_ads(heard: Vec<Heard>, ads: &[AdSpan]) -> Vec<Heard> {
             let Some(&t) = cuts.iter().filter(|&&t| t > rest.start + 0.3 && t < rest.end - 0.3).min_by(|a, b| a.total_cmp(b)) else { break };
             let words = if rest.words.is_empty() { spread(&rest) } else { rest.words.clone() };
             // The first word that starts at (or after) the cut begins the second part.
-            let k = words.iter().position(|w| (w.0 + w.1) / 2.0 >= t).unwrap_or(words.len());
+            let k = words.iter().position(|w| w.0 >= t - 0.1).unwrap_or(words.len());
             if k == 0 || k >= words.len() {
                 break;
             }
@@ -2255,6 +2301,25 @@ Line two</media:description></media:group></entry>
         assert_eq!(out[0].speaker, Some(1));
         assert_eq!(out[1].text, "Well, it was a long night.");
         assert_eq!(out[1].speaker, Some(2));
+    }
+
+    #[test]
+    fn ads_end_at_sentence_ends() {
+        let words = |list: &[(f64, &str)]| list.iter().map(|(t, w)| (*t, t + 0.4, w.to_string())).collect::<Vec<_>>();
+        let h = Heard {
+            start: 90.0,
+            end: 95.0,
+            text: "call 855-KESEMTA. Hello again. It's me.".into(),
+            words: words(&[(90.0, "call"), (90.5, "855-KESEMTA."), (91.6, "Hello"), (92.1, "again."), (92.8, "It's"), (93.1, "me.")]),
+            speaker: None,
+        };
+        // The cut came a word late (after "Hello").
+        let mut ads = vec![AdSpan { start: 60.0, end: 92.0, label: String::new() }];
+        assert!(snap_ads(&mut ads, std::slice::from_ref(&h)));
+        assert!((ads[0].end - 91.55).abs() < 0.01);
+        let out = split_at_ads(vec![h], &ads);
+        assert_eq!(out[0].text, "call 855-KESEMTA.");
+        assert_eq!(out[1].text, "Hello again. It's me.");
     }
 
     #[test]

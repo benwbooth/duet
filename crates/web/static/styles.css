@@ -2270,7 +2270,7 @@ html.eink .swatch-gray { background: #4a4a4c; } html.eink .swatch-dark { backgro
 .np-ads li { display: flex; align-items: center; gap: 0.7rem; padding: 0.6rem 0; border-bottom: 1px solid var(--line); }
 .np-ads .ts { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
 .np-ads .ad-label { flex: 1; min-width: 0; }
-.np-ads li .link:last-child { font-size: 0.82rem; color: var(--muted); }
+
 .np-transcript p { margin: 0; padding: 0.4rem 0.6rem; border-radius: 10px; cursor: pointer; line-height: 1.5; }
 .np-transcript p:hover { background: var(--surface); }
 .np-transcript p.now { background: var(--accent-soft); }
@@ -2440,3 +2440,8 @@ html.eink .np-backdrop { display: none; }
 .ep-voice b { font-weight: 650; color: hsl(var(--who-hue) 45% 36%); }
 .ep-voice small { color: var(--muted); font-size: 0.72rem; }
 @media (max-width: 760px) { .tr-who { margin-left: 3.6rem; } }
+.np-ads .ad-main { flex: 1; min-width: 0; display: grid; gap: 0.1rem; }
+.np-ads .ad-label { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.np-ads .ad-when { font-size: 0.85rem; }
+.np-ads .ad-wrong { flex: none; font-size: 0.78rem; min-height: 30px; padding: 0 0.6rem; white-space: nowrap; }
+@media (max-width: 760px) { .np-ads .ad-wrong { font-size: 0.74rem; padding: 0 0.5rem; } }
