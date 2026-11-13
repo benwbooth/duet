@@ -2311,3 +2311,30 @@ html.eink .swatch-gray { background: #4a4a4c; } html.eink .swatch-dark { backgro
 @media (prefers-reduced-motion: reduce) { .mini-player, .now-playing, .np-art-wrap { animation: none; transition: none; } }
 html.eink .mini-player, html.eink .now-playing { background: #fff; backdrop-filter: none; box-shadow: none; border: 1.5px solid #000; animation: none; }
 html.eink .np-backdrop { display: none; }
+
+/* Podcasts: Discover (charts by category) and sources. */
+.pods-discover-btn { min-height: 40px; border-radius: 12px; }
+.genre-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.2rem 0 1.4rem; }
+.genre-chips a { padding: 0.35rem 0.85rem; border-radius: 99px; background: var(--surface); border: 1px solid var(--line); color: var(--text); font-size: 0.88rem; font-weight: 500; text-decoration: none !important; white-space: nowrap; transition: background 0.15s, border-color 0.15s; }
+.genre-chips a:hover { border-color: var(--accent-2); }
+.genre-chips a.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.discover-head { margin-top: 0.4rem; }
+.discover-head h2 { font-size: 1.5rem; }
+.pods-hits.ranked .pods-hit { grid-template-columns: 2.4rem 64px minmax(0, 1fr) auto; }
+.hit-rank { font: 600 1.35rem var(--serif); color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+.pods-hits.ranked .pods-hit:nth-child(-n+3) .hit-rank { color: var(--accent); }
+.hit-source { margin-left: 0.4rem; padding: 0 0.4rem; border-radius: 6px; background: var(--bg-2); font-size: 0.72rem; }
+.yt-badge { margin-left: 0.55rem; padding: 0.05rem 0.45rem; border-radius: 6px; background: #e62117; color: #fff; font-size: 0.72rem; font-weight: 700; vertical-align: middle; }
+.discover-note { margin-top: 2rem; }
+.section-head a { font-size: 0.9rem; font-weight: 500; }
+@media (max-width: 760px) {
+  .pods-discover-btn span { display: none; }
+  .pods-discover-btn { padding: 0.35rem 0.6rem; }
+  .genre-chips { flex-wrap: nowrap; overflow-x: auto; margin: 0 -1rem 1rem; padding: 0 1rem 0.3rem; scrollbar-width: none; }
+  .genre-chips::-webkit-scrollbar { display: none; }
+  .pods-hits.ranked .pods-hit { grid-template-columns: 1.8rem 56px minmax(0, 1fr) auto; gap: 0.6rem; }
+  .hit-rank { font-size: 1.1rem; }
+}
+.pods-settings label:not(.pods-check) { display: grid; gap: 0.3rem; font-weight: 500; min-width: 0; }
+.pods-settings select, .pods-settings input:not([type="checkbox"]), .pods-add input { width: 100%; min-width: 0; }
+.pods-settings .brief-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }

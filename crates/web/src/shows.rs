@@ -2,7 +2,7 @@
 //! around duet (a bar along the bottom that opens into a full now-playing screen) and skips the
 //! ads the server has found.
 
-use duet_common::shows::{AdScan, Show, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
+use duet_common::shows::{AdScan, Chart, GENRES, Show, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::prelude::*;
@@ -291,6 +291,12 @@ impl Player {
         spawn_local(async move {
             // (Not followed: straight from the show's server, nothing saved.)
             if ep.id == 0 {
+                if ep.needs_download {
+                    toast().show("Follow this channel to listen (its sound is pulled from YouTube first)");
+                    p.ep.set(None);
+                    p.state.set(String::new());
+                    return;
+                }
                 sp_load(&ep.audio_url, 0.0, p.rate.get_untracked(), true);
                 return;
             }
@@ -299,10 +305,10 @@ impl Player {
             let start = if ep.finished { 0.0 } else { ep.position };
             p.ep.set(Some(ep.clone()));
             let skip = p.skipping_untracked();
-            if skip && ep.ads.state != "done" {
+            if (skip && ep.ads.state != "done") || (ep.needs_download && !ep.downloaded) {
                 let _ = api::post::<_, AdScan>(&format!("/api/shows/episodes/{id}/prepare"), &serde_json::json!({ "now": true })).await;
             }
-            if skip && !ep.downloaded {
+            if (skip || ep.needs_download) && !ep.downloaded {
                 // Its ads are found in the downloaded copy, so that's the one that plays.
                 p.preparing.set(Some(ep.ads.clone()));
                 loop {
@@ -314,6 +320,12 @@ impl Player {
                     if now.downloaded {
                         p.ep.set(Some(now));
                         break;
+                    }
+                    if now.ads.state == "failed" && now.needs_download {
+                        toast().show(format!("Couldn't get it from YouTube: {}", now.ads.error.clone().unwrap_or_default()));
+                        p.preparing.set(None);
+                        p.state.set("paused".into());
+                        return;
                     }
                     if now.ads.state == "failed" {
                         toast().show(format!("Couldn't download it: {}. Playing it from the show's site.", now.ads.error.clone().unwrap_or_default()));
@@ -522,12 +534,16 @@ pub enum PodRoute {
     Show(i64),
     /// A show that isn't followed, by its feed address.
     Feed(String),
+    /// The charts: all shows, or one category.
+    Discover(Option<i64>),
 }
 
 impl PodRoute {
     pub fn parse(rest: &[&str]) -> PodRoute {
         match rest {
             ["show", id, ..] => id.parse().map(PodRoute::Show).unwrap_or(PodRoute::Home),
+            ["discover", genre, ..] => PodRoute::Discover(genre.parse().ok()),
+            ["discover"] => PodRoute::Discover(None),
             ["feed", url, ..] => PodRoute::Feed(js_sys::decode_uri_component(url).ok().and_then(|s| s.as_string()).unwrap_or_default()),
             _ => PodRoute::Home,
         }
@@ -543,6 +559,7 @@ pub fn Podcasts(route: PodRoute) -> impl IntoView {
     match route {
         PodRoute::Home => view! { <Home/> }.into_any(),
         PodRoute::Show(id) => view! { <ShowView id=Some(id) feed=None/> }.into_any(),
+        PodRoute::Discover(genre) => view! { <Discover genre/> }.into_any(),
         PodRoute::Feed(url) => view! { <ShowView id=None feed=Some(url)/> }.into_any(),
     }
 }
@@ -606,8 +623,8 @@ fn Home() -> impl IntoView {
             results.set(None);
             return;
         }
-        // A pasted feed or Apple Podcasts link opens the show.
-        if q.starts_with("http") || q.contains("podcasts.apple.com") {
+        // A pasted feed, Apple Podcasts link, or YouTube channel (@handle) opens the show.
+        if q.starts_with("http") || q.contains("podcasts.apple.com") || q.contains("youtube.com/") || (q.starts_with('@') && !q.contains(' ')) {
             go(&feed_link(&q));
             return;
         }
@@ -650,6 +667,7 @@ fn Home() -> impl IntoView {
             <header class="pods-head">
                 <h1>"Podcasts"</h1>
                 <div class="pods-head-actions">
+                    <a class="button ghost pods-discover-btn" href="#/podcasts/discover" title="Top shows by category">{icon(icons::DISCOVER)}<span>"Discover"</span></a>
                     <button class="icon-button" title="Check for new episodes" aria-label="Check for new episodes" on:click=refresh disabled=move || refreshing.get()>
                         {move || if refreshing.get() { view! { <span class="spinner small"></span> }.into_any() } else { icon(icons::SYNC).into_any() }}
                     </button>
@@ -661,7 +679,7 @@ fn Home() -> impl IntoView {
             </header>
             <form class="search-box pods-search" on:submit=move |ev| { ev.prevent_default(); run_search() }>
                 {icon(icons::DISCOVER)}
-                <input type="search" placeholder="Search podcasts, or paste a feed link" prop:value=move || query.get() on:input=on_input/>
+                <input type="search" placeholder="Search podcasts, or paste a feed, YouTube channel or @handle" prop:value=move || query.get() on:input=on_input/>
                 <Show when=move || searching.get()><span class="spinner small"></span></Show>
             </form>
             {move || match results.get() {
@@ -719,7 +737,7 @@ fn Home() -> impl IntoView {
                     })}
                     <Show when=move || !top.with(Vec::is_empty)>
                         <section class="pods-section">
-                            <div class="section-head"><h2>"Popular right now"</h2></div>
+                            <div class="section-head"><h2>"Popular right now"</h2><a href="#/podcasts/discover">"Top charts by category"</a></div>
                             <HitGrid hits=top.get_untracked() on_follow=Callback::new(move |_| load())/>
                         </section>
                     </Show>
@@ -748,10 +766,10 @@ fn Home() -> impl IntoView {
 }
 
 #[component]
-fn HitGrid(hits: Vec<ShowHit>, on_follow: Callback<()>) -> impl IntoView {
+fn HitGrid(hits: Vec<ShowHit>, on_follow: Callback<()>, #[prop(optional)] ranked: bool) -> impl IntoView {
     let toast = toast();
     view! {
-        <div class="pods-hits">
+        <div class="pods-hits" class:ranked=ranked>
             {hits.into_iter().map(|h| {
                 let followed = RwSignal::new(h.followed);
                 let busy = RwSignal::new(false);
@@ -780,11 +798,15 @@ fn HitGrid(hits: Vec<ShowHit>, on_follow: Callback<()>) -> impl IntoView {
                 };
                 view! {
                     <a class="pods-hit" href=link>
+                        {(ranked && h.rank > 0).then(|| view! { <span class="hit-rank">{h.rank}</span> })}
                         {art(h.image.clone(), &h.title, "")}
                         <span class="hit-text">
                             <strong>{h.title.clone()}</strong>
                             <small>{h.author.clone()}</small>
-                            <small class="muted">{if h.genre.is_empty() { String::new() } else { h.genre.clone() }}</small>
+                            <small class="muted">
+                                {if h.genre.is_empty() { String::new() } else { h.genre.clone() }}
+                                {(h.source == "podcastindex").then(|| view! { <span class="hit-source" title="Found on Podcast Index">"Podcast Index"</span> })}
+                            </small>
                         </span>
                         <button class="follow-btn" class:following=move || followed.get().is_some() disabled=move || busy.get() on:click=follow
                             aria-label=move || if followed.get().is_some() { "Following" } else { "Follow" }>
@@ -1106,7 +1128,7 @@ fn ShowView(id: Option<i64>, feed: Option<String>) -> impl IntoView {
                             {art(s.image.clone(), &s.title, "hero-art")}
                             <div class="hero-text">
                                 <h1>{s.title.clone()}</h1>
-                                <p class="hero-author">{s.author.clone()}</p>
+                                <p class="hero-author">{s.author.clone()}{(s.kind == "youtube").then(|| view! { <span class="yt-badge">"YouTube"</span> })}</p>
                                 <p class="hero-desc" class:open=move || more.get() on:click=move |_| more.update(|m| *m = !*m)>{s.description.clone()}</p>
                                 <div class="hero-actions">
                                     {if followed {
@@ -1197,11 +1219,13 @@ fn AddShow(on_done: Callback<()>) -> impl IntoView {
     view! {
         <div class="pods-add">
             <form on:submit=add>
-                <label>"Feed address or Apple Podcasts link"
+                <label>"Feed address, Apple Podcasts link, or YouTube channel or playlist"
                     <input type="url" placeholder="https://…" prop:value=move || url.get() on:input=move |ev| url.set(event_target_value(&ev))/>
                 </label>
                 <button class="primary" disabled=move || busy.get()>"Follow"</button>
             </form>
+            <p class="muted small">"Private feeds work too (Patreon, Supercast, Substack): copy your personal RSS link from the site. "
+               "For YouTube, paste a channel link, an @handle, or a playlist link."</p>
             <h4>"Bring your shows from another app"</h4>
             <p class="muted small">"Export your subscriptions as OPML from your podcast app (most have it in their settings), then pick the file here."</p>
             <label class="button ghost file-pick">
@@ -1251,7 +1275,26 @@ fn PodSettings() -> impl IntoView {
                     <option value="local" selected=move || p.prefs.with(|s| s.ad_model == "local")>"The local model (stays on this computer)"</option>
                 </select>
             </label>
+            {check("Use SponsorBlock for YouTube", "YouTube shows skip the sponsor segments marked by SponsorBlock's community (sponsor.ajay.app) straight away; the AI listens only when there are none.", |s| s.sponsorblock, |s, v| s.sponsorblock = v)}
             <p class="muted small">"Listening is done by the voice server's speech recognition on your graphics card."</p>
+            <h4>"Finding shows"</h4>
+            <label>"Charts from"
+                <select on:change=move |ev| { let v = event_target_value(&ev); save(Box::new(move |s| s.country = v)) }>
+                    {COUNTRIES.map(|(c, n)| view! { <option value=c selected=move || p.prefs.with(|s| s.country == c)>{n}</option> })}
+                </select>
+            </label>
+            <p class="muted small">"Podcast Index is the open podcast directory (free): with a key, search includes the shows it has that Apple doesn't, and Discover shows what's trending. "
+                <a href="https://api.podcastindex.org/signup" target="_blank" rel="noopener noreferrer">"Get a key"</a></p>
+            <div class="brief-row">
+                <label>"Podcast Index key"
+                    <input type="text" autocomplete="off" spellcheck="false" prop:value=move || p.prefs.with(|s| s.podcastindex_key.clone())
+                        on:change=move |ev| { let v = event_target_value(&ev).trim().to_string(); save(Box::new(move |s| s.podcastindex_key = v)) }/>
+                </label>
+                <label>"Secret"
+                    <input type="password" autocomplete="off" prop:value=move || p.prefs.with(|s| s.podcastindex_secret.clone())
+                        on:change=move |ev| { let v = event_target_value(&ev).trim().to_string(); save(Box::new(move |s| s.podcastindex_secret = v)) }/>
+                </label>
+            </div>
             <h4>"Playing"</h4>
             <div class="brief-row">
                 <label>"Skip back"
@@ -1489,7 +1532,9 @@ pub fn NowPlaying() -> impl IntoView {
                                 <span class="spinner small"></span>
                                 <span>{if s.doing.is_empty() { "Getting it ready to skip the ads…".to_string() } else { s.doing.clone() }}</span>
                                 <div class="mini-progress"><span style:width=format!("{:.0}%", s.progress * 100.0)></span></div>
-                                <button class="link" on:click=move |_| p.play_without_skipping()>"Play now, with ads"</button>
+                                <Show when=move || !p.ep.with(|e| e.as_ref().is_some_and(|e| e.needs_download))>
+                                    <button class="link" on:click=move |_| p.play_without_skipping()>"Play now, with ads"</button>
+                                </Show>
                             </div>
                         })}
                         <Scrubber/>
@@ -1595,5 +1640,76 @@ pub fn NowPlaying() -> impl IntoView {
             </section>
             </leptos::portal::Portal>
         </Show>
+    }
+}
+
+const COUNTRIES: [(&str, &str); 12] = [
+    ("us", "United States"),
+    ("gb", "United Kingdom"),
+    ("ca", "Canada"),
+    ("au", "Australia"),
+    ("ie", "Ireland"),
+    ("nz", "New Zealand"),
+    ("in", "India"),
+    ("de", "Germany"),
+    ("fr", "France"),
+    ("es", "Spain"),
+    ("jp", "Japan"),
+    ("br", "Brazil"),
+];
+
+/// The charts: Apple's top shows, overall or by category, ranked; and what's trending on
+/// Podcast Index when it's set up.
+#[component]
+fn Discover(genre: Option<i64>) -> impl IntoView {
+    let chart = RwSignal::new(None::<Chart>);
+    let failed = RwSignal::new(None::<String>);
+    spawn_local(async move {
+        let url = match genre {
+            Some(g) => format!("/api/shows/charts?genre={g}"),
+            None => "/api/shows/charts".into(),
+        };
+        match api::get::<Chart>(&url).await {
+            Ok(c) => chart.set(Some(c)),
+            Err(e) => failed.set(Some(e.0)),
+        }
+    });
+    let name = genre.and_then(|g| GENRES.iter().find(|(id, _)| *id == g).map(|(_, n)| *n)).unwrap_or("All shows");
+    let tab = RwSignal::new("top");
+    view! {
+        <div class="pods pods-discover">
+            <a class="back-link" href="#/podcasts">
+                <svg viewBox="0 0 24 24" class="icon" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6l-6 6 6 6"/></svg>
+                "Podcasts"
+            </a>
+            <header class="pods-head"><h1>"Discover"</h1></header>
+            <nav class="genre-chips" aria-label="Categories">
+                <a href="#/podcasts/discover" class:on=genre.is_none()>"All"</a>
+                {GENRES.iter().map(|(id, n)| view! { <a href=format!("#/podcasts/discover/{id}") class:on=genre == Some(*id)>{*n}</a> }).collect_view()}
+            </nav>
+            <div class="section-head discover-head">
+                <h2>{name}</h2>
+                <Show when=move || chart.with(|c| c.as_ref().is_some_and(|c| !c.trending.is_empty()))>
+                    <div class="seg">
+                        <button class:on=move || tab.get() == "top" on:click=move |_| tab.set("top")>"Top charts"</button>
+                        <button class:on=move || tab.get() == "trending" on:click=move |_| tab.set("trending")>"Trending"</button>
+                    </div>
+                </Show>
+            </div>
+            {move || failed.get().map(|e| view! { <p class="brief-error">{format!("Couldn't load the charts: {e}")}</p> })}
+            {move || match chart.get() {
+                None if failed.with(Option::is_none) => view! { <div class="pods-loading"><span class="spinner"></span></div> }.into_any(),
+                None => ().into_any(),
+                Some(c) => {
+                    let hits = if tab.get() == "trending" && !c.trending.is_empty() { c.trending } else { c.shows };
+                    if hits.is_empty() {
+                        view! { <p class="muted">"Nothing in this chart right now."</p> }.into_any()
+                    } else {
+                        view! { <HitGrid hits ranked=true on_follow=Callback::new(|_| ())/> }.into_any()
+                    }
+                }
+            }}
+            <p class="muted small discover-note">"Top charts are Apple Podcasts' rankings (country in Podcasts settings). Trending comes from Podcast Index when it's set up there."</p>
+        </div>
     }
 }
