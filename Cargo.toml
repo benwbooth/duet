@@ -38,3 +38,13 @@ debug = false
 debug-assertions = false
 overflow-checks = false
 incremental = true
+
+# The web UI as devloop builds it (crates/web/build.sh): optimized but incremental,
+# with no LTO, so a change to the UI rebuilds in seconds, not minutes.
+# (Packaging, in flake.nix, still uses wasm-release.)
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 2
+codegen-units = 256
+incremental = true
+panic = "abort"

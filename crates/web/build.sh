@@ -4,7 +4,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 out="${1:-$here/dist}"
-profile="${PROFILE:-wasm-release}"
+profile="${PROFILE:-wasm-dev}"
 cargo build --manifest-path "$here/Cargo.toml" --target wasm32-unknown-unknown --profile "$profile" -p duet-web
 target_dir="$(cargo metadata --manifest-path "$here/Cargo.toml" --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
 # Build next to the output and swap it in, so a running server never serves a half-written UI.
