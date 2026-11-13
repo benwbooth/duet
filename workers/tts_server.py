@@ -940,7 +940,9 @@ def _transcribe_window(body):
     with listen_lock:
         touch("whisper")
         want_words = bool(body.get("words"))
-        segments, _ = listen_model().transcribe(samples, vad_filter=True, language=body.get("language") or "en")
+        # (Not fed what it wrote before: over a long window that makes Whisper write lines
+        # again, and make up "Thank you." in the quiet.)
+        segments, _ = listen_model().transcribe(samples, vad_filter=True, language=body.get("language") or "en", condition_on_previous_text=False)
         out = []
         for seg in segments:
             text = seg.text.strip()

@@ -938,6 +938,7 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
     // Reading an old transcript again: its untimed lines get their words timed first, so the
     // cuts land between the right words.
     if !heard.is_empty() {
+        heard = drop_repeats(heard);
         time_untimed(state, id, &mut heard).await;
     }
     let (show_title, title, notes, skip_promos) = {
@@ -1055,6 +1056,7 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
         tracing::info!("episode {id}: transcribed {}–{} in {:.0}s", mmss(checked), mmss(end), started.elapsed().as_secs_f64());
         heard.retain(|h| h.start < checked);
         heard.extend(reply.segments);
+        heard = drop_repeats(heard);
         write_json(&transcript_path, &heard).await?;
         let new_checked = end.min(duration);
         if !marked {
@@ -1472,6 +1474,11 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
     let mut heard: Vec<Heard> = read_json(&path).await.unwrap_or_default();
     if heard.is_empty() {
         bail!("there's no transcript yet");
+    }
+    let n = heard.len();
+    heard = drop_repeats(heard);
+    if heard.len() != n {
+        write_json(&path, &heard).await?;
     }
     // Who's talking, told apart by their voices (once).
     let before: Outline = read_json(&episode_dir(state, id).join("outline.json")).await.unwrap_or_default();
@@ -2143,8 +2150,87 @@ async fn rescan(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Js
     Ok(Json(scan_of(&s, id).await))
 }
 
+/// The transcript without words heard twice. Where two stretches Whisper wrote down meet, it
+/// often writes the end of the last stretch again at the start of a line (after a made-up
+/// "Thank you."), sometimes a whole line of it. Those words go, and a line left with nothing new
+/// goes.
+fn drop_repeats(heard: Vec<Heard>) -> Vec<Heard> {
+    let mut out: Vec<Heard> = Vec::with_capacity(heard.len());
+    for mut h in heard {
+        // What was just said, before this line.
+        let mut before: Vec<String> = Vec::new();
+        for o in out.iter().rev().take_while(|o| o.end > h.start - 60.0).collect::<Vec<_>>().into_iter().rev() {
+            before.extend(plain_words(&o.text));
+        }
+        let tokens: Vec<&str> = h.text.split_whitespace().collect();
+        // Each plain word, and the token it came from.
+        let said: Vec<(usize, String)> = tokens
+            .iter()
+            .enumerate()
+            .map(|(k, t)| (k, t.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()))
+            .filter(|(_, w)| !w.is_empty())
+            .collect();
+        // The longest run of what was just said, starting in the line's first few words.
+        let thanks = said.len() >= 2 && said[0].1 == "thank" && said[1].1 == "you";
+        let mut best = (0, 0);
+        for from in 0..said.len().min(if thanks { 6 } else { 4 }) {
+            let mut k = 0;
+            while from + k < said.len() {
+                let run: Vec<String> = said[from..from + k + 1].iter().map(|x| x.1.clone()).collect();
+                if find_run(&before, &run, None).is_none() {
+                    break;
+                }
+                k += 1;
+            }
+            // (Words before the run go with it only after the made-up "Thank you.", or before a
+            // long run: "That's right. It woke the dead." after "...it woke the dead." is
+            // someone agreeing.)
+            if k > best.1 && (from == 0 || thanks || k >= 8) {
+                best = (from, k);
+            }
+        }
+        let (from, k) = best;
+        let left = said.len() - from - k;
+        // (Only where stretches meet: the line starts before the last one ended, or with the
+        // made-up "Thank you." People do say the same thing twice, but not over each other.)
+        let overlaps = out.iter().rev().take(3).any(|o| h.start < o.end - 0.2);
+        if !overlaps && !thanks {
+            out.push(h);
+            continue;
+        }
+        // (Five words in a row, or the whole rest of the line, is no accident.)
+        if k >= 5 || (k >= 3 && left == 0) {
+            if left <= 1 {
+                continue;
+            }
+            let cut = said[from + k].0;
+            let rest = tokens[cut..].join(" ");
+            if h.words.len() == tokens.len() {
+                h.words.drain(..cut);
+                h.start = h.words[0].0;
+            } else {
+                h.start += (h.end - h.start) * cut as f64 / tokens.len().max(1) as f64;
+                h.words.clear();
+            }
+            h.text = rest;
+        }
+        // (A made-up "Thank you." glued onto a line that carries on in lowercase.)
+        let t: Vec<&str> = h.text.split_whitespace().collect();
+        if t.len() > 2 && t[0].eq_ignore_ascii_case("thank") && t[1] == "you." && t[2].starts_with(|c: char| c.is_lowercase()) {
+            if h.words.len() == t.len() {
+                h.words.drain(..2);
+                h.start = h.words[0].0;
+            }
+            h.text = t[2..].join(" ");
+        }
+        out.push(h);
+    }
+    out
+}
+
 async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<Vec<Heard>> {
     let heard: Vec<Heard> = read_json(&episode_dir(&s, id).join("transcript.json")).await.unwrap_or_default();
+    let heard = drop_repeats(heard);
     let mut ads = scan_of(&s, id).await.ads;
     snap_ads(&mut ads, &heard);
     Json(split_at_ads(heard, &ads))
@@ -2392,6 +2478,44 @@ Line two</media:description></media:group></entry>
         let mut ads = vec![AdSpan { start: 0.96, end: 92.45, label: String::new() }];
         snap_ads(&mut ads, &[ad, host]);
         assert!((ads[0].end - 91.45).abs() < 0.01, "{}", ads[0].end);
+    }
+
+    #[test]
+    #[ignore]
+    fn real_repeats() {
+        for e in ["1", "2"] {
+            let heard: Vec<Heard> = serde_json::from_str(&std::fs::read_to_string(format!("/mnt/user-data/uploads/duet/shows/episodes/{e}/transcript.json")).unwrap()).unwrap();
+            let kept: Vec<(f64, String)> = drop_repeats(heard.clone()).into_iter().map(|h| (h.start, h.text)).collect();
+            for h in &heard {
+                if !kept.iter().any(|k| k.0 == h.start && k.1 == h.text) {
+                    let now = kept.iter().find(|k| k.0 >= h.start - 0.01 && k.0 <= h.end && h.text.ends_with(k.1.as_str())).map(|k| k.1.clone()).unwrap_or_else(|| "(gone)".into());
+                    println!("{e} {:.2}: {}\n      -> {}", h.start, h.text, now);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn drops_lines_heard_twice() {
+        let h = |a: f64, b: f64, t: &str| Heard { start: a, end: b, text: t.into(), words: vec![], speaker: None };
+        let heard = vec![
+            h(999.86, 1002.14, "And did it all go as he described?"),
+            h(1002.34, 1004.38, "It went exactly as he described it."),
+            h(1005.72, 1009.02, "It was simply put, one of the creepiest damn things I've ever heard in my life."),
+            h(1005.66, 1009.02, "Thank you. Did it all go as he described? It went exactly as he described it. It was simply put, one of the creepiest damn things I've ever heard in my life."),
+            h(1010.02, 1012.30, "So what does that have to do with Ghost Tape 12?"),
+            h(1012.0, 1013.0, "That's right. Ghost Tape 12."),
+            h(1011.0, 1020.0, "Thank you. for, so what does that have to do with Ghost Tape 12? Well, the tape had chanting on it."),
+            h(1021.0, 1022.0, "So what does that have to do with Ghost Tape 12?"),
+        ];
+        let out = drop_repeats(heard);
+        let texts: Vec<&str> = out.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(texts.len(), 7, "{texts:?}");
+        assert_eq!(texts[4], "That's right. Ghost Tape 12.");
+        assert!(!texts.iter().any(|t| t.starts_with("Thank you")), "{texts:?}");
+        assert_eq!(texts[5], "Well, the tape had chanting on it.");
+        // (Said again later, not over the line before: kept.)
+        assert_eq!(texts[6], "So what does that have to do with Ghost Tape 12?");
     }
 
     #[test]
