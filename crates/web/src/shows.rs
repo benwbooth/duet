@@ -230,6 +230,8 @@ pub struct Player {
     pub rate: RwSignal<f64>,
     /// Bumped whenever an episode's played state changes, so lists reload.
     pub changed: RwSignal<u32>,
+    /// What plays next, in order.
+    pub up_next: RwSignal<Vec<ShowEpisode>>,
 }
 
 pub fn player() -> Player {
@@ -310,6 +312,12 @@ impl Player {
             }
             let ep = api::get::<ShowEpisode>(&format!("/api/shows/episodes/{}", ep.id)).await.unwrap_or(ep);
             let id = ep.id;
+            // Off Up Next, and what follows it (its next part, or the show's next episode) on.
+            spawn_local(async move {
+                if let Ok(list) = api::post::<_, Vec<ShowEpisode>>(&format!("/api/shows/episodes/{id}/playing"), &serde_json::json!({})).await {
+                    p.up_next.set(list);
+                }
+            });
             let start = if ep.finished { 0.0 } else { ep.position };
             p.ep.set(Some(ep.clone()));
             let skip = p.skipping_untracked();
@@ -359,6 +367,39 @@ impl Player {
         sp_ads("[]", false);
     }
 
+    /// Puts an episode on Up Next: straight after what's playing (`next`), or at the end.
+    pub fn queue_up(&self, id: i64, next: bool) {
+        let p = *self;
+        spawn_local(async move {
+            match api::post::<_, Vec<ShowEpisode>>("/api/shows/up-next", &serde_json::json!({ "id": id, "next": next })).await {
+                Ok(list) => {
+                    p.up_next.set(list);
+                    toast().show(if next { "Playing next" } else { "Added to Up Next" });
+                }
+                Err(e) => toast().show(e.0),
+            }
+        });
+    }
+
+    /// Up Next rearranged (or with some taken off).
+    fn set_up_next(&self, ids: Vec<i64>) {
+        let p = *self;
+        p.up_next.update(|l| {
+            let mut sorted = Vec::new();
+            for id in &ids {
+                if let Some(e) = l.iter().find(|e| e.id == *id) {
+                    sorted.push(e.clone());
+                }
+            }
+            *l = sorted;
+        });
+        spawn_local(async move {
+            if let Ok(list) = api::put::<_, Vec<ShowEpisode>>("/api/shows/up-next", &serde_json::json!({ "ids": ids })).await {
+                p.up_next.set(list);
+            }
+        });
+    }
+
     pub fn toggle(&self) {
         if self.preparing.get_untracked().is_some() {
             return;
@@ -396,6 +437,7 @@ pub fn provide_player() -> Player {
         sleep: RwSignal::new(0),
         rate: RwSignal::new(1.0),
         changed: RwSignal::new(0),
+        up_next: RwSignal::new(Vec::new()),
     };
     provide_context(p);
     let last_saved = StoredValue::new(0.0f64);
@@ -414,7 +456,8 @@ pub fn provide_player() -> Player {
         let was = p.state.get_untracked();
         if s == "ended" {
             p.save(true);
-            if p.sleep.get_untracked() == -1 {
+            let stop = p.sleep.get_untracked() == -1;
+            if stop {
                 p.sleep.set(0);
             }
             p.ep.update(|e| {
@@ -422,6 +465,12 @@ pub fn provide_player() -> Player {
                     e.finished = true;
                 }
             });
+            // On to what's Up Next (unless the sleep timer said to stop at the end of this one).
+            let current = p.ep.with_untracked(|e| e.as_ref().map(|e| e.id));
+            if !stop && let Some(next) = p.up_next.with_untracked(|l| l.iter().find(|e| Some(e.id) != current).cloned()) {
+                p.play(next);
+                return;
+            }
         } else if s == "paused" && was == "playing" {
             p.save(false);
         } else if s == "error" && p.ep.with_untracked(Option::is_some) {
@@ -450,6 +499,11 @@ pub fn provide_player() -> Player {
     })
     .into_js_value();
     sp_init(on_tick.unchecked_ref(), on_state.unchecked_ref(), on_skip.unchecked_ref());
+    spawn_local(async move {
+        if let Ok(list) = api::get::<Vec<ShowEpisode>>("/api/shows/up-next").await {
+            p.up_next.set(list);
+        }
+    });
     spawn_local(async move {
         if let Ok(s) = api::get::<ShowSettings>("/api/shows/settings").await {
             p.rate.set(s.speed);
@@ -708,14 +762,23 @@ fn Home() -> impl IntoView {
                     {move || home.get().map(|h| {
                         let empty = h.shows.is_empty();
                         view! {
-                            {(!h.in_progress.is_empty()).then(|| view! {
-                                <section class="pods-section">
-                                    <div class="section-head"><h2>"Continue listening"</h2></div>
-                                    <div class="pods-continue">
-                                        {h.in_progress.iter().cloned().map(|e| view! { <ContinueCard ep=e/> }).collect_view()}
-                                    </div>
-                                </section>
-                            })}
+                            {move || {
+                                // Up Next: what you're in the middle of, then what's queued.
+                                let mut cards: Vec<ShowEpisode> = h.in_progress.clone();
+                                for e in p.up_next.get() {
+                                    if !cards.iter().any(|c| c.id == e.id) {
+                                        cards.push(e);
+                                    }
+                                }
+                                (!cards.is_empty()).then(|| view! {
+                                    <section class="pods-section">
+                                        <div class="section-head"><h2>"Up Next"</h2></div>
+                                        <div class="pods-continue">
+                                            {cards.into_iter().map(|e| view! { <ContinueCard ep=e/> }).collect_view()}
+                                        </div>
+                                    </section>
+                                })
+                            }}
                             {(!empty).then(|| view! {
                                 <section class="pods-section">
                                     <div class="section-head"><h2>"Your shows"</h2></div>
@@ -911,40 +974,41 @@ fn EpisodeRow(ep: ShowEpisode, #[prop(optional)] show_name: bool) -> impl IntoVi
                     <span class="ep-desc">{move || ep.with(|e| e.description.clone())}</span>
                 </span>
             </button>
-            <div class="ep-side">
-                <button class="ep-play" class:playing=move || now() && p.playing() on:click=move |_| p.play(ep.get_untracked())
+            <div class="ep-actions">
+                <button class="ep-pill" class:playing=move || now() && p.playing() on:click=move |_| p.play(ep.get_untracked())
                     aria-label=move || if now() && p.playing() { "Pause" } else { "Play" }>
+                    {move || play_glyph(now() && p.playing())}
                     {move || {
                         let e = live();
                         let frac = if e.duration > 0.0 && !e.finished { (e.position / e.duration).clamp(0.0, 1.0) } else { 0.0 };
-                        let c = 2.0 * std::f64::consts::PI * 15.0;
-                        view! {
-                            <svg viewBox="0 0 36 36" class="ring" aria-hidden="true">
-                                <circle cx="18" cy="18" r="15" class="ring-bg"/>
-                                {(frac > 0.005).then(|| view! { <circle cx="18" cy="18" r="15" class="ring-fg" stroke-dasharray=format!("{:.2} {:.2}", c * frac, c)/> })}
-                                <path d=if now() && p.playing() { "M13.5 12h3v12h-3zM19.5 12h3v12h-3z" } else { "M15 11.5v13l10-6.5z" } class="ring-glyph"/>
-                            </svg>
-                        }
+                        (frac > 0.005).then(|| view! { <span class="ep-pill-bar"><span style:width=format!("{:.1}%", frac * 100.0)></span></span> })
                     }}
+                    <span class="ep-len">{move || {
+                        let e = live();
+                        if e.finished { "Played".to_string() }
+                        else if e.duration <= 0.0 { "Play".to_string() }
+                        else if e.position > 5.0 { format!("{} left", length(e.duration - e.position)) }
+                        else { length(e.duration) }
+                    }}</span>
                 </button>
-                <small class="ep-len">{move || {
-                    let e = live();
-                    if e.finished { "Played".to_string() }
-                    else if e.duration <= 0.0 { String::new() }
-                    else if e.position > 5.0 { format!("{} left", length(e.duration - e.position)) }
-                    else { length(e.duration) }
-                }}</small>
-            </div>
+                <Show when=move || id != 0 && !now()>
+                    <button class="ep-queue" class:queued=move || p.up_next.with(|l| l.iter().any(|e| e.id == id))
+                        title=move || if p.up_next.with(|l| l.iter().any(|e| e.id == id)) { "On Up Next" } else { "Play next" }
+                        aria-label="Play next" on:click=move |_| p.queue_up(id, true)>
+                        <svg viewBox="0 0 24 24" class="icon" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M4 6h11M4 12h11M4 18h7M18 15v6M15 18h6"/></svg>
+                    </button>
+                </Show>
             {move || {
-                let e = live();
-                let skip = e.show_skip_ads && p.prefs.with(|x| x.skip_ads);
-                (id != 0 && skip).then(|| ad_summary(&e.ads)).flatten().map(|s| view! {
-                    <small class="ep-ads" class:busy=e.ads.busy() class:clean=e.ads.state == "done">
-                        {if e.ads.busy() { view! { <span class="spinner tiny"></span> }.into_any() } else { icon(icons::SCAN).into_any() }}
-                        {s}
-                    </small>
-                })
-            }}
+                    let e = live();
+                    let skip = e.show_skip_ads && p.prefs.with(|x| x.skip_ads);
+                    (id != 0 && skip).then(|| ad_summary(&e.ads)).flatten().map(|s| view! {
+                        <small class="ep-ads" class:busy=e.ads.busy() class:clean=e.ads.state == "done">
+                            {if e.ads.busy() { view! { <span class="spinner tiny"></span> }.into_any() } else { icon(icons::SCAN).into_any() }}
+                            {s}
+                        </small>
+                    })
+                }}
+            </div>
             <Show when=move || open_notes.get()>
                 <leptos::portal::Portal>
                     <div class="brief-scrim" on:click=move |_| open_notes.set(false)></div>
@@ -960,6 +1024,8 @@ fn EpisodeRow(ep: ShowEpisode, #[prop(optional)] show_name: bool) -> impl IntoVi
                                         {move || play_glyph(false)}{move || if ep.with(|e| e.position > 5.0 && !e.finished) { "Resume" } else { "Play" }}
                                     </button>
                                     <Show when=move || id != 0>
+                                        <button class="ghost" on:click=move |_| p.queue_up(id, true)>"Play Next"</button>
+                                        <button class="ghost" on:click=move |_| p.queue_up(id, false)>"Play Last"</button>
                                         <button class="ghost" on:click=move |_| mark(!ep.with_untracked(|e| e.finished))>
                                             {move || if ep.with(|e| e.finished) { "Mark unplayed" } else { "Mark played" }}
                                         </button>
@@ -1755,6 +1821,7 @@ pub fn NowPlaying() -> impl IntoView {
                             <button class:on=move || tab.get() == "notes" on:click=move |_| tab.set("notes")>"Notes"</button>
                             <button class:on=move || tab.get() == "ads" on:click=move |_| tab.set("ads")>{move || { let n = ep().ads.ads.len(); if n > 0 { format!("Ads ({n})") } else { "Ads".into() } }}</button>
                             <button class:on=move || tab.get() == "transcript" on:click=move |_| tab.set("transcript")>"Transcript"</button>
+                            <button class:on=move || tab.get() == "next" on:click=move |_| tab.set("next")>{move || { let n = p.up_next.with(Vec::len); if n > 0 { format!("Up Next ({n})") } else { "Up Next".into() } }}</button>
                         </div>
                         {move || match tab.get() {
                             "ads" => {
@@ -1790,6 +1857,7 @@ pub fn NowPlaying() -> impl IntoView {
                                 }.into_any()
                             }
                             "transcript" => view! { <Transcript lines=transcript words who said outline/> }.into_any(),
+                            "next" => view! { <UpNext/> }.into_any(),
                             _ => {
                                 let id = ep_id.get();
                                 view! { <Notes id ep=Signal::derive(move || p.ep.get().unwrap_or_default())/> }.into_any()
@@ -1800,6 +1868,63 @@ pub fn NowPlaying() -> impl IntoView {
             </section>
             </leptos::portal::Portal>
         </Show>
+    }
+}
+
+/// What plays after this, in order: rearranged with the arrows, taken off with ×. The next part
+/// of what's playing (or the show's next episode) is put on by itself.
+#[component]
+fn UpNext() -> impl IntoView {
+    let p = player();
+    let ids = move || p.up_next.with_untracked(|l| l.iter().map(|e| e.id).collect::<Vec<_>>());
+    let shift = move |i: usize, by: isize| {
+        let mut v = ids();
+        let j = i as isize + by;
+        if j >= 0 && (j as usize) < v.len() {
+            v.swap(i, j as usize);
+            p.set_up_next(v);
+        }
+    };
+    let remove = move |id: i64| p.set_up_next(ids().into_iter().filter(|x| *x != id).collect());
+    view! {
+        <div class="up-next">
+            {move || {
+                let list = p.up_next.get();
+                if list.is_empty() {
+                    return view! { <p class="muted up-next-empty">"Nothing's up next. The next part of what you're playing goes here by itself, and you can add episodes with "<b>"Play Next"</b>" from any episode."</p> }.into_any();
+                }
+                let n = list.len();
+                view! {
+                    <ol class="up-next-list">
+                        {list.into_iter().enumerate().map(|(i, e)| {
+                            let id = e.id;
+                            let play = e.clone();
+                            view! {
+                                <li class="up-next-row">
+                                    <button class="up-next-main" on:click=move |_| p.play(play.clone()) title="Play now">
+                                        {art(e.image.clone(), &e.show_title, "up-next-art")}
+                                        <span class="up-next-text">
+                                            <small>{e.show_title.clone()}</small>
+                                            <strong>{e.title.clone()}</strong>
+                                            <small>{if e.position > 5.0 && e.duration > 0.0 { format!("{} left", length(e.duration - e.position)) } else if e.duration > 0.0 { length(e.duration) } else { String::new() }}</small>
+                                        </span>
+                                    </button>
+                                    <span class="up-next-tools">
+                                        <button class="icon-button small" aria-label="Move up" disabled=i == 0 on:click=move |_| shift(i, -1)>
+                                            <svg viewBox="0 0 24 24" class="icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+                                        </button>
+                                        <button class="icon-button small" aria-label="Move down" disabled=i + 1 == n on:click=move |_| shift(i, 1)>
+                                            <svg viewBox="0 0 24 24" class="icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                                        </button>
+                                        <button class="icon-button small" aria-label="Take off Up Next" on:click=move |_| remove(id)>"×"</button>
+                                    </span>
+                                </li>
+                            }
+                        }).collect_view()}
+                    </ol>
+                }.into_any()
+            }}
+        </div>
     }
 }
 

@@ -2457,3 +2457,103 @@ html.eink .np-backdrop { display: none; }
 .pscrub-ad:hover .pscrub-tip.at-start, .pscrub-ad:hover .pscrub-tip.at-end { transform: translate(0, 0); }
 .pscrub-tip.at-start::after { left: 12px; margin-left: 0; }
 .pscrub-tip.at-end::after { left: auto; right: 12px; margin-left: 0; }
+
+/* ---- Podcasts, in the manner of the iPad / iPhone podcast app ----
+   (Only the podcast pages, the mini player and the now-playing sheet: the system font, a purple
+   accent, large bold titles, art-forward shelves, pill play buttons, hairline separators.) */
+:root {
+  --pod-accent: #8a43d6; --pod-accent-text: #fff; --pod-tint: color-mix(in srgb, #8a43d6 12%, transparent);
+  --pod-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif;
+  --pod-sep: color-mix(in srgb, var(--text) 13%, transparent); --pod-fill: color-mix(in srgb, var(--text) 7%, transparent);
+  --pod-sub: color-mix(in srgb, var(--text) 55%, transparent);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --pod-accent: #b783ff; --pod-accent-text: #120a1c; --pod-tint: color-mix(in srgb, #b783ff 16%, transparent); }
+}
+.pods, .mini-player, .now-playing, .pods-pane { font-family: var(--pod-font); --accent: var(--pod-accent); --accent-text: var(--pod-accent-text); --accent-soft: var(--pod-tint); }
+.pods h1, .pods h2, .pods h3, .now-playing h2, .now-playing h3, .pods-pane h2, .pods-pane h3 { font-family: var(--pod-font); letter-spacing: -0.02em; }
+.pods-head h1 { font-size: 2.2rem; font-weight: 800; }
+.pods .section-head h2 { font-size: 1.4rem; font-weight: 750; }
+.pods .section-head a, .pods .section-head .link { color: var(--pod-accent); }
+/* Header: plain accent icons, no boxes. */
+.pods-head-actions .icon-button, .pods-head-actions .button.ghost { border: 0; box-shadow: none; background: none; color: var(--pod-accent); }
+.pods-head-actions .icon-button:hover, .pods-head-actions .button.ghost:hover { background: var(--pod-tint); }
+/* Search: a filled rounded field. */
+.pods-search { border: 0 !important; background: var(--pod-fill) !important; border-radius: 11px !important; box-shadow: none !important; min-height: 40px; }
+.pods-search .icon { color: var(--pod-sub); }
+/* Shelves of artwork. */
+.pods-shows { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1.5rem 1.2rem; }
+.pods-show .pod-art { border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.12), 0 8px 22px -12px rgba(0,0,0,0.35); }
+.pods-show-title { font-size: 0.86rem; font-weight: 600; }
+.pods-badge { background: var(--pod-accent) !important; color: var(--pod-accent-text) !important; }
+/* Up Next cards: art-tinted, the episode big, a pill to play. */
+.pods-continue { grid-auto-columns: minmax(300px, 340px); gap: 1rem; }
+.pods-card { position: relative; overflow: hidden; isolation: isolate; grid-template-columns: 1fr; grid-template-rows: auto 1fr; gap: 0.7rem; padding: 1rem; min-height: 210px;
+  border: 0; border-radius: 16px; background: color-mix(in srgb, var(--text) 6%, var(--bg)); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+.pods-card > .pod-art { width: 64px; height: 64px; border-radius: 10px; box-shadow: 0 6px 16px -8px rgba(0,0,0,0.45); }
+.pods-card .card-text > small:first-child { color: var(--pod-sub); text-transform: uppercase; letter-spacing: 0.03em; font-size: 0.72rem; }
+.pods-card strong { font-size: 1.05rem; font-weight: 700; -webkit-line-clamp: 3; }
+.pods-card .card-foot { margin-top: auto; }
+.pods-card .card-play { background: var(--pod-accent); color: var(--pod-accent-text); }
+.pods-card .mini-progress > span { background: var(--pod-accent); }
+.pods-card.now { box-shadow: 0 0 0 2px var(--pod-accent); }
+/* Episode rows: date, bold title, two lines of notes, then a play pill. */
+.pod-ep { grid-template-columns: minmax(0, 1fr); grid-template-areas: "main" "actions"; padding: 1rem 0.2rem; border-bottom: 0.5px solid var(--pod-sep); }
+.pod-ep .ep-main { grid-template-columns: 64px minmax(0, 1fr); }
+.pod-ep .ep-art { border-radius: 8px; }
+.pod-ep .ep-meta { color: var(--pod-sub); font-size: 0.74rem; font-weight: 600; letter-spacing: 0.03em; }
+.pod-ep .ep-title { font-size: 1.02rem; font-weight: 650; letter-spacing: -0.01em; }
+.pod-ep .ep-desc { color: var(--pod-sub); font-size: 0.9rem; }
+.pod-ep.now .ep-title { color: var(--pod-accent); }
+.ep-actions { grid-area: actions; display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin: 0.6rem 0 0 calc(64px + 0.9rem); }
+.ep-pill { display: inline-flex; align-items: center; gap: 0.45rem; min-height: 30px; padding: 0.2rem 0.8rem 0.2rem 0.55rem; border: 0; border-radius: 999px;
+  background: var(--pod-tint); color: var(--pod-accent); font-weight: 650; font-size: 0.8rem; box-shadow: none; }
+.ep-pill:hover { background: color-mix(in srgb, var(--pod-accent) 20%, transparent); }
+.ep-pill svg { width: 14px; height: 14px; fill: currentColor; }
+.ep-pill .ep-len { color: inherit; font-size: inherit; }
+.ep-pill-bar { width: 30px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--pod-accent) 25%, transparent); overflow: hidden; }
+.ep-pill-bar > span { display: block; height: 100%; background: var(--pod-accent); }
+.ep-queue { min-height: 30px; min-width: 30px; padding: 0.25rem; border: 0; border-radius: 999px; background: none; box-shadow: none; color: var(--pod-accent); }
+.ep-queue:hover { background: var(--pod-tint); }
+.ep-queue.queued { background: var(--pod-tint); }
+.ep-queue .icon { width: 18px; height: 18px; }
+.pod-ep .ep-actions .ep-ads { margin: 0; }
+/* The mini player: a floating capsule. */
+.mini-player { border-radius: 22px; padding: 0.4rem 0.7rem 0.4rem 0.4rem; box-shadow: 0 10px 34px -10px rgba(0,0,0,0.35), 0 0 0 0.5px var(--glass-line); }
+.mini-art { width: 44px; height: 44px; border-radius: 8px; }
+.mini-play { background: none; color: var(--text); width: 42px; height: 42px; }
+.mini-play svg { width: 26px; height: 26px; }
+.mini-bar > span { background: var(--pod-accent); }
+/* Now playing: washed in the artwork's colour, a plain big play glyph, accent tabs. */
+.np-backdrop { opacity: 0.55; filter: blur(80px) saturate(1.6); }
+.np-titles h2 { font-size: 1.4rem; font-weight: 750; }
+.np-titles small { color: var(--pod-sub); }
+.np-play { background: none !important; color: var(--text) !important; box-shadow: none !important; width: 84px; height: 84px; }
+.np-play svg { width: 54px; height: 54px; }
+.np-controls .icon-button { color: var(--text); background: none; }
+.np-tabs button.on { color: var(--pod-accent); }
+/* Up Next. */
+.up-next-empty { padding: 1rem 0.2rem; line-height: 1.5; }
+.up-next-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
+.up-next-row { display: flex; align-items: center; gap: 0.4rem; padding: 0.55rem 0; border-bottom: 0.5px solid var(--pod-sep); }
+.up-next-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.75rem; padding: 0; border: 0; background: none; box-shadow: none; text-align: left; justify-content: flex-start; min-height: 0; font-weight: 400; }
+.up-next-art { width: 52px; height: 52px; flex: none; border-radius: 8px; }
+.up-next-text { display: grid; min-width: 0; }
+.up-next-text strong { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.up-next-text small { color: var(--pod-sub); font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.up-next-tools { display: flex; gap: 0.1rem; flex: none; }
+.up-next-tools .icon-button { border: 0; box-shadow: none; background: none; min-width: 34px; min-height: 34px; color: var(--pod-sub); }
+.up-next-tools .icon-button:hover:not(:disabled) { color: var(--pod-accent); background: var(--pod-tint); }
+.up-next-tools .icon-button:disabled { opacity: 0.3; }
+.np-side .up-next { min-height: 0; overflow-y: auto; }
+/* iPhone: large title, cards a little narrower, the mini player just above the tab bar. */
+@media (max-width: 760px) {
+  .pods-head h1 { font-size: 2.1rem; }
+  .pods-head-actions .icon-button { min-width: 38px; min-height: 38px; }
+  .pods-continue { grid-auto-columns: 78vw; }
+  .pods-card { min-height: 190px; }
+  .pods-shows { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 1.2rem 1rem; }
+  .ep-actions { margin-left: calc(64px + 0.9rem); }
+  .np-play { width: 76px; height: 76px; }
+  .np-play svg { width: 48px; height: 48px; }
+}

@@ -167,6 +167,9 @@ pub struct ShowsHome {
     pub in_progress: Vec<ShowEpisode>,
     /// The newest unplayed episodes across your shows.
     pub latest: Vec<ShowEpisode>,
+    /// What plays next, in order (added by you, or the next part of what you're playing).
+    #[serde(default)]
+    pub up_next: Vec<ShowEpisode>,
 }
 
 /// How podcasts play and how ads are found. Saved as you change them.

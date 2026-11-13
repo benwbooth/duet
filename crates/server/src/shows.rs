@@ -73,7 +73,9 @@ pub fn routes() -> Router<State> {
         .route("/shows/opml", get(export_opml).post(import_opml))
         .route("/shows/{id}", get(show_page).patch(edit_show).delete(unfollow))
         .route("/shows/{id}/played", post(mark_all_played))
+        .route("/shows/up-next", get(get_up_next).put(put_up_next).post(add_up_next))
         .route("/shows/episodes/{id}", get(episode))
+        .route("/shows/episodes/{id}/playing", post(now_playing))
         .route("/shows/episodes/{id}/audio", get(audio))
         .route("/shows/episodes/{id}/position", put(put_position))
         .route("/shows/episodes/{id}/prepare", post(prepare))
@@ -682,6 +684,158 @@ async fn episodes_where(state: &State, clause: &str, bind: Option<i64>, limit: i
         }
     }
     Ok(out)
+}
+
+// ---- Up Next ----
+
+/// (One change to the Up Next list at a time.)
+static UP_NEXT: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::default);
+
+fn up_next_path(state: &State) -> PathBuf {
+    base(state).join("up_next.json")
+}
+
+/// The Up Next list, without episodes that have been finished (or are gone).
+async fn up_next_list(state: &State) -> Vec<ShowEpisode> {
+    let ids: Vec<i64> = read_json(&up_next_path(state)).await.unwrap_or_default();
+    let mut out = Vec::new();
+    for id in ids {
+        if let Ok(Some(e)) = full_episode(state, id).await
+            && !e.finished
+        {
+            out.push(e);
+        }
+    }
+    out
+}
+
+async fn save_up_next(state: &State, ids: &[i64]) -> anyhow::Result<()> {
+    let mut seen = HashSet::new();
+    let ids: Vec<i64> = ids.iter().copied().filter(|id| seen.insert(*id)).collect();
+    write_json(&up_next_path(state), &ids).await
+}
+
+async fn get_up_next(AxState(s): AxState<State>) -> Json<Vec<ShowEpisode>> {
+    Json(up_next_list(&s).await)
+}
+
+#[derive(Deserialize)]
+struct UpNextIds {
+    ids: Vec<i64>,
+}
+
+/// The list as you've arranged it (reordered, or with some taken off).
+async fn put_up_next(AxState(s): AxState<State>, Json(r): Json<UpNextIds>) -> ApiResult<Json<Vec<ShowEpisode>>> {
+    let _one = UP_NEXT.lock().await;
+    save_up_next(&s, &r.ids).await?;
+    Ok(Json(up_next_list(&s).await))
+}
+
+#[derive(Deserialize)]
+struct UpNextAdd {
+    id: i64,
+    /// Straight after what's playing (otherwise at the end).
+    #[serde(default)]
+    next: bool,
+}
+
+async fn add_up_next(AxState(s): AxState<State>, Json(r): Json<UpNextAdd>) -> ApiResult<Json<Vec<ShowEpisode>>> {
+    let _one = UP_NEXT.lock().await;
+    let mut ids: Vec<i64> = read_json(&up_next_path(&s)).await.unwrap_or_default();
+    ids.retain(|x| *x != r.id);
+    if r.next {
+        ids.insert(0, r.id);
+    } else {
+        ids.push(r.id);
+    }
+    save_up_next(&s, &ids).await?;
+    // Ready ad-free by the time it comes up.
+    if settings(&s).await.skip_ads && scan_of(&s, r.id).await.state.is_empty() {
+        queue(&s, r.id, false);
+    }
+    Ok(Json(up_next_list(&s).await))
+}
+
+/// An episode has started playing: it comes off Up Next, and the one that naturally follows it
+/// (its next part, or the show's next episode) goes on, first, and is got ready ad-free.
+async fn now_playing(AxState(s): AxState<State>, Path(id): Path<i64>) -> ApiResult<Json<Vec<ShowEpisode>>> {
+    let _one = UP_NEXT.lock().await;
+    let mut ids: Vec<i64> = read_json(&up_next_path(&s)).await.unwrap_or_default();
+    ids.retain(|x| *x != id);
+    if let Some(next) = follows(&s, id).await?
+        && !ids.contains(&next)
+    {
+        ids.insert(0, next);
+        if settings(&s).await.skip_ads && scan_of(&s, next).await.state.is_empty() {
+            queue(&s, next, false);
+        }
+    }
+    save_up_next(&s, &ids).await?;
+    Ok(Json(up_next_list(&s).await))
+}
+
+/// The episode that follows `id`: its next part ("Pt. 2" after "Pt. 1"), or else the show's
+/// next episode after it (when it isn't the newest), if not already played.
+async fn follows(state: &State, id: i64) -> anyhow::Result<Option<i64>> {
+    let Some((show, title, published)) = sqlx::query_as::<_, (i64, String, Option<String>)>("SELECT show_id, title, published FROM show_episodes WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let others: Vec<(i64, String, Option<String>, bool)> =
+        sqlx::query_as("SELECT id, title, published, finished FROM show_episodes WHERE show_id = ? AND id != ? ORDER BY published")
+            .bind(show)
+            .bind(id)
+            .fetch_all(&state.db)
+            .await?;
+    if let Some((stem, n)) = part_of(&title) {
+        let next = others.iter().find(|o| part_of(&o.1).is_some_and(|(st, m)| m == n + 1 && same_series(&st, &stem)));
+        if let Some(o) = next {
+            return Ok((!o.3).then_some(o.0));
+        }
+    }
+    let after = others.iter().find(|o| o.2.is_some() && o.2 > published);
+    Ok(after.filter(|o| !o.3).map(|o| o.0))
+}
+
+fn same_series(a: &str, b: &str) -> bool {
+    a.is_empty() || b.is_empty() || a == b || a.starts_with(b) || b.starts_with(a)
+}
+
+/// The part number in a title ("Operation Wandering Souls Pt.1", "Part Two", "Part III"), and
+/// what comes before it (lowercase, for matching the other parts).
+fn part_of(title: &str) -> Option<(String, u32)> {
+    let lower = title.to_lowercase();
+    let words: &[(&str, u32)] = &[
+        ("one", 1), ("two", 2), ("three", 3), ("four", 4), ("five", 5), ("six", 6), ("seven", 7), ("eight", 8), ("nine", 9), ("ten", 10),
+        ("iii", 3), ("ii", 2), ("iv", 4), ("vi", 6), ("v", 5), ("i", 1),
+    ];
+    for key in ["part", "pt"] {
+        let mut from = 0;
+        while let Some(k) = lower[from..].find(key) {
+            let at = from + k;
+            from = at + key.len();
+            // (A word of its own: not "apartment" or "chapter".)
+            if lower[..at].chars().next_back().is_some_and(char::is_alphanumeric) {
+                continue;
+            }
+            let rest = lower[at + key.len()..].trim_start_matches(['.', ' ', '#', ':']);
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            let n = if !digits.is_empty() {
+                digits.parse().ok()
+            } else {
+                let word: String = rest.chars().take_while(|c| c.is_alphabetic()).collect();
+                words.iter().find(|(w, _)| *w == word).map(|(_, n)| *n)
+            };
+            if let Some(n) = n {
+                let stem = lower[..at].trim_end_matches([' ', ':', '-', '\u{2013}', '\u{2014}', '(', ',', '.']).trim().to_string();
+                return Some((stem, n));
+            }
+        }
+    }
+    None
 }
 
 // ---- Downloading and finding the ads ----
@@ -1910,6 +2064,7 @@ async fn home(AxState(s): AxState<State>) -> ApiResult<Json<ShowsHome>> {
         shows: shows(&s).await?,
         in_progress: episodes_where(&s, "e.finished = 0 AND e.position > 5 ORDER BY e.played_at DESC", None, 12).await?,
         latest: episodes_where(&s, "e.finished = 0 AND e.position <= 5 ORDER BY e.published DESC", None, 24).await?,
+        up_next: up_next_list(&s).await,
     }))
 }
 
@@ -2677,6 +2832,17 @@ Line two</media:description></media:group></entry>
         assert!((ads[0].start - 1136.07).abs() < 0.01, "{}", ads[0].start);
         snap_ads(&mut ads, &heard);
         assert!((ads[0].start - 1136.07).abs() < 0.01, "{}", ads[0].start);
+    }
+
+    #[test]
+    fn finds_parts() {
+        assert_eq!(part_of("Operation Wandering Souls Pt.1"), Some(("operation wandering souls".into(), 1)));
+        assert_eq!(part_of("Operation Wandering Souls Pt. 2"), Some(("operation wandering souls".into(), 2)));
+        assert_eq!(part_of("The Heist, Part Two"), Some(("the heist".into(), 2)));
+        assert_eq!(part_of("The Heist (Part III)"), Some(("the heist".into(), 3)));
+        assert_eq!(part_of("Apartment hunting"), None);
+        assert_eq!(part_of("Party time"), None);
+        assert_eq!(part_of("Chapter 4"), None);
     }
 
     #[test]
