@@ -1224,8 +1224,9 @@ async fn cut_point(state: &State, audio: &std::path::Path, line: &Heard, quote: 
 
 // ---- Outlines ----
 
-/// How outlines are made now: 2 names who's talking. Older ones are made again when opened.
-const OUTLINE_VERSION: u32 = 2;
+/// How outlines are made now: 2 names who's talking, 3 splits lines where the voice changes.
+/// Older ones are made again when opened.
+const OUTLINE_VERSION: u32 = 3;
 
 /// Outlines being made right now.
 static OUTLINING: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
@@ -1257,7 +1258,8 @@ async fn make_outline(state: &State, id: i64) -> anyhow::Result<Outline> {
 }
 
 /// Each line's voice, from the voice server: numbers, the same for the same voice.
-async fn tell_voices(state: &State, audio: &std::path::Path, heard: &[Heard]) -> anyhow::Result<Vec<Option<u32>>> {
+/// Also where the voice changes inside a line: (time, new voice) for each line.
+async fn tell_voices(state: &State, audio: &std::path::Path, heard: &[Heard]) -> anyhow::Result<(Vec<Option<u32>>, Vec<Vec<(f64, u32)>>)> {
     let tts = state.settings.read().await.ai.tts_url.clone();
     let segments: Vec<serde_json::Value> = heard.iter().map(|h| json!({ "start": h.start, "end": h.end })).collect();
     let started = std::time::Instant::now();
@@ -1276,10 +1278,59 @@ async fn tell_voices(state: &State, audio: &std::path::Path, heard: &[Heard]) ->
     #[derive(Deserialize)]
     struct Reply {
         speakers: Vec<Option<u32>>,
+        #[serde(default)]
+        turns: Vec<Vec<(f64, u32)>>,
     }
     let r: Reply = resp.json().await?;
-    tracing::info!("told {} voices apart in {:.0}s", r.speakers.iter().flatten().collect::<HashSet<_>>().len(), started.elapsed().as_secs_f64());
-    Ok(r.speakers)
+    tracing::info!(
+        "told {} voices apart in {:.0}s, {} changes inside lines",
+        r.speakers.iter().flatten().collect::<HashSet<_>>().len(),
+        started.elapsed().as_secs_f64(),
+        r.turns.iter().map(Vec::len).sum::<usize>()
+    );
+    Ok((r.speakers, r.turns))
+}
+
+/// Lines where the voice changes partway, split there: at the end of a sentence near the
+/// change when there is one (that's usually where the other person comes in), otherwise at
+/// the nearest word.
+fn split_at_turns(heard: Vec<Heard>, turns: &[Vec<(f64, u32)>]) -> Vec<Heard> {
+    let mut out = Vec::with_capacity(heard.len());
+    for (i, h) in heard.into_iter().enumerate() {
+        let Some(ts) = turns.get(i).filter(|t| !t.is_empty()) else {
+            out.push(h);
+            continue;
+        };
+        let timed = !h.words.is_empty();
+        let words = if timed { h.words.clone() } else { spread(&h) };
+        let mut cuts: Vec<(usize, u32)> = Vec::new();
+        for &(t, n) in ts {
+            // The word the new voice starts on.
+            let near = words.iter().position(|w| (w.0 + w.1) / 2.0 >= t).unwrap_or(words.len());
+            let sentence = (1..words.len())
+                .filter(|&k| (words[k].0 - t).abs() <= 1.5 && words[k - 1].2.trim_end_matches(['"', '\'', ')']).ends_with(['.', '?', '!']))
+                .min_by(|&a, &b| (words[a].0 - t).abs().total_cmp(&(words[b].0 - t).abs()));
+            let k = sentence.unwrap_or(near);
+            if k > 0 && k < words.len() && cuts.last().is_none_or(|c| c.0 < k) {
+                cuts.push((k, n));
+            }
+        }
+        let text = |ws: &[(f64, f64, String)]| ws.iter().map(|w| w.2.as_str()).collect::<Vec<_>>().join(" ");
+        let mut from = 0;
+        let mut who = h.speaker;
+        let mut start = h.start;
+        for (k, n) in cuts.into_iter().chain(std::iter::once((words.len(), 0))) {
+            let part = &words[from..k];
+            if !part.is_empty() {
+                let end = if k < words.len() { words[k].0 } else { h.end };
+                out.push(Heard { start, end, text: text(part), words: if timed { part.to_vec() } else { vec![] }, speaker: who });
+                start = end;
+            }
+            from = k;
+            who = Some(n);
+        }
+    }
+    out
 }
 
 /// The transcript in stretches of about half a minute (what the outline points at), with the
@@ -1325,14 +1376,16 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
         bail!("there's no transcript yet");
     }
     // Who's talking, told apart by their voices (once).
-    if heard.iter().all(|h| h.speaker.is_none())
+    let before: Outline = read_json(&episode_dir(state, id).join("outline.json")).await.unwrap_or_default();
+    if (heard.iter().all(|h| h.speaker.is_none()) || before.version < 3)
         && let Some(audio) = audio_file(state, id)
     {
         match tell_voices(state, &audio, &heard).await {
-            Ok(who) if who.len() == heard.len() => {
+            Ok((who, turns)) if who.len() == heard.len() => {
                 for (h, n) in heard.iter_mut().zip(who) {
                     h.speaker = n;
                 }
+                heard = split_at_turns(heard, &turns);
                 write_json(&path, &heard).await?;
             }
             Ok(_) => {}
@@ -2122,6 +2175,18 @@ Line two</media:description></media:group></entry>
         assert!(e.published.is_some());
         assert_eq!(e.notes, "Line one<br>Line two");
         assert_eq!(f.image.as_deref(), Some("https://i.ytimg.com/vi/abc/hqdefault.jpg"));
+    }
+
+    #[test]
+    fn splits_lines_where_the_voice_changes() {
+        let h = Heard { start: 0.0, end: 10.0, text: "So what happened next? Well, it was a long night.".into(), words: vec![], speaker: Some(1) };
+        // The change is heard a little after the question ends.
+        let out = split_at_turns(vec![h], &[vec![(4.8, 2)]]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].text, "So what happened next?");
+        assert_eq!(out[0].speaker, Some(1));
+        assert_eq!(out[1].text, "Well, it was a long night.");
+        assert_eq!(out[1].speaker, Some(2));
     }
 
     #[test]

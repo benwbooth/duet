@@ -1053,11 +1053,68 @@ def _speakers(body):
         if labels[i] is None:
             j = min(told, key=lambda t: abs(t - i))
             labels[i] = labels[j]
+    # Where the voice changes inside a line (Whisper often runs one speaker's reply into the
+    # other's line): fingerprints of 1.5 s windows every 0.75 s through each longer line, each
+    # put to the nearest voice; a change has to last 2 windows to count.
+    turns = [[] for _ in segs]
+    names = list(cent)
+    if len(names) > 1:
+        cmat = np.stack([cent[g] / np.linalg.norm(cent[g]) for g in names])
+        win, hop = 1.5, 0.75
+        spots = []  # (segment, window centre)
+        for i, sg in enumerate(segs):
+            a, b = float(sg["start"]), float(sg["end"])
+            if b - a < 3.0:
+                continue
+            t = a
+            while t + win <= b + 0.01:
+                batch.append(np.ascontiguousarray(samples[int(t * 16000):int((t + win) * 16000)], dtype=np.float32))
+                spots.append((i, t + win / 2))
+                t += hop
+        e_all = []
+        for k in range(0, len(batch), 64):
+            chunk = batch[k:k + 64]
+            wav = torch.from_numpy(np.stack([c if len(c) == int(win * 16000) else np.pad(c, (0, int(win * 16000) - len(c))) for c in chunk]))
+            with torch.no_grad():
+                e_all.extend(speaker_model.encode_batch(wav).squeeze(1).float().cpu().numpy())
+        batch.clear()
+        by_seg = {}
+        for (i, c), e in zip(spots, e_all):
+            e = e / np.linalg.norm(e)
+            by_seg.setdefault(i, []).append((c, names[int(np.argmax(cmat @ e))]))
+        for i, ws in by_seg.items():
+            who = [g for _, g in ws]
+            # (A one-window blip is noise: it takes its neighbours' voice.)
+            for k in range(1, len(who) - 1):
+                if who[k - 1] == who[k + 1] != who[k]:
+                    who[k] = who[k - 1]
+            runs = []  # [voice, first window, last window]
+            for k, g in enumerate(who):
+                if runs and runs[-1][0] == g:
+                    runs[-1][2] = k
+                else:
+                    runs.append([g, k, k])
+            kept = []
+            for r in [r for r in runs if r[2] - r[1] >= 1] or runs:
+                if kept and kept[-1][0] == r[0]:
+                    kept[-1][2] = r[2]
+                else:
+                    kept.append(r)
+            runs = kept
+            if len(runs) < 2:
+                continue
+            labels[i] = runs[0][0]
+            for prev, r in zip(runs, runs[1:]):
+                if r[0] != prev[0]:
+                    # Between the last window of one voice and the first of the next.
+                    turns[i].append([round((ws[prev[2]][0] + ws[r[1]][0]) / 2, 2), r[0]])
     # Numbered 1, 2, ... in the order they first speak.
     order = {}
-    for g in labels:
+    for i, g in enumerate(labels):
         order.setdefault(g, len(order) + 1)
-    return {"speakers": [order[g] for g in labels]}
+        for _, h in turns[i]:
+            order.setdefault(h, len(order) + 1)
+    return {"speakers": [order[g] for g in labels], "turns": [[[t, order[h]] for t, h in ts] for i, ts in enumerate(turns)]}
 
 
 def multipart(content_type, body):
