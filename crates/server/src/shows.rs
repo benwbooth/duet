@@ -2350,6 +2350,7 @@ fn snap_ads(ads: &mut [AdSpan], heard: &[Heard]) -> bool {
         {
             a.start = heard[k - 1].end + 0.15;
             moved = true;
+            continue;
         }
         // An ad's short opener in its own voice ("Hey, it's Brittany.") belongs to it: a line of a
         // few words just before, in the same voice as the ad's first line (or at the very start
@@ -2358,9 +2359,10 @@ fn snap_ads(ads: &mut [AdSpan], heard: &[Heard]) -> bool {
         if let Some(k) = first.filter(|&k| k > 0) {
             let (before, opener) = (&heard[k - 1], &heard[k]);
             let short = before.text.split_whitespace().count() <= 6;
-            let close = a.start - before.end < 1.2 && before.start < a.start;
-            let same = matches!((before.speaker, opener.speaker), (Some(x), Some(y)) if x == y);
             let at_top = before.start < 3.0 && k == 1;
+            // (Right before it: a host's "All right, thank you." before the break is further off.)
+            let close = a.start - before.end < if at_top { 1.2 } else { 0.5 } && before.start < a.start;
+            let same = matches!((before.speaker, opener.speaker), (Some(x), Some(y)) if x == y);
             if short && close && (same || at_top) {
                 a.start = before.start - 0.05;
                 moved = true;
