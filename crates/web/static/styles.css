@@ -2226,8 +2226,8 @@ html.eink .swatch-gray { background: #4a4a4c; } html.eink .swatch-dark { backgro
 .np-grip { position: absolute; left: 50%; top: 7px; width: 40px; height: 5px; margin-left: -20px; border-radius: 3px; background: color-mix(in srgb, var(--text) 22%, transparent); }
 .np-show-link { flex: 1; text-align: center; font-weight: 600; font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .np-head .icon-button { font-size: 1.4rem; min-width: 40px; }
-.np-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 440px) minmax(0, 1fr); gap: 2.4rem; padding: 0.6rem 2.2rem 1.5rem; overflow: hidden; }
-.np-main { display: flex; flex-direction: column; gap: 0.9rem; overflow-y: auto; padding-bottom: 1rem; min-height: 0; }
+.np-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 480px) minmax(0, 1fr); gap: 2.4rem; padding: 0.6rem 2.2rem 1.5rem; overflow: hidden; }
+.np-main { display: flex; flex-direction: column; gap: 0.9rem; overflow-y: auto; overflow-x: hidden; padding-inline: 10px; margin-inline: -10px; padding-bottom: 1rem; min-height: 0; }
 .np-main > * { flex-shrink: 0; }
 .np-art-wrap { width: min(100%, 380px, 42vh); align-self: center; transition: transform 0.45s var(--ease-spring); transform: scale(0.92); }
 .np-art-wrap.playing { transform: scale(1); }
@@ -2445,3 +2445,15 @@ html.eink .np-backdrop { display: none; }
 .np-ads .ad-when { font-size: 0.85rem; }
 .np-ads .ad-wrong { flex: none; font-size: 0.78rem; min-height: 30px; padding: 0 0.6rem; white-space: nowrap; }
 @media (max-width: 760px) { .np-ads .ad-wrong { font-size: 0.74rem; padding: 0 0.5rem; } }
+
+/* Ads in the transcript: folded into one bar (they're skipped), opened only to look. */
+.tr-lines p.ad.folded { display: none; }
+.tr-ad-fold { display: flex; align-items: center; gap: 0.6rem; width: 100%; margin: 0.3rem 0; padding: 0.35rem 0.6rem; border: 0; border-left: 3px solid #2f9e5f; border-radius: 0 10px 10px 0; background: color-mix(in srgb, #2f9e5f 7%, transparent); color: var(--muted); font: inherit; text-align: left; cursor: pointer; min-height: 36px; }
+.tr-ad-fold:hover { background: color-mix(in srgb, #2f9e5f 14%, transparent); }
+.tr-ad-fold .tr-ad-tag { margin: 0; }
+.tr-ad-show { margin-left: auto; font-size: 0.8rem; font-weight: 600; color: #2f9e5f; }
+.pscrub-tip.at-start { left: 0; transform: translate(0, 4px); }
+.pscrub-tip.at-end { left: auto; right: 0; transform: translate(0, 4px); }
+.pscrub-ad:hover .pscrub-tip.at-start, .pscrub-ad:hover .pscrub-tip.at-end { transform: translate(0, 0); }
+.pscrub-tip.at-start::after { left: 12px; margin-left: 0; }
+.pscrub-tip.at-end::after { left: auto; right: 12px; margin-left: 0; }

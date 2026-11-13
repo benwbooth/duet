@@ -1039,8 +1039,8 @@ fn EpisodeSummary(outline: RwSignal<Outline>) -> impl IntoView {
                     <p>{o.summary.clone()}</p>
                     {(!o.speakers.is_empty()).then(|| view! {
                         <div class="ep-voices">
-                            {o.speakers.iter().map(|x| view! {
-                                <span class="ep-voice" style:--who-hue=((x.n * 137 + 20) % 360).to_string()>
+                            {o.speakers.iter().enumerate().filter(|(k, x)| !o.speakers[..*k].iter().any(|y| y.name == x.name)).map(|(_, x)| view! {
+                                <span class="ep-voice" style:--who-hue=name_hue(&x.name).to_string()>
                                     <b>{x.name.clone()}</b>{(!x.role.is_empty()).then(|| view! { <small>{x.role.clone()}</small> })}
                                 </span>
                             }).collect_view()}
@@ -1493,7 +1493,8 @@ fn Scrubber() -> impl IntoView {
                             <span class="pscrub-ad" class:done=move || p.skipped_ads.with(|v| v.contains(&i))
                                 aria-label=format!("Ad: {label}, {when}")
                                 style:left=move || format!("{:.2}%", pct(a.start)) style:width=move || format!("{:.2}%", (pct(a.end) - pct(a.start)).max(0.6))>
-                                <span class="pscrub-tip" role="tooltip">
+                                // (Near either end, the tip lines up with that end rather than hanging past it.)
+                                <span class="pscrub-tip" role="tooltip" class:at-start={move || pct((a.start + a.end) / 2.0) < 20.0} class:at-end={move || pct((a.start + a.end) / 2.0) > 80.0}>
                                     <strong>{label.clone()}</strong>
                                     <span>{format!("{when} · {len}")}</span>
                                     <em>{move || if p.skipped_ads.with(|v| v.contains(&i)) { "Skipped" } else if !p.skipping() { "Will play" } else if p.time.get() > a.end { "Played" } else { "Will be skipped" }}</em>
@@ -1873,6 +1874,31 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64,
     let toast = toast();
     let query = RwSignal::new(String::new());
     let follow = RwSignal::new(true);
+    // The ads opened to read (all folded away otherwise).
+    let open_ads = RwSignal::new(std::collections::HashSet::<usize>::new());
+    // Following along again when playing starts, or a few seconds after scrolling away while
+    // it plays.
+    Effect::new(move |was: Option<bool>| {
+        let playing = p.state.get() == "playing";
+        if playing && was == Some(false) {
+            follow.set(true);
+        }
+        playing
+    });
+    let scrolled = StoredValue::new(0u32);
+    let looked_away = move || {
+        follow.set(false);
+        scrolled.update_value(|n| *n += 1);
+        let n = scrolled.get_value();
+        set_timeout(
+            move || {
+                if scrolled.get_value() == n && p.state.get_untracked() == "playing" {
+                    follow.set(true);
+                }
+            },
+            std::time::Duration::from_secs(8),
+        );
+    };
     let whole = RwSignal::new(false);
     let opened = RwSignal::new(std::collections::HashSet::<usize>::new());
     let list = NodeRef::<leptos::html::Div>::new();
@@ -1911,11 +1937,18 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64,
         }
         let _ = opened.get();
         let Some(el) = list.get() else { return };
+        // (Only the transcript scrolls: scrolling the line into view would move the whole
+        // screen with it.)
         if let Ok(Some(line)) = el.query_selector(&format!("[data-i=\"{i}\"]")) {
-            let opts = web_sys::ScrollIntoViewOptions::new();
-            opts.set_block(web_sys::ScrollLogicalPosition::Center);
+            let (a, b) = (line.get_bounding_client_rect(), el.get_bounding_client_rect());
+            if a.height() == 0.0 {
+                return; // (folded away: an ad)
+            }
+            let top = el.scroll_top() as f64 + (a.top() - b.top()) - (el.client_height() as f64 - a.height()) / 2.0;
+            let opts = web_sys::ScrollToOptions::new();
+            opts.set_top(top.max(0.0));
             opts.set_behavior(web_sys::ScrollBehavior::Smooth);
-            line.scroll_into_view_with_scroll_into_view_options(&opts);
+            el.scroll_to_with_scroll_to_options(&opts);
         }
     });
     let prepare = move |_| {
@@ -1961,7 +1994,7 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64,
                 </button>
             </div>
             <div class="tr-lines" node_ref=list
-                on:wheel=move |_| follow.set(false) on:touchmove=move |_| follow.set(false)>
+                on:wheel=move |_| looked_away() on:touchmove=move |_| looked_away()>
                 {move || {
                     if lines.with(Vec::is_empty) {
                         let e = p.ep.get().unwrap_or_default();
@@ -2004,7 +2037,7 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64,
                                 let mine: Vec<(usize, f64, String)> = all.iter().enumerate()
                                     .filter(|(_, (t, _))| *t >= sec.start - 0.5 && *t < sec.end - 0.5)
                                     .map(|(i, (t, x))| (i, *t, x.clone())).collect();
-                                view! { <div class="ptoc-body">{transcript_rows(mine, &all_ads, "", &sec.subsections.iter().map(|x| (x.start, x.title.clone(), true)).collect::<Vec<_>>(), said, follow, words, who, &o.speakers)}</div> }
+                                view! { <div class="ptoc-body">{transcript_rows(mine, &all_ads, "", &sec.subsections.iter().map(|x| (x.start, x.title.clone(), true)).collect::<Vec<_>>(), said, follow, words, who, &o.speakers, open_ads)}</div> }
                             });
                             view! {
                                 <section class="ptoc-sec" class:open=is_open class:now=move || now_section.get() == Some(k)>
@@ -2062,7 +2095,7 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64,
                     } else {
                         vec![]
                     };
-                    view! { {note}{count}{transcript_rows(shown, &all_ads, &q, &subs, said, follow, words, who, &outline.with_untracked(|o| o.speakers.clone()))} }.into_any()
+                    view! { {note}{count}{transcript_rows(shown, &all_ads, &q, &subs, said, follow, words, who, &outline.with_untracked(|o| o.speakers.clone()), open_ads)} }.into_any()
                 }}
             </div>
         </div>
@@ -2097,6 +2130,7 @@ fn transcript_rows(
     words: RwSignal<Vec<Vec<(f64, f64, String)>>>,
     who: RwSignal<Vec<Option<u32>>>,
     names: &[Speaker],
+    open_ads: RwSignal<std::collections::HashSet<usize>>,
 ) -> impl IntoView + use<> {
     // Laid out like a script: the speaker's name over what they say, when it changes.
     let voices = who.get_untracked();
@@ -2121,15 +2155,29 @@ fn transcript_rows(
             prev_ad = ad;
             let voice = if ad.is_some() { None } else { voices.get(i).copied().flatten() };
             let headed = !here_empty;
-            let name = voice.filter(|v| headed || prev_who != Some(*v)).map(|v| {
-                let hue = (v * 137 + 20) % 360;
+            // (Two voices given the same name are one person: the name says so, and so does its colour.)
+            let same = |a: u32, b: u32| a == b || name_of(a) == name_of(b);
+            let name = voice.filter(|v| headed || !prev_who.is_some_and(|p| same(p, *v))).map(|v| {
+                let hue = name_hue(&name_of(v));
                 view! { <div class="tr-who" style:--who-hue=hue.to_string()>{name_of(v).to_uppercase()}</div> }
             });
             prev_who = if ad.is_some() { None } else { voice.or(prev_who) };
+            // An ad is folded away (it's skipped anyway), unless it's opened to look at, or
+            // searched in.
+            let searching = !q.is_empty();
             let tag = ad.filter(|_| starts).map(|k| {
                 let a = &all_ads[k];
-                view! { <span class="tr-ad-tag">{format!("Ad · {} · {}", if a.label.is_empty() { "Ad" } else { &a.label }, format_time(a.end - a.start))}</span> }
+                let label = format!("Ad · {} · {}", if a.label.is_empty() { "Ad" } else { &a.label }, format_time(a.end - a.start));
+                view! {
+                    <button class="tr-ad-fold" class:open=move || searching || open_ads.with(|o| o.contains(&k))
+                        on:click=move |_| open_ads.update(|o| if !o.remove(&k) { o.insert(k); })
+                        title="Ads are skipped. Open to read it.">
+                        <span class="tr-ad-tag">{label}</span>
+                        <span class="tr-ad-show">{move || if searching || open_ads.with(|o| o.contains(&k)) { "Hide" } else { "Show" }}</span>
+                    </button>
+                }
             });
+            let folded = move || ad.is_some_and(|k| !searching && !open_ads.with(|o| o.contains(&k)));
             let text = if q.is_empty() {
                 // The line being said lights up word by word, as the audiobooks do.
                 (move || {
@@ -2156,14 +2204,19 @@ fn transcript_rows(
             view! {
                 {head}
                 {name}
-                <p data-i=i.to_string() class:now=move || said.get() == Some(i) class:ad=ad.is_some()
+                {tag}
+                <p data-i=i.to_string() class:now=move || said.get() == Some(i) class:ad=ad.is_some() class:folded=folded
                     on:click=move |_| { sp_seek(t); sp_play(); follow.set(true) }>
-                    {tag}
                     <span class="ts">{format_time(t)}</span>{text}
                 </p>
             }
         })
         .collect_view()
+}
+
+/// A speaker's colour (a hue), from their name, so the same name is always the same colour.
+fn name_hue(name: &str) -> u32 {
+    name.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) % 360
 }
 
 /// `text` with each match of `q` (lowercase) marked.

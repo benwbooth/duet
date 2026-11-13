@@ -44,7 +44,8 @@ incremental = true
 # (Packaging, in flake.nix, still uses wasm-release.)
 [profile.wasm-dev]
 inherits = "dev"
-opt-level = 2
+opt-level = "s"
+strip = true
 codegen-units = 256
 incremental = true
 panic = "abort"
