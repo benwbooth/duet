@@ -75,6 +75,8 @@ pub struct AdScan {
     pub error: Option<String>,
     /// How the ads were found (the server's newest way is read again over older checks).
     pub version: u32,
+    /// How the transcript was written (one written an older way is listened to again).
+    pub heard: u32,
 }
 
 impl AdScan {

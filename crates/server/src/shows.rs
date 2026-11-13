@@ -56,6 +56,9 @@ const OVERLAP: f64 = 120.0;
 /// 4 to the best place close by (a sentence end, a pause or a change of voice), read again from timed words. Episodes checked an older way are
 /// read again (from the transcript they have) when they're played.
 const CUTS: u32 = 4;
+/// The way transcripts are written now: 1 hears a stretch of speech at a time (no 30 s pieces
+/// stitched together, which wrote words twice). Older ones are listened to again.
+const LISTENING: u32 = 1;
 
 pub fn routes() -> Router<State> {
     Router::new()
@@ -486,6 +489,9 @@ pub async fn hourly(state: State) {
         if let Err(e) = refresh(&state).await {
             tracing::warn!("refreshing podcasts: {e:#}");
         }
+        if let Err(e) = queue_newest(&state).await {
+            tracing::warn!("queueing new podcast episodes: {e:#}");
+        }
         if let Err(e) = tidy(&state).await {
             tracing::warn!("tidying podcast downloads: {e:#}");
         }
@@ -497,23 +503,61 @@ pub async fn hourly(state: State) {
 /// listening), most recently played first.
 async fn reread_old(state: &State) {
     let Ok(mut dir) = tokio::fs::read_dir(base(state).join("episodes")).await else { return };
-    let mut old = Vec::new();
+    let (mut old, mut unfinished) = (Vec::new(), Vec::new());
     while let Ok(Some(e)) = dir.next_entry().await {
         let Some(id) = e.file_name().to_str().and_then(|n| n.parse::<i64>().ok()) else { continue };
         let scan: AdScan = read_json(&e.path().join("scan.json")).await.unwrap_or_default();
-        // Found an older way (cut only at whole lines, or with cuts that missed sentence ends
-        // and changes of voice): read again from the transcript, after timing its words.
-        if scan.state == "done" && scan.version < CUTS && e.path().join("transcript.json").exists() {
-            let played = e.metadata().await.and_then(|m| m.modified()).ok();
-            old.push((played, id));
+        let played = e.metadata().await.and_then(|m| m.modified()).ok();
+        let has_transcript = e.path().join("transcript.json").exists();
+        if scan.state == "done" && has_transcript && scan.heard < LISTENING {
+            // Written an older way: listened to again, and its outline made again from that.
+            old.push((played, id, true));
+        } else if scan.state == "done" && scan.version < CUTS && has_transcript {
+            // Found an older way (cut only at whole lines, or with cuts that missed sentence
+            // ends and changes of voice): read again from the transcript, after timing its words.
+            old.push((played, id, false));
+        } else if scan.busy() {
+            // Waiting or under way when the server stopped (the line is kept in memory only).
+            unfinished.push(id);
         }
     }
     old.sort_by(|a, b| b.0.cmp(&a.0));
-    for (_, id) in old {
-        tracing::info!("episode {id}: reading its ads again (they were found an older way)");
+    for id in unfinished {
+        tracing::info!("episode {id}: carrying on finding its ads");
+        queue(state, id, false);
+    }
+    for (_, id, listen) in old {
+        if listen {
+            tracing::info!("episode {id}: writing its transcript again (it was written an older way)");
+            let dir = episode_dir(state, id);
+            let _ = tokio::fs::remove_file(dir.join("transcript.json")).await;
+            let _ = tokio::fs::remove_file(dir.join("outline.json")).await;
+        } else {
+            tracing::info!("episode {id}: reading its ads again (they were found an older way)");
+        }
         set_scan(state, id, |x| *x = AdScan::default()).await;
         queue(state, id, false);
     }
+}
+
+/// The newest episodes of each followed show (that skips ads) not yet checked, put in line, so
+/// they're ready ad-free, with transcripts, when you get to them. (The line lives in memory, so
+/// a restart would otherwise forget them.)
+async fn queue_newest(state: &State) -> anyhow::Result<()> {
+    let prefs = settings(state).await;
+    if !prefs.prepare_new || !prefs.skip_ads {
+        return Ok(());
+    }
+    let shows: Vec<i64> = sqlx::query_scalar("SELECT id FROM shows WHERE skip_ads = 1").fetch_all(&state.db).await?;
+    for show in shows {
+        for id in newest_episodes(state, show, 2).await? {
+            let scan = scan_of(state, id).await;
+            if scan.state.is_empty() || scan.busy() {
+                queue(state, id, false);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Deletes the downloads of episodes finished more than `keep_days` ago.
@@ -1083,6 +1127,7 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
     set_scan(state, id, |s| {
         s.ads = ads;
         s.version = CUTS;
+        s.heard = LISTENING;
         s.state = "done".into();
         s.doing.clear();
         s.progress = 1.0;
