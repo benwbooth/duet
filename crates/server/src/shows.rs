@@ -1312,7 +1312,8 @@ async fn cut_point(state: &State, audio: &std::path::Path, line: &Heard, quote: 
 /// How outlines are made now: 2 names who's talking, 3 splits lines where the voice changes,
 /// 4 times every word first, 5 times the lines the aligner failed on before.
 /// Older ones are made again when opened.
-const OUTLINE_VERSION: u32 = 5;
+// 6 tells voices apart more finely (callers on the phone sound alike).
+const OUTLINE_VERSION: u32 = 6;
 
 /// Outlines being made right now.
 static OUTLINING: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
@@ -1537,7 +1538,7 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
             set_scan(state, id, |s| s.ads = ads).await;
         }
     }
-    if (heard.iter().all(|h| h.speaker.is_none()) || before.version < 3)
+    if (heard.iter().all(|h| h.speaker.is_none()) || before.version < 6)
         && let Some(audio) = audio_file(state, id)
     {
         match tell_voices(state, &audio, &heard).await {
@@ -1579,8 +1580,10 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
         - speakers: the transcript marks who's talking as S1, S2... (told apart by voice, so now and then a line is \
         put to the wrong one). For each S number, their name: from how they introduce themselves or each other, how \
         others address them, the show notes, or the show's known host; if it isn't said, a short description \
-        (\"Guest\", \"Caller\", \"Clip\"). And their role: host, co-host, guest, caller, narrator or clip. Leave \
-        speakers empty when there are no S marks.\n\
+        (\"Guest\", \"Caller\", \"Clip\"). And their role: host, co-host, guest, caller, narrator or clip. One person \
+        may have several S numbers: give each the same name. If one S number seems to be several people (voices \
+        on the phone sound alike), name it for whoever says most of its lines; never join names (\"Norman (also \
+        Phil)\"). Leave speakers empty when there are no S marks.\n\
         The transcript is speech recognition, so spell names as they're most likely meant. Reply with only JSON, no \
         prose: {\"summary\": \"...\", \"sections\": [{\"title\": \"...\", \"summary\": \"...\", \"at\": 0, \"subsections\": \
         [{\"title\": \"...\", \"summary\": \"...\", \"at\": 3}]}], \"speakers\": [{\"n\": 1, \"name\": \"...\", \"role\": \"host\"}]}";

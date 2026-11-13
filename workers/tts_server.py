@@ -1099,14 +1099,15 @@ def _speakers(body):
 
     x = np.stack(embs)
     x = x / np.linalg.norm(x, axis=1, keepdims=True)
-    threshold = float(body.get("threshold", 0.6))
+    threshold = float(body.get("threshold", 0.45))
     if len(x) == 1:
         groups = np.array([1])
     else:
         groups = fcluster(linkage(x, method="average", metric="cosine"), t=threshold, criterion="distance")
     # Voices heard only a moment (a clip, a caller's "hi") join the nearest real voice.
     counts = {g: int((groups == g).sum()) for g in set(groups)}
-    big = [g for g, c in counts.items() if c >= max(2, 0.02 * len(x))] or list(counts)
+    # (A caller with a handful of lines is still a voice of their own.)
+    big = [g for g, c in counts.items() if c >= 2] or list(counts)
     cent = {g: x[groups == g].mean(axis=0) for g in big}
     for k, g in enumerate(groups):
         if g not in cent:
