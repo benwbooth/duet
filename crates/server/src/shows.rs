@@ -1316,6 +1316,7 @@ const OUTLINE_VERSION: u32 = 5;
 
 /// Outlines being made right now.
 static OUTLINING: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
+static VOICES_RETRIED: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
 
 async fn outline_of(state: &State, id: i64) -> Outline {
     if OUTLINING.lock().unwrap().contains(&id) {
@@ -1547,7 +1548,7 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
                 heard = split_at_turns(heard, &turns);
                 write_json(&path, &heard).await?;
             }
-            Ok(_) => {}
+            Ok((who, _)) => tracing::warn!("telling voices apart in episode {id}: {} answers for {} lines", who.len(), heard.len()),
             Err(e) => tracing::warn!("telling voices apart in episode {id}: {e:#}"),
         }
     }
@@ -2378,11 +2379,14 @@ fn spread(h: &Heard) -> Vec<(f64, f64, String)> {
 /// whole (one checked before outlines existed, say).
 async fn get_outline(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<Outline> {
     let o = outline_of(&s, id).await;
-    let stale = o.state.is_empty() || (o.state == "done" && o.version < OUTLINE_VERSION);
+    // (One whose voices couldn't be told apart is tried again, once each time the server runs.)
+    let unnamed = o.state == "done" && o.speakers.is_empty() && VOICES_RETRIED.lock().unwrap().insert(id);
+    let stale = o.state.is_empty() || (o.state == "done" && o.version < OUTLINE_VERSION) || unnamed;
     if stale && scan_of(&s, id).await.state == "done" && episode_dir(&s, id).join("transcript.json").exists() {
         let st = s.clone();
         OUTLINING.lock().unwrap().insert(id);
         tokio::spawn(async move {
+            // (Shown as being made from now; make_outline marks it again itself.)
             OUTLINING.lock().unwrap().remove(&id);
             let _ = make_outline(&st, id).await;
         });

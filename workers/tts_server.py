@@ -1140,7 +1140,10 @@ def _speakers(body):
         e_all = []
         for k in range(0, len(batch), 64):
             chunk = batch[k:k + 64]
-            wav = torch.from_numpy(np.stack([c if len(c) == int(win * 16000) else np.pad(c, (0, int(win * 16000) - len(c))) for c in chunk]))
+            # (Every window the same length: rounding can make one a sample longer, the end of
+            # the file one shorter.)
+            n = int(win * 16000)
+            wav = torch.from_numpy(np.stack([np.pad(c[:n], (0, n - len(c[:n]))) for c in chunk]))
             with torch.no_grad():
                 e_all.extend(speaker_model.encode_batch(wav).squeeze(1).float().cpu().numpy())
         batch.clear()
