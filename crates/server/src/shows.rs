@@ -52,9 +52,9 @@ const FIRST_WINDOW: f64 = 240.0;
 const WINDOW: f64 = 900.0;
 /// Each stretch is read with the end of the one before it, so an ad across the join is whole.
 const OVERLAP: f64 = 120.0;
-/// The way ads are found now: 2 cuts inside a transcript line. Episodes checked an older way are
+/// The way ads are found now: 2 cuts inside a transcript line, 3 snaps cuts to sentence ends. Episodes checked an older way are
 /// read again (from the transcript they have) when they're played.
-const CUTS: u32 = 2;
+const CUTS: u32 = 3;
 
 pub fn routes() -> Router<State> {
     Router::new()
@@ -499,8 +499,20 @@ async fn reread_old(state: &State) {
     let mut old = Vec::new();
     while let Ok(Some(e)) = dir.next_entry().await {
         let Some(id) = e.file_name().to_str().and_then(|n| n.parse::<i64>().ok()) else { continue };
-        let scan: AdScan = read_json(&e.path().join("scan.json")).await.unwrap_or_default();
-        if scan.state == "done" && scan.version < CUTS && e.path().join("transcript.json").exists() {
+        let mut scan: AdScan = read_json(&e.path().join("scan.json")).await.unwrap_or_default();
+        // Cut inside lines already: only the edges move to sentence ends (no model call).
+        if scan.state == "done" && scan.version == 2 {
+            let heard: Vec<Heard> = read_json(&e.path().join("transcript.json")).await.unwrap_or_default();
+            snap_ads(&mut scan.ads, &heard);
+            let ads = scan.ads;
+            set_scan(state, id, |x| {
+                x.ads = ads;
+                x.version = CUTS;
+            })
+            .await;
+            continue;
+        }
+        if scan.state == "done" && scan.version < 2 && e.path().join("transcript.json").exists() {
             let played = e.metadata().await.and_then(|m| m.modified()).ok();
             old.push((played, id));
         }
@@ -2055,7 +2067,7 @@ async fn prepare(AxState(s): AxState<State>, Path(id): Path<i64>, Json(r): Json<
     let scan = scan_of(&s, id).await;
     // Checked the old way (ads cut only at whole transcript lines): read again, from the
     // transcript it already has, so it's quick.
-    if scan.state == "done" && scan.version < CUTS && episode_dir(&s, id).join("transcript.json").exists() {
+    if scan.state == "done" && scan.version < 2 && episode_dir(&s, id).join("transcript.json").exists() {
         set_scan(&s, id, |x| *x = AdScan::default()).await;
         queue(&s, id, true);
         let mut scan = scan_of(&s, id).await;
