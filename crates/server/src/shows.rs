@@ -57,8 +57,9 @@ const OVERLAP: f64 = 120.0;
 /// read again (from the transcript they have) when they're played.
 const CUTS: u32 = 4;
 /// The way transcripts are written now: 1 hears a stretch of speech at a time (no 30 s pieces
-/// stitched together, which wrote words twice). Older ones are listened to again.
-const LISTENING: u32 = 1;
+/// stitched together, which wrote words twice), 2 ends each stretch in a pause (words cut off at
+/// a stretch's edge were lost). Older ones are listened to again.
+const LISTENING: u32 = 2;
 
 pub fn routes() -> Router<State> {
     Router::new()
@@ -2340,6 +2341,16 @@ fn snap_ads(ads: &mut [AdSpan], heard: &[Heard]) -> bool {
             a.end = t;
             moved = true;
         }
+        // An ad whose first line starts mid-sentence after a pause: its first words were lost
+        // (cut off where two stretches of listening met). It starts in that pause.
+        if let Some(k) = heard.iter().position(|h| h.start >= a.start - 0.5).filter(|&k| k > 0)
+            && heard[k].text.starts_with(|c: char| c.is_lowercase())
+            && heard[k].start - heard[k - 1].end > 1.0
+            && (heard[k].start - a.start).abs() < 1.0
+        {
+            a.start = heard[k - 1].end + 0.15;
+            moved = true;
+        }
         // An ad's short opener in its own voice ("Hey, it's Brittany.") belongs to it: a line of a
         // few words just before, in the same voice as the ad's first line (or at the very start
         // of the episode, before anything else is said).
@@ -2633,6 +2644,17 @@ Line two</media:description></media:group></entry>
             snap_ads(&mut ads, std::slice::from_ref(&h));
         }
         assert_eq!(ads[0].start, once);
+    }
+
+    #[test]
+    fn ads_start_where_their_lost_words_were() {
+        let h = |a: f64, b: f64, t: &str| Heard { start: a, end: b, text: t.into(), words: vec![], speaker: None };
+        let heard = vec![h(1135.22, 1135.92, "All right, thank you."), h(1140.04, 1146.7, "moment it's a life moment for zenovia")];
+        let mut ads = vec![AdSpan { start: 1140.04, end: 1257.45, label: String::new() }];
+        snap_ads(&mut ads, &heard);
+        assert!((ads[0].start - 1136.07).abs() < 0.01, "{}", ads[0].start);
+        snap_ads(&mut ads, &heard);
+        assert!((ads[0].start - 1136.07).abs() < 0.01, "{}", ads[0].start);
     }
 
     #[test]

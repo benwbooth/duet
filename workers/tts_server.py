@@ -936,7 +936,13 @@ def _transcribe_window(body):
     from common import load_audio_window
 
     start = float(body.get("start", 0.0))
-    samples = load_audio_window(body["audio"], start, float(body.get("duration", 300.0)))
+    duration = float(body.get("duration", 300.0))
+    samples = load_audio_window(body["audio"], start, duration)
+    # Unless it's the end of the episode, the stretch ends in a pause, not mid-sentence: the
+    # words cut off at the edge were lost (neither stretch heard them whole), and with them the
+    # start of an ad. The next stretch starts from the pause (the "end" given back).
+    if len(samples) >= (duration - 0.5) * 16000:
+        samples = samples[:quiet_cut(samples)]
     with listen_lock:
         touch("whisper")
         want_words = bool(body.get("words"))
@@ -951,6 +957,27 @@ def _transcribe_window(body):
         if want_words:
             time_words(samples, start, out)
     return {"segments": out, "end": round(start + len(samples) / 16000, 2)}
+
+
+def quiet_cut(samples, rate=16000):
+    """Where to end a stretch of audio: in the last pause of its last 30 seconds (the middle of
+    the gap between two stretches of speech, Silero's VAD), or at its end if there's none."""
+    try:
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+    except Exception:
+        return len(samples)
+    tail_from = max(0, len(samples) - 30 * rate)
+    found = get_speech_timestamps(samples[tail_from:], VadOptions(threshold=0.25, min_silence_duration_ms=300, speech_pad_ms=100))
+    if not found:
+        return len(samples)
+    gaps = [(a["end"], b["start"]) for a, b in zip(found, found[1:])]
+    # (Speech that stops before the end leaves the quiet after it.)
+    if found[-1]["end"] < len(samples) - tail_from - rate // 2:
+        gaps.append((found[-1]["end"], len(samples) - tail_from))
+    if not gaps:
+        return len(samples)
+    a, b = gaps[-1]
+    return tail_from + (a + b) // 2
 
 
 def time_words(samples, offset, lines, rate=16000):
