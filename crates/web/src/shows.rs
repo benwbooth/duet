@@ -44,7 +44,16 @@ export function spInit(onTick, onState, onSkip) {
   });
   // (Seeking into an ad skips it too, with Undo; only "play this ad" lets one play.)
   el.addEventListener("seeking", () => { ours = false; });
-  el.addEventListener("playing", () => { st("playing"); ms(); });
+  // (timeupdate comes only about 4 times a second; the read-along needs the time more often,
+  // so while playing it's also read every frame, about 20 times a second at most.)
+  let raf = 0, last = 0;
+  const frame = (now) => {
+    raf = 0;
+    if (!el || el.paused) return;
+    if (now - last >= 45 && cb.tick) { last = now; cb.tick(el.currentTime, isFinite(el.duration) ? el.duration : 0); }
+    raf = requestAnimationFrame(frame);
+  };
+  el.addEventListener("playing", () => { st("playing"); ms(); if (!raf) raf = requestAnimationFrame(frame); });
   el.addEventListener("pause", () => { if (!el.ended) st("paused"); });
   el.addEventListener("waiting", () => st("waiting"));
   el.addEventListener("ended", () => { sleepAt = 0; sleepEnd = false; st("ended"); });

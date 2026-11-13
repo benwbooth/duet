@@ -1174,7 +1174,7 @@ async fn find_ads(state: &State, audio: &std::path::Path, show: &str, title: &st
          \"go to example.com/show\", \"use code\"), commercials inserted into the show, {promo_rule}. \
          Do not mark the show's normal intro, theme or outro, listener mail, or content that is genuinely part of the \
          episode, even when it talks about products or companies. An ad starts at the line where the pitch begins \
-         (include a lead-in like \"let's take a quick break\" or \"a word from our sponsors\") and ends at its last line, \
+         (include its opener, like \"Hey, it's Brittany.\", and a lead-in like \"let's take a quick break\" or \"a word from our sponsors\") and ends at its last line, \
          before the show picks up again. Several ads back to back can be one entry. The transcript is speech recognition \
          so expect small errors, and one line can run the end of an ad into the show (\"...call 855-EXAMPLE. Hello again, \
          it's me...\"): when the ad starts partway through its first line, add \"starts_with\": the ad's first few words \
@@ -2280,8 +2280,13 @@ fn drop_repeats(heard: Vec<Heard>) -> Vec<Heard> {
 async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<Vec<Heard>> {
     let heard: Vec<Heard> = read_json(&episode_dir(&s, id).join("transcript.json")).await.unwrap_or_default();
     let heard = drop_repeats(heard);
-    let mut ads = scan_of(&s, id).await.ads;
-    snap_ads(&mut ads, &heard);
+    let scan = scan_of(&s, id).await;
+    let mut ads = scan.ads.clone();
+    // (Edges that move, now who's talking is known, move for the player's skipping too.)
+    if snap_ads(&mut ads, &heard) && scan.state == "done" {
+        let keep = ads.clone();
+        set_scan(&s, id, |x| x.ads = keep).await;
+    }
     Json(split_at_ads(heard, &ads))
 }
 
@@ -2334,6 +2339,21 @@ fn snap_ads(ads: &mut [AdSpan], heard: &[Heard]) -> bool {
         if let Some(t) = snap(a.end, true).filter(|t| (t - a.end).abs() > 0.05 && *t > a.start + 1.0) {
             a.end = t;
             moved = true;
+        }
+        // An ad's short opener in its own voice ("Hey, it's Brittany.") belongs to it: a line of a
+        // few words just before, in the same voice as the ad's first line (or at the very start
+        // of the episode, before anything else is said).
+        let first = heard.iter().position(|h| h.start >= a.start - 0.5);
+        if let Some(k) = first.filter(|&k| k > 0) {
+            let (before, opener) = (&heard[k - 1], &heard[k]);
+            let short = before.text.split_whitespace().count() <= 6;
+            let close = a.start - before.end < 1.2 && before.start < a.start;
+            let same = matches!((before.speaker, opener.speaker), (Some(x), Some(y)) if x == y);
+            let at_top = before.start < 3.0 && k == 1;
+            if short && close && (same || at_top) {
+                a.start = before.start - 0.05;
+                moved = true;
+            }
         }
     }
     moved
@@ -2548,6 +2568,23 @@ Line two</media:description></media:group></entry>
     }
 
     #[test]
+    #[ignore]
+    fn real_snaps_settle() {
+        for e in ["1", "2"] {
+            let dir = format!("/mnt/user-data/uploads/duet/shows/episodes/{e}");
+            let heard: Vec<Heard> = drop_repeats(serde_json::from_str(&std::fs::read_to_string(format!("{dir}/transcript.json")).unwrap()).unwrap());
+            let scan: AdScan = serde_json::from_str(&std::fs::read_to_string(format!("{dir}/scan.json")).unwrap()).unwrap();
+            let mut ads = scan.ads.clone();
+            let mut seen = vec![];
+            for _ in 0..6 {
+                snap_ads(&mut ads, &heard);
+                seen.push(ads.iter().map(|a| format!("{:.2}-{:.2}", a.start, a.end)).collect::<Vec<_>>().join(" "));
+            }
+            println!("{e} {:?}\n  {}", scan.ads.iter().map(|a| (a.start, a.end)).collect::<Vec<_>>(), seen.join("\n  "));
+        }
+    }
+
+    #[test]
     fn drops_lines_heard_twice() {
         let h = |a: f64, b: f64, t: &str| Heard { start: a, end: b, text: t.into(), words: vec![], speaker: None };
         let heard = vec![
@@ -2568,6 +2605,34 @@ Line two</media:description></media:group></entry>
         assert_eq!(texts[5], "Well, the tape had chanting on it.");
         // (Said again later, not over the line before: kept.)
         assert_eq!(texts[6], "So what does that have to do with Ghost Tape 12?");
+    }
+
+    #[test]
+    fn ads_keep_their_opener() {
+        let h = |a: f64, b: f64, t: &str| Heard { start: a, end: b, text: t.into(), words: vec![], speaker: Some(1) };
+        let heard = vec![h(0.1, 0.75, "Hey, it's Brittany."), h(1.04, 4.56, "When I was diagnosed with relapsing MS in 2019,")];
+        let mut ads = vec![AdSpan { start: 0.99, end: 90.0, label: String::new() }];
+        snap_ads(&mut ads, &heard);
+        assert!(ads[0].start < 0.1, "{}", ads[0].start);
+    }
+
+    #[test]
+    fn snapping_again_stays_put() {
+        let w = |t: f64, s: &str| (t, t + 0.3, s.to_string());
+        let h = Heard {
+            start: 0.0,
+            end: 9.0,
+            text: "One. Two three. Four five. Six.".into(),
+            words: vec![w(0.0, "One."), w(1.0, "Two"), w(1.4, "three."), w(2.6, "Four"), w(3.0, "five."), w(4.4, "Six.")],
+            speaker: None,
+        };
+        let mut ads = vec![AdSpan { start: 2.2, end: 30.0, label: String::new() }];
+        snap_ads(&mut ads, std::slice::from_ref(&h));
+        let once = ads[0].start;
+        for _ in 0..5 {
+            snap_ads(&mut ads, std::slice::from_ref(&h));
+        }
+        assert_eq!(ads[0].start, once);
     }
 
     #[test]
