@@ -931,7 +931,8 @@ def _transcribe_window(body):
     """What's said in a stretch of a podcast episode, for finding its ads: segments of
     {start, end, text}, timed from the start of the file. Whisper on the graphics card (taking
     turns with the pictures, as the reader's listening does). With "words", each segment also
-    has its words' times ([start, end, word]), so the transcript can light up word by word."""
+    has its words' times ([start, end, word]), timed by the forced aligner as the audiobooks'
+    are, and the segment's own start and end come from them (Whisper's edges take in music)."""
     from common import load_audio_window
 
     start = float(body.get("start", 0.0))
@@ -939,16 +940,58 @@ def _transcribe_window(body):
     with listen_lock:
         touch("whisper")
         want_words = bool(body.get("words"))
-        segments, _ = listen_model().transcribe(samples, vad_filter=True, language=body.get("language") or "en", word_timestamps=want_words)
+        segments, _ = listen_model().transcribe(samples, vad_filter=True, language=body.get("language") or "en")
         out = []
         for seg in segments:
             text = seg.text.strip()
             if text:
-                line = {"start": round(seg.start + start, 2), "end": round(seg.end + start, 2), "text": text}
-                if want_words and seg.words:
-                    line["words"] = [[round(w.start + start, 2), round(w.end + start, 2), w.word.strip()] for w in seg.words if w.word.strip()]
-                out.append(line)
+                out.append({"start": round(seg.start + start, 2), "end": round(seg.end + start, 2), "text": text})
+        if want_words:
+            time_words(samples, start, out)
     return {"segments": out, "end": round(start + len(samples) / 16000, 2)}
+
+
+def time_words(samples, offset, lines, rate=16000):
+    """Times each line's words in `samples` (which start `offset` seconds into the episode) with
+    the forced aligner, a little either side of Whisper's rough edges; the line then starts at
+    its first word and ends at its last. (Call holding listen_lock.)"""
+    total = len(samples) / rate
+    for line in lines:
+        a = max(0.0, line["start"] - offset - 0.6)
+        b = min(total, line["end"] - offset + 0.6)
+        ws = line["text"].split()
+        if not ws or b - a < 0.3:
+            continue
+        try:
+            times = listen_aligner().align(samples[int(a * rate):int(b * rate)], ws)
+        except Exception as e:  # (a line the aligner can't take keeps Whisper's times)
+            print(f"aligning a podcast line: {e}", flush=True)
+            continue
+        timed = [[round(t[0] + a + offset, 2), round(t[1] + a + offset, 2), w] for w, t in zip(ws, times) if t]
+        if timed:
+            line["words"] = timed
+            line["start"], line["end"] = timed[0][0], timed[-1][1]
+
+
+def align_lines(body):
+    with audio_first():
+        return _align_lines(body)
+
+
+def _align_lines(body):
+    """Word times for an episode's transcript written before they were kept: {"segments":
+    [{start, end, text}]} -> the same, with words and tightened edges."""
+    from common import load_audio_window
+
+    lines = body["segments"]
+    if not lines:
+        return {"segments": []}
+    end = max(float(l["end"]) for l in lines) + 1.0
+    samples = load_audio_window(body["audio"], 0.0, end)
+    with listen_lock:
+        touch("whisper")
+        time_words(samples, 0.0, lines)
+    return {"segments": lines}
 
 
 speaker_model = None
@@ -1195,6 +1238,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, json.dumps(align_words(body)).encode(), "application/json")
             if path in ("/v1/track-words", "/track-words"):
                 return self.reply(200, json.dumps(track_words(body)).encode(), "application/json")
+            if path in ("/v1/align-lines", "/align-lines"):
+                return self.reply(200, json.dumps(align_lines(body)).encode(), "application/json")
             if path in ("/v1/speakers", "/speakers"):
                 return self.reply(200, json.dumps(speakers(body)).encode(), "application/json")
             if path in ("/v1/transcribe-window", "/transcribe-window"):

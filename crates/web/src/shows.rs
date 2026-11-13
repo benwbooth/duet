@@ -304,7 +304,8 @@ impl Player {
             let start = if ep.finished { 0.0 } else { ep.position };
             p.ep.set(Some(ep.clone()));
             let skip = p.skipping_untracked();
-            if (skip && ep.ads.state != "done") || (ep.needs_download && !ep.downloaded) {
+            // (A check done an older way, version below 2, is redone from its transcript.)
+            if (skip && (ep.ads.state != "done" || ep.ads.version < 2)) || (ep.needs_download && !ep.downloaded) {
                 let _ = api::post::<_, AdScan>(&format!("/api/shows/episodes/{id}/prepare"), &serde_json::json!({ "now": true })).await;
             }
             if (skip || ep.needs_download) && !ep.downloaded {

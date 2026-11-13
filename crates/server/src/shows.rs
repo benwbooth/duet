@@ -478,6 +478,7 @@ async fn refresh(state: &State) -> anyhow::Result<usize> {
 /// Every hour: new episodes, and old downloads cleared away.
 pub async fn hourly(state: State) {
     tokio::spawn(scanner(state.clone()));
+    reread_old(&state).await;
     // (Not in the first moments after starting, while everything else gets going.)
     tokio::time::sleep(Duration::from_secs(90)).await;
     loop {
@@ -488,6 +489,27 @@ pub async fn hourly(state: State) {
             tracing::warn!("tidying podcast downloads: {e:#}");
         }
         tokio::time::sleep(Duration::from_secs(3600)).await;
+    }
+}
+
+/// Episodes whose ads were found an older way are read again from their transcripts (no
+/// listening), most recently played first.
+async fn reread_old(state: &State) {
+    let Ok(mut dir) = tokio::fs::read_dir(base(state).join("episodes")).await else { return };
+    let mut old = Vec::new();
+    while let Ok(Some(e)) = dir.next_entry().await {
+        let Some(id) = e.file_name().to_str().and_then(|n| n.parse::<i64>().ok()) else { continue };
+        let scan: AdScan = read_json(&e.path().join("scan.json")).await.unwrap_or_default();
+        if scan.state == "done" && scan.version < CUTS && e.path().join("transcript.json").exists() {
+            let played = e.metadata().await.and_then(|m| m.modified()).ok();
+            old.push((played, id));
+        }
+    }
+    old.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, id) in old {
+        tracing::info!("episode {id}: reading its ads again (they were found an older way)");
+        set_scan(state, id, |x| *x = AdScan::default()).await;
+        queue(state, id, false);
     }
 }
 
@@ -1011,7 +1033,7 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
         let resp = state
             .http
             .post(format!("{}/transcribe-window", tts.trim_end_matches('/')))
-            .json(&json!({ "audio": path, "start": checked, "duration": len }))
+            .json(&json!({ "audio": path, "start": checked, "duration": len, "words": true }))
             .timeout(Duration::from_secs(900))
             .send()
             .await
@@ -1224,9 +1246,10 @@ async fn cut_point(state: &State, audio: &std::path::Path, line: &Heard, quote: 
 
 // ---- Outlines ----
 
-/// How outlines are made now: 2 names who's talking, 3 splits lines where the voice changes.
+/// How outlines are made now: 2 names who's talking, 3 splits lines where the voice changes,
+/// 4 times every word first.
 /// Older ones are made again when opened.
-const OUTLINE_VERSION: u32 = 3;
+const OUTLINE_VERSION: u32 = 4;
 
 /// Outlines being made right now.
 static OUTLINING: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
@@ -1255,6 +1278,31 @@ async fn make_outline(state: &State, id: i64) -> anyhow::Result<Outline> {
     };
     write_json(&episode_dir(state, id).join("outline.json"), &o).await?;
     Ok(o)
+}
+
+/// The forced aligner's times for each line's words (the voice server's /align-lines).
+async fn time_lines(state: &State, audio: &std::path::Path, heard: &[Heard]) -> anyhow::Result<Vec<Heard>> {
+    let tts = state.settings.read().await.ai.tts_url.clone();
+    let segments: Vec<serde_json::Value> = heard.iter().map(|h| json!({ "start": h.start, "end": h.end, "text": h.text })).collect();
+    let started = std::time::Instant::now();
+    let resp = state
+        .http
+        .post(format!("{}/align-lines", tts.trim_end_matches('/')))
+        .json(&json!({ "audio": audio, "segments": segments }))
+        .timeout(Duration::from_secs(1800))
+        .send()
+        .await
+        .context("the voice server isn't running")?;
+    if !resp.status().is_success() {
+        bail!("the voice server couldn't time the words (it may need restarting)");
+    }
+    #[derive(Deserialize)]
+    struct Reply {
+        segments: Vec<Heard>,
+    }
+    let r: Reply = resp.json().await?;
+    tracing::info!("timed the words of {} lines in {:.0}s", r.segments.len(), started.elapsed().as_secs_f64());
+    Ok(r.segments)
 }
 
 /// Each line's voice, from the voice server: numbers, the same for the same voice.
@@ -1377,6 +1425,26 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
     }
     // Who's talking, told apart by their voices (once).
     let before: Outline = read_json(&episode_dir(state, id).join("outline.json")).await.unwrap_or_default();
+    // Word times, for a transcript written before they were kept (lighting up the word being
+    // said, and lines that start where the words do, not in the music before them).
+    if heard.iter().all(|h| h.words.is_empty())
+        && let Some(audio) = audio_file(state, id)
+    {
+        match time_lines(state, &audio, &heard).await {
+            Ok(timed) if timed.len() == heard.len() => {
+                for (h, t) in heard.iter_mut().zip(timed) {
+                    if !t.words.is_empty() {
+                        h.start = t.start;
+                        h.end = t.end;
+                        h.words = t.words;
+                    }
+                }
+                write_json(&path, &heard).await?;
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("timing the words in episode {id}: {e:#}"),
+        }
+    }
     if (heard.iter().all(|h| h.speaker.is_none()) || before.version < 3)
         && let Some(audio) = audio_file(state, id)
     {
