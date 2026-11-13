@@ -52,9 +52,10 @@ const FIRST_WINDOW: f64 = 240.0;
 const WINDOW: f64 = 900.0;
 /// Each stretch is read with the end of the one before it, so an ad across the join is whole.
 const OVERLAP: f64 = 120.0;
-/// The way ads are found now: 2 cuts inside a transcript line, 3 snaps cuts to sentence ends. Episodes checked an older way are
+/// The way ads are found now: 2 cuts inside a transcript line, 3 snaps cuts to sentence ends,
+/// 4 to the best place close by (a sentence end, a pause or a change of voice), read again from timed words. Episodes checked an older way are
 /// read again (from the transcript they have) when they're played.
-const CUTS: u32 = 3;
+const CUTS: u32 = 4;
 
 pub fn routes() -> Router<State> {
     Router::new()
@@ -499,20 +500,10 @@ async fn reread_old(state: &State) {
     let mut old = Vec::new();
     while let Ok(Some(e)) = dir.next_entry().await {
         let Some(id) = e.file_name().to_str().and_then(|n| n.parse::<i64>().ok()) else { continue };
-        let mut scan: AdScan = read_json(&e.path().join("scan.json")).await.unwrap_or_default();
-        // Cut inside lines already: only the edges move to sentence ends (no model call).
-        if scan.state == "done" && scan.version == 2 {
-            let heard: Vec<Heard> = read_json(&e.path().join("transcript.json")).await.unwrap_or_default();
-            snap_ads(&mut scan.ads, &heard);
-            let ads = scan.ads;
-            set_scan(state, id, |x| {
-                x.ads = ads;
-                x.version = CUTS;
-            })
-            .await;
-            continue;
-        }
-        if scan.state == "done" && scan.version < 2 && e.path().join("transcript.json").exists() {
+        let scan: AdScan = read_json(&e.path().join("scan.json")).await.unwrap_or_default();
+        // Found an older way (cut only at whole lines, or with cuts that missed sentence ends
+        // and changes of voice): read again from the transcript, after timing its words.
+        if scan.state == "done" && scan.version < CUTS && e.path().join("transcript.json").exists() {
             let played = e.metadata().await.and_then(|m| m.modified()).ok();
             old.push((played, id));
         }
@@ -944,6 +935,11 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
     }
     let transcript_path = episode_dir(state, id).join("transcript.json");
     let mut heard: Vec<Heard> = read_json(&transcript_path).await.unwrap_or_default();
+    // Reading an old transcript again: its untimed lines get their words timed first, so the
+    // cuts land between the right words.
+    if !heard.is_empty() {
+        time_untimed(state, id, &mut heard).await;
+    }
     let (show_title, title, notes, skip_promos) = {
         let r = sqlx::query("SELECT s.title AS show_title, e.title, e.notes FROM show_episodes e JOIN shows s ON s.id = e.show_id WHERE e.id = ?")
             .bind(id)
@@ -1138,7 +1134,9 @@ async fn find_ads(state: &State, audio: &std::path::Path, show: &str, title: &st
          exactly as written in that line; when it ends partway through its last line, add \"ends_with\": the ad's last few \
          words exactly as written there. Reply with only JSON, no prose: an array of {{\"from\": first line number, \"to\": \
          last line number, \"label\": a few words saying who or what it's for}} (plus starts_with / ends_with when \
-         needed), or [] if there are no ads."
+         needed), or [] if there are no ads. Lines may be tagged with who's talking (S1:, S2:, ...), told apart by \
+         their voices, so not always right: a change of voice is a strong clue to where an ad starts or ends (the \
+         host's voice coming back usually means the show has), and a line that starts in a new voice belongs with that voice."
     );
     let mut text = format!("Show: {show}\nEpisode: {title}\n");
     if !notes.is_empty() {
@@ -1147,7 +1145,10 @@ async fn find_ads(state: &State, audio: &std::path::Path, show: &str, title: &st
     }
     text.push_str("\nTranscript:\n");
     for (i, h) in lines.iter().enumerate() {
-        text.push_str(&format!("[{i}] {} {}\n", mmss(h.start), h.text));
+        match h.speaker {
+            Some(n) => text.push_str(&format!("[{i}] {} S{n}: {}\n", mmss(h.start), h.text)),
+            None => text.push_str(&format!("[{i}] {} {}\n", mmss(h.start), h.text)),
+        }
     }
     let turns = vec![("user".to_string(), text)];
     let reply = if settings(state).await.ad_model == "local" {
@@ -1432,6 +1433,40 @@ fn passages(heard: &[Heard], ads: &[AdSpan]) -> Vec<(f64, f64, String)> {
     out
 }
 
+/// Times the words of the lines that have none (a transcript written before they were kept, or
+/// lines the aligner missed), and saves the transcript. Returns whether any line was timed.
+async fn time_untimed(state: &State, id: i64, heard: &mut [Heard]) -> bool {
+    let untimed: Vec<usize> = (0..heard.len()).filter(|&i| heard[i].words.is_empty()).collect();
+    let Some(audio) = audio_file(state, id) else { return false };
+    if untimed.is_empty() {
+        return false;
+    }
+    let these: Vec<Heard> = untimed.iter().map(|&i| heard[i].clone()).collect();
+    match time_lines(state, &audio, &these).await {
+        Ok(timed) if timed.len() == these.len() => {
+            let mut any = false;
+            for (&i, t) in untimed.iter().zip(timed) {
+                let h = &mut heard[i];
+                if !t.words.is_empty() {
+                    h.start = t.start;
+                    h.end = t.end;
+                    h.words = t.words;
+                    any = true;
+                }
+            }
+            if any && let Err(e) = write_json(&episode_dir(state, id).join("transcript.json"), &heard.to_vec()).await {
+                tracing::warn!("saving episode {id}'s transcript: {e:#}");
+            }
+            any
+        }
+        Ok(_) => false,
+        Err(e) => {
+            tracing::warn!("timing the words in episode {id}: {e:#}");
+            false
+        }
+    }
+}
+
 async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
     let path = episode_dir(state, id).join("transcript.json");
     let mut heard: Vec<Heard> = read_json(&path).await.unwrap_or_default();
@@ -1442,31 +1477,11 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
     let before: Outline = read_json(&episode_dir(state, id).join("outline.json")).await.unwrap_or_default();
     // Word times, for a transcript written before they were kept (lighting up the word being
     // said, and lines that start where the words do, not in the music before them).
-    // (Only the lines without them: the rest were timed already.)
-    let untimed: Vec<usize> = (0..heard.len()).filter(|&i| heard[i].words.is_empty()).collect();
-    if !untimed.is_empty()
-        && let Some(audio) = audio_file(state, id)
-    {
-        let these: Vec<Heard> = untimed.iter().map(|&i| heard[i].clone()).collect();
-        match time_lines(state, &audio, &these).await {
-            Ok(timed) if timed.len() == these.len() => {
-                for (&i, t) in untimed.iter().zip(timed) {
-                    let h = &mut heard[i];
-                    if !t.words.is_empty() {
-                        h.start = t.start;
-                        h.end = t.end;
-                        h.words = t.words;
-                    }
-                }
-                write_json(&path, &heard).await?;
-                // (The ads' edges, to sentence ends, now the words are timed.)
-                let mut ads = scan_of(state, id).await.ads;
-                if snap_ads(&mut ads, &heard) && scan_of(state, id).await.state == "done" {
-                    set_scan(state, id, |s| s.ads = ads).await;
-                }
-            }
-            Ok(_) => {}
-            Err(e) => tracing::warn!("timing the words in episode {id}: {e:#}"),
+    if time_untimed(state, id, &mut heard).await {
+        // (The ads' edges, to sentence ends, now the words are timed.)
+        let mut ads = scan_of(state, id).await.ads;
+        if snap_ads(&mut ads, &heard) && scan_of(state, id).await.state == "done" {
+            set_scan(state, id, |s| s.ads = ads).await;
         }
     }
     if (heard.iter().all(|h| h.speaker.is_none()) || before.version < 3)
@@ -2071,7 +2086,7 @@ async fn prepare(AxState(s): AxState<State>, Path(id): Path<i64>, Json(r): Json<
     let scan = scan_of(&s, id).await;
     // Checked the old way (ads cut only at whole transcript lines): read again, from the
     // transcript it already has, so it's quick.
-    if scan.state == "done" && scan.version < 2 && episode_dir(&s, id).join("transcript.json").exists() {
+    if scan.state == "done" && scan.version < CUTS && episode_dir(&s, id).join("transcript.json").exists() {
         set_scan(&s, id, |x| *x = AdScan::default()).await;
         queue(&s, id, true);
         let mut scan = scan_of(&s, id).await;
@@ -2135,35 +2150,50 @@ async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<Vec
     Json(split_at_ads(heard, &ads))
 }
 
-/// Moves each ad's start and end to the nearest end of a sentence within a second or so (ads
-/// begin and end with sentences, and a cut a word off leaves "Hello" in the ad). Returns
+/// Moves each ad's start and end to the best place close by to cut: a sentence end, a pause, or
+/// a change of voice (ads begin and end with sentences, and a cut a word off leaves "Hello" in
+/// the ad). Returns
 /// whether anything moved.
 fn snap_ads(ads: &mut [AdSpan], heard: &[Heard]) -> bool {
-    // Every word, with whether a sentence ends just before it.
-    let mut words: Vec<(f64, bool)> = Vec::new();
+    // Every word: (start, end, whether it ends a sentence, who said it).
+    let mut words: Vec<(f64, f64, bool, Option<u32>)> = Vec::new();
     for h in heard {
         let ws = if h.words.is_empty() { spread(h) } else { h.words.clone() };
         for w in ws {
-            words.push((w.0, false));
-            // (Marked below: whether this word ends a sentence.)
-            if let Some(l) = words.last_mut() {
-                l.1 = w.2.trim_end_matches(['"', '\'', ')', '\u{201d}']).ends_with(['.', '?', '!']);
-            }
+            let bare = w.2.trim_end_matches(['"', '\'', ')', '\u{201d}']);
+            // ("Dr. Panico" doesn't end a sentence.)
+            let short = ["dr.", "mr.", "mrs.", "ms.", "st.", "jr.", "sr.", "vs.", "no.", "mt."].contains(&bare.to_lowercase().as_str());
+            words.push((w.0, w.1, bare.ends_with(['.', '?', '!']) && !short, h.speaker));
         }
     }
-    let mut moved = false;
-    let snap = |t: f64| -> Option<f64> {
-        (1..words.len())
-            .filter(|&k| words[k - 1].1 && (words[k].0 - t).abs() <= 1.2)
-            .min_by(|&a, &b| (words[a].0 - t).abs().total_cmp(&(words[b].0 - t).abs()))
-            .map(|k| words[k].0 - 0.05)
+    // A different voice from the word before (the host coming back after an ad, say).
+    let turn = |k: usize| matches!((words[k - 1].3, words[k].3), (Some(a), Some(b)) if a != b);
+    let boundary = |k: usize| k > 0 && k < words.len() && (words[k - 1].2 || words[k].0 - words[k - 1].1 >= 0.4 || turn(k));
+    let score = |k: usize, t: f64| {
+        (words[k].0 - words[k - 1].1).clamp(0.0, 3.0) + if words[k - 1].2 { 0.3 } else { 0.0 } + if turn(k) { 1.0 } else { 0.0 } - 0.25 * (words[k].0 - t).abs()
     };
+    // Where to cut near `t`: between sentences, where there's a pause (an ad and the show
+    // rarely run into each other without one). A cut in the middle of a sentence goes to that
+    // sentence's start or its end, whichever suits better; one between sentences to the best
+    // place close by.
+    let snap = |t: f64, _end: bool| -> Option<f64> {
+        let at = words.iter().position(|w| w.0 >= t - 0.1)?;
+        let candidates: Vec<usize> = if at > 0 && !boundary(at) {
+            let after = (at + 1..words.len()).take_while(|&k| words[k].0 - t <= 10.0).find(|&k| boundary(k));
+            let before = (1..at).rev().take_while(|&k| t - words[k].0 <= 10.0).find(|&k| boundary(k));
+            before.into_iter().chain(after).collect()
+        } else {
+            (1..words.len()).filter(|&k| (words[k].0 - t).abs() <= 1.5 && boundary(k)).collect()
+        };
+        candidates.into_iter().max_by(|&a, &b| score(a, t).total_cmp(&score(b, t))).map(|k| words[k].0 - 0.05)
+    };
+    let mut moved = false;
     for a in ads.iter_mut() {
-        if let Some(t) = snap(a.start).filter(|t| (t - a.start).abs() > 0.05) {
+        if let Some(t) = snap(a.start, false).filter(|t| (t - a.start).abs() > 0.05) {
             a.start = t;
             moved = true;
         }
-        if let Some(t) = snap(a.end).filter(|t| (t - a.end).abs() > 0.05 && *t > a.start + 1.0) {
+        if let Some(t) = snap(a.end, true).filter(|t| (t - a.end).abs() > 0.05 && *t > a.start + 1.0) {
             a.end = t;
             moved = true;
         }
@@ -2336,6 +2366,44 @@ Line two</media:description></media:group></entry>
         let out = split_at_ads(vec![h], &ads);
         assert_eq!(out[0].text, "call 855-KESEMTA.");
         assert_eq!(out[1].text, "Hello again. It's me.");
+    }
+
+    #[test]
+    fn ads_end_where_the_voice_changes() {
+        // Real numbers: the ad's end landed in "It's me.", after the host's "Hello again.".
+        let w = |t: f64, e: f64, s: &str| (t, e, s.to_string());
+        let ad = Heard {
+            start: 84.46,
+            end: 89.94,
+            text: "or call 855-KESEMTA.".into(),
+            words: vec![w(84.46, 86.0, "or"), w(86.1, 86.5, "call"), w(86.6, 89.94, "855-KESEMTA.")],
+            speaker: Some(1),
+        };
+        let host = Heard {
+            start: 91.5,
+            end: 92.8,
+            text: "Hello again. It's me.".into(),
+            words: vec![w(91.5, 91.9, "Hello"), w(91.95, 92.34, "again."), w(92.5, 92.65, "It's"), w(92.7, 92.8, "me.")],
+            speaker: Some(2),
+        };
+        let mut ads = vec![AdSpan { start: 0.96, end: 92.45, label: String::new() }];
+        snap_ads(&mut ads, &[ad, host]);
+        assert!((ads[0].end - 91.45).abs() < 0.01, "{}", ads[0].end);
+    }
+
+    #[test]
+    fn dr_doesnt_end_a_sentence() {
+        let w = |t: f64, s: &str| (t, t + 0.3, s.to_string());
+        let h = Heard {
+            start: 0.0,
+            end: 6.0,
+            text: "join Dr. Panico to talk. Today".into(),
+            words: vec![w(0.0, "join"), w(0.35, "Dr."), w(0.7, "Panico"), w(1.05, "to"), w(1.4, "talk."), w(3.0, "Today")],
+            speaker: None,
+        };
+        let mut ads = vec![AdSpan { start: 0.75, end: 30.0, label: String::new() }];
+        snap_ads(&mut ads, std::slice::from_ref(&h));
+        assert!(ads[0].start < 0.1 || ads[0].start > 2.0, "{}", ads[0].start);
     }
 
     #[test]
