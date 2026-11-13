@@ -1674,12 +1674,17 @@ pub fn NowPlaying() -> impl IntoView {
     let words = RwSignal::new(Vec::<Vec<(f64, f64, String)>>::new());
     // Whose voice each line is in.
     let who = RwSignal::new(Vec::<Option<u32>>::new());
+    let outline = outline_for(Signal::derive(move || p.ep.with(|e| e.as_ref().map(|e| (e.id, e.ads.state.clone())).unwrap_or_default())));
+    // (Fetched again once the outline's done: making it tells the voices apart, which can split
+    // lines and renumber who's speaking.)
+    let outline_done = Memo::new(move |_| outline.with(|o| o.state == "done"));
     Effect::new(move |_| {
         if tab.get() != "transcript" {
             return;
         }
         let Some(id) = p.ep.with(|e| e.as_ref().map(|e| e.id)) else { return };
         let _ = p.ep.with(|e| e.as_ref().map(|e| e.ads.checked));
+        let _ = outline_done.get();
         spawn_local(async move {
             #[derive(serde::Deserialize)]
             struct Heard {
@@ -1704,7 +1709,6 @@ pub fn NowPlaying() -> impl IntoView {
         transcript.with(|all| all.iter().rposition(|(t, _)| *t <= x))
     });
     let ep_id = Memo::new(move |_| p.ep.with(|e| e.as_ref().map(|e| e.id).unwrap_or(0)));
-    let outline = outline_for(Signal::derive(move || p.ep.with(|e| e.as_ref().map(|e| (e.id, e.ads.state.clone())).unwrap_or_default())));
     // Swipe the sheet down to close it (phones).
     let drag = RwSignal::new(None::<(f64, f64)>);
     let skipping = move || p.skipping();
@@ -2229,7 +2233,7 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64,
                     } else {
                         vec![]
                     };
-                    view! { {note}{count}{transcript_rows(shown, &all_ads, &q, &subs, said, follow, words, who, &outline.with_untracked(|o| o.speakers.clone()), open_ads)} }.into_any()
+                    view! { {note}{count}{transcript_rows(shown, &all_ads, &q, &subs, said, follow, words, who, &outline.with_untracked(|o| if o.state == "done" { o.speakers.clone() } else { vec![] }), open_ads)} }.into_any()
                 }}
             </div>
         </div>
@@ -2287,7 +2291,9 @@ fn transcript_rows(
             let ad = ad_of(t);
             let starts = ad.is_some() && ad != prev_ad;
             prev_ad = ad;
-            let voice = if ad.is_some() { None } else { voices.get(i).copied().flatten() };
+            // (Until the AI has named them, no headings: "Speaker 6" says nothing, and the voices
+            // are split finer than the people are.)
+            let voice = if ad.is_some() || names.is_empty() { None } else { voices.get(i).copied().flatten() };
             let headed = !here_empty;
             // (Two voices given the same name are one person: the name says so, and so does its colour.)
             let same = |a: u32, b: u32| a == b || name_of(a) == name_of(b);
