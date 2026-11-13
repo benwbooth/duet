@@ -31,7 +31,7 @@ use axum::{
     routing::{get, post, put},
 };
 use chrono::{DateTime, Utc};
-use duet_common::shows::{AdScan, AdSpan, Chart, GENRES, Outline, OutlineSection, Show, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
+use duet_common::shows::{AdScan, AdSpan, Chart, GENRES, Outline, OutlineSection, Show, Speaker, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
 use futures_util::StreamExt;
 use quick_xml::{Reader, events::Event};
 use serde::{Deserialize, Serialize};
@@ -682,7 +682,8 @@ async fn scanner(state: State) {
         match scan(&state, id).await {
             // The whole transcript is in: its outline next (on the same model, so in turn).
             Ok(true) => {
-                if outline_of(&state, id).await.state != "done" && episode_dir(&state, id).join("transcript.json").exists() {
+                let o = outline_of(&state, id).await;
+                if (o.state != "done" || o.version < OUTLINE_VERSION) && episode_dir(&state, id).join("transcript.json").exists() {
                     let _ = make_outline(&state, id).await;
                 }
             }
@@ -865,6 +866,9 @@ struct Heard {
     /// Each word's (start, end, word), for lighting the transcript up as it plays.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     words: Vec<(f64, f64, String)>,
+    /// Whose voice it is (the same number for the same voice through the episode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speaker: Option<u32>,
 }
 
 fn mmss(t: f64) -> String {
@@ -1220,6 +1224,9 @@ async fn cut_point(state: &State, audio: &std::path::Path, line: &Heard, quote: 
 
 // ---- Outlines ----
 
+/// How outlines are made now: 2 names who's talking. Older ones are made again when opened.
+const OUTLINE_VERSION: u32 = 2;
+
 /// Outlines being made right now.
 static OUTLINING: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
 
@@ -1249,31 +1256,88 @@ async fn make_outline(state: &State, id: i64) -> anyhow::Result<Outline> {
     Ok(o)
 }
 
+/// Each line's voice, from the voice server: numbers, the same for the same voice.
+async fn tell_voices(state: &State, audio: &std::path::Path, heard: &[Heard]) -> anyhow::Result<Vec<Option<u32>>> {
+    let tts = state.settings.read().await.ai.tts_url.clone();
+    let segments: Vec<serde_json::Value> = heard.iter().map(|h| json!({ "start": h.start, "end": h.end })).collect();
+    let started = std::time::Instant::now();
+    let resp = state
+        .http
+        .post(format!("{}/speakers", tts.trim_end_matches('/')))
+        .json(&json!({ "audio": audio, "segments": segments }))
+        .timeout(Duration::from_secs(1800))
+        .send()
+        .await
+        .context("the voice server isn't running")?;
+    if !resp.status().is_success() {
+        let v: serde_json::Value = resp.json().await.unwrap_or_default();
+        bail!("{}", v["error"].as_str().unwrap_or("the voice server failed (it may need restarting)"));
+    }
+    #[derive(Deserialize)]
+    struct Reply {
+        speakers: Vec<Option<u32>>,
+    }
+    let r: Reply = resp.json().await?;
+    tracing::info!("told {} voices apart in {:.0}s", r.speakers.iter().flatten().collect::<HashSet<_>>().len(), started.elapsed().as_secs_f64());
+    Ok(r.speakers)
+}
+
 /// The transcript in stretches of about half a minute (what the outline points at), with the
 /// ads left out.
 fn passages(heard: &[Heard], ads: &[AdSpan]) -> Vec<(f64, f64, String)> {
     let mut out: Vec<(f64, f64, String)> = Vec::new();
+    let mut who = None;
     for h in heard {
         let mid = (h.start + h.end) / 2.0;
         if ads.iter().any(|a| mid >= a.start && mid < a.end) {
             continue;
         }
+        // (Who's talking, where it changes: "S2: ...".)
+        let changed = h.speaker.is_some() && h.speaker != who;
+        let text = match h.speaker {
+            Some(n) if changed => format!("S{n}: {}", h.text.trim()),
+            _ => h.text.trim().to_string(),
+        };
+        who = h.speaker.or(who);
         match out.last_mut() {
             Some(last) if h.start - last.0 < 30.0 => {
                 last.1 = h.end;
                 last.2.push(' ');
-                last.2.push_str(h.text.trim());
+                last.2.push_str(&text);
             }
-            _ => out.push((h.start, h.end, h.text.trim().to_string())),
+            _ => {
+                // Each passage says who it starts with.
+                let text = match h.speaker {
+                    Some(n) if !changed => format!("S{n}: {text}"),
+                    _ => text,
+                };
+                out.push((h.start, h.end, text))
+            }
         }
     }
     out
 }
 
 async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
-    let heard: Vec<Heard> = read_json(&episode_dir(state, id).join("transcript.json")).await.unwrap_or_default();
+    let path = episode_dir(state, id).join("transcript.json");
+    let mut heard: Vec<Heard> = read_json(&path).await.unwrap_or_default();
     if heard.is_empty() {
         bail!("there's no transcript yet");
+    }
+    // Who's talking, told apart by their voices (once).
+    if heard.iter().all(|h| h.speaker.is_none())
+        && let Some(audio) = audio_file(state, id)
+    {
+        match tell_voices(state, &audio, &heard).await {
+            Ok(who) if who.len() == heard.len() => {
+                for (h, n) in heard.iter_mut().zip(who) {
+                    h.speaker = n;
+                }
+                write_json(&path, &heard).await?;
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("telling voices apart in episode {id}: {e:#}"),
+        }
     }
     let scan = scan_of(state, id).await;
     let r = sqlx::query("SELECT s.title AS show_title, e.title, e.notes, e.duration FROM show_episodes e JOIN shows s ON s.id = e.show_id WHERE e.id = ?")
@@ -1299,9 +1363,14 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
         it starts at. The first section starts at passage 0 (call it the intro if that's what it is).\n\
         - subsections: in sections longer than about 6 minutes that cover several things, the smaller topics within it, \
         same shape (title, summary, at), in order, each starting at or after its section. Otherwise an empty list.\n\
+        - speakers: the transcript marks who's talking as S1, S2... (told apart by voice, so now and then a line is \
+        put to the wrong one). For each S number, their name: from how they introduce themselves or each other, how \
+        others address them, the show notes, or the show's known host; if it isn't said, a short description \
+        (\"Guest\", \"Caller\", \"Clip\"). And their role: host, co-host, guest, caller, narrator or clip. Leave \
+        speakers empty when there are no S marks.\n\
         The transcript is speech recognition, so spell names as they're most likely meant. Reply with only JSON, no \
         prose: {\"summary\": \"...\", \"sections\": [{\"title\": \"...\", \"summary\": \"...\", \"at\": 0, \"subsections\": \
-        [{\"title\": \"...\", \"summary\": \"...\", \"at\": 3}]}]}";
+        [{\"title\": \"...\", \"summary\": \"...\", \"at\": 3}]}], \"speakers\": [{\"n\": 1, \"name\": \"...\", \"role\": \"host\"}]}";
     let mut text = format!("Show: {show_title}\nEpisode: {title}\nLength: {}\n", mmss(duration));
     if !notes.is_empty() {
         text.push_str(&format!("Show notes: {notes}\n"));
@@ -1329,6 +1398,14 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
     struct Reply {
         summary: String,
         sections: Vec<Part>,
+        speakers: Vec<Named>,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Named {
+        n: serde_json::Value,
+        name: String,
+        role: String,
     }
     let json = match (reply.find('{'), reply.rfind('}')) {
         (Some(a), Some(b)) if b > a => &reply[a..=b],
@@ -1365,7 +1442,15 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
     if got.summary.trim().is_empty() && sections.is_empty() {
         bail!("the model's outline was empty");
     }
-    Ok(Outline { state: "done".into(), summary: got.summary.trim().to_string(), sections, error: None })
+    let speakers = got
+        .speakers
+        .into_iter()
+        .filter_map(|x| {
+            let n = x.n.as_u64().or_else(|| x.n.as_str().and_then(|s| s.trim_start_matches(['S', 's']).parse().ok()))? as u32;
+            (!x.name.trim().is_empty()).then(|| Speaker { n, name: x.name.trim().to_string(), role: x.role.trim().to_string() })
+        })
+        .collect();
+    Ok(Outline { state: "done".into(), summary: got.summary.trim().to_string(), sections, error: None, speakers, version: OUTLINE_VERSION })
 }
 
 // ---- Apple's directory ----
@@ -1920,8 +2005,8 @@ fn split_at_ads(heard: Vec<Heard>, ads: &[AdSpan]) -> Vec<Heard> {
             }
             let (a, b) = words.split_at(k);
             let text = |ws: &[(f64, f64, String)]| ws.iter().map(|w| w.2.as_str()).collect::<Vec<_>>().join(" ");
-            out.push(Heard { start: rest.start, end: t, text: text(a), words: if rest.words.is_empty() { vec![] } else { a.to_vec() } });
-            rest = Heard { start: t, end: rest.end, text: text(b), words: if rest.words.is_empty() { vec![] } else { b.to_vec() } };
+            out.push(Heard { start: rest.start, end: t, text: text(a), words: if rest.words.is_empty() { vec![] } else { a.to_vec() }, speaker: rest.speaker });
+            rest = Heard { start: t, end: rest.end, text: text(b), words: if rest.words.is_empty() { vec![] } else { b.to_vec() }, speaker: rest.speaker };
         }
         out.push(rest);
     }
@@ -1946,7 +2031,8 @@ fn spread(h: &Heard) -> Vec<(f64, f64, String)> {
 /// whole (one checked before outlines existed, say).
 async fn get_outline(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<Outline> {
     let o = outline_of(&s, id).await;
-    if o.state.is_empty() && scan_of(&s, id).await.state == "done" && episode_dir(&s, id).join("transcript.json").exists() {
+    let stale = o.state.is_empty() || (o.state == "done" && o.version < OUTLINE_VERSION);
+    if stale && scan_of(&s, id).await.state == "done" && episode_dir(&s, id).join("transcript.json").exists() {
         let st = s.clone();
         OUTLINING.lock().unwrap().insert(id);
         tokio::spawn(async move {
@@ -2040,7 +2126,7 @@ Line two</media:description></media:group></entry>
 
     #[test]
     fn splits_lines_at_ads() {
-        let h = Heard { start: 0.0, end: 10.0, text: "call 855-KESEMTA. Hello again. It's me.".into(), words: vec![] };
+        let h = Heard { start: 0.0, end: 10.0, text: "call 855-KESEMTA. Hello again. It's me.".into(), words: vec![], speaker: None };
         let out = split_at_ads(vec![h], &[AdSpan { start: -20.0, end: 4.0, label: String::new() }]);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].text, "call 855-KESEMTA.");

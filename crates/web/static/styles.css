@@ -2431,3 +2431,12 @@ html.eink .np-backdrop { display: none; }
 .ptoc-toggle, .ptoc-toggle:hover { background: none !important; box-shadow: none !important; border: 0 !important; }
 .tr-head.top { margin: 1.1rem 0.6rem 0.3rem; font-size: 1.05rem; font-weight: 700; text-transform: none; letter-spacing: 0; color: var(--text); font-family: var(--serif, inherit); padding-bottom: 0.2rem; border-bottom: 1px solid var(--line); }
 .tr-lines > .tr-head.top:first-of-type { margin-top: 0.2rem; }
+/* The transcript as a script: who's talking over what they say. */
+.tr-who { margin: 0.75rem 0 0.05rem 4rem; font-size: 0.74rem; font-weight: 750; letter-spacing: 0.08em; color: hsl(var(--who-hue) 45% 38%); }
+@media (prefers-color-scheme: dark) { .tr-who, .ep-voice b { color: hsl(var(--who-hue) 55% 70%); } }
+.tr-head + .tr-who { margin-top: 0.3rem; }
+.ep-voices { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.6rem; }
+.ep-voice { display: inline-flex; gap: 0.3rem; align-items: baseline; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.8rem; background: hsl(var(--who-hue) 50% 50% / 0.12); }
+.ep-voice b { font-weight: 650; color: hsl(var(--who-hue) 45% 36%); }
+.ep-voice small { color: var(--muted); font-size: 0.72rem; }
+@media (max-width: 760px) { .tr-who { margin-left: 3.6rem; } }

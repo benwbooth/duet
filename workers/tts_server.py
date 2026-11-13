@@ -120,7 +120,7 @@ def free_gpu():
         pass
 
 
-last_used = {"qwen": 0.0, "fish": 0.0, "whisper": 0.0, "vibevoice": 0.0, "chatterbox": 0.0}
+last_used = {"qwen": 0.0, "fish": 0.0, "whisper": 0.0, "vibevoice": 0.0, "chatterbox": 0.0, "speakers": 0.0}
 
 
 def touch(what):
@@ -168,6 +168,11 @@ def reaper():
                     print(f"stopping {name} (idle)", flush=True)
                     c.stop()
         with listen_lock:
+            global speaker_model
+            if speaker_model is not None and now - last_used["speakers"] > limit:
+                print("unloading the voice fingerprints (idle)", flush=True)
+                speaker_model = None
+                free_gpu()
             if whisper and now - last_used["whisper"] > limit:
                 print("unloading speech recognition (idle)", flush=True)
                 whisper.clear()
@@ -946,6 +951,115 @@ def _transcribe_window(body):
     return {"segments": out, "end": round(start + len(samples) / 16000, 2)}
 
 
+speaker_model = None
+
+
+def speakers(body):
+    with audio_first(), listen_lock:
+        return _speakers(body)
+
+
+def _speakers(body):
+    """Who's talking in each line of a podcast's transcript: a voice fingerprint (SpeechBrain's
+    ECAPA, on the graphics card) for each line, grouped so lines in one voice share a number.
+    Lines too short to tell take the number of the nearest line that could be told. Returns
+    {"speakers": [n or null for each segment]}, numbered by who speaks first."""
+    global speaker_model
+    import sys
+
+    import numpy as np
+    from common import load_audio_window
+
+    if speaker_model is None:
+        try:
+            from speechbrain.inference.speaker import EncoderClassifier
+        except ImportError:
+            # (Not in older installs: added on first use, beside the torch already there.)
+            import shutil
+            uv = shutil.which("uv")
+            cmd = [uv, "pip", "install", "--python", sys.executable, "speechbrain"] if uv else [sys.executable, "-m", "pip", "install", "speechbrain"]
+            print("installing speechbrain for telling podcast voices apart", flush=True)
+            subprocess.run(cmd, check=True)
+            from speechbrain.inference.speaker import EncoderClassifier
+        import torch
+        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        speaker_model = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb", run_opts={"device": dev},
+                                                       savedir=os.path.expanduser("~/.cache/duet/spkrec-ecapa-voxceleb"))
+    touch("speakers")
+    import torch
+    segs = body["segments"]
+    audio = body["audio"]
+    # The whole recording once (16 kHz mono), cut up here.
+    end = max((float(s["end"]) for s in segs), default=0.0)
+    samples = load_audio_window(audio, 0.0, end + 1.0)
+    embs, idx = [], []
+    batch, batch_idx = [], []
+
+    def run():
+        if not batch:
+            return
+        n = max(len(b) for b in batch)
+        wav = torch.zeros(len(batch), n)
+        lens = torch.zeros(len(batch))
+        for k, b in enumerate(batch):
+            wav[k, :len(b)] = torch.from_numpy(b)
+            lens[k] = len(b) / n
+        with torch.no_grad():
+            e = speaker_model.encode_batch(wav, lens).squeeze(1).float().cpu().numpy()
+        embs.extend(e)
+        idx.extend(batch_idx)
+        batch.clear()
+        batch_idx.clear()
+
+    for i, s in enumerate(segs):
+        a, b = float(s["start"]), float(s["end"])
+        if b - a < 1.2:
+            continue
+        # (The middle 8 seconds of a long line is plenty.)
+        mid = (a + b) / 2
+        a, b = max(a, mid - 4), min(b, mid + 4)
+        clip = samples[int(a * 16000):int(b * 16000)]
+        if len(clip) < 16000:
+            continue
+        batch.append(np.ascontiguousarray(clip, dtype=np.float32))
+        batch_idx.append(i)
+        if len(batch) >= 32:
+            run()
+    run()
+    labels = [None] * len(segs)
+    if not embs:
+        return {"speakers": labels}
+    from scipy.cluster.hierarchy import fcluster, linkage
+
+    x = np.stack(embs)
+    x = x / np.linalg.norm(x, axis=1, keepdims=True)
+    threshold = float(body.get("threshold", 0.6))
+    if len(x) == 1:
+        groups = np.array([1])
+    else:
+        groups = fcluster(linkage(x, method="average", metric="cosine"), t=threshold, criterion="distance")
+    # Voices heard only a moment (a clip, a caller's "hi") join the nearest real voice.
+    counts = {g: int((groups == g).sum()) for g in set(groups)}
+    big = [g for g, c in counts.items() if c >= max(2, 0.02 * len(x))] or list(counts)
+    cent = {g: x[groups == g].mean(axis=0) for g in big}
+    for k, g in enumerate(groups):
+        if g not in cent:
+            groups[k] = max(cent, key=lambda c: float(x[k] @ cent[c]))
+    for k, i in enumerate(idx):
+        labels[i] = int(groups[k])
+    # Lines too short to tell: the nearest line's voice.
+    told = [i for i in range(len(segs)) if labels[i] is not None]
+    for i in range(len(segs)):
+        if labels[i] is None:
+            j = min(told, key=lambda t: abs(t - i))
+            labels[i] = labels[j]
+    # Numbered 1, 2, ... in the order they first speak.
+    order = {}
+    for g in labels:
+        order.setdefault(g, len(order) + 1)
+    return {"speakers": [order[g] for g in labels]}
+
+
 def multipart(content_type, body):
     """Fields of a multipart/form-data body: name -> bytes."""
     from email.parser import BytesParser
@@ -1024,6 +1138,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, json.dumps(align_words(body)).encode(), "application/json")
             if path in ("/v1/track-words", "/track-words"):
                 return self.reply(200, json.dumps(track_words(body)).encode(), "application/json")
+            if path in ("/v1/speakers", "/speakers"):
+                return self.reply(200, json.dumps(speakers(body)).encode(), "application/json")
             if path in ("/v1/transcribe-window", "/transcribe-window"):
                 return self.reply(200, json.dumps(transcribe_window(body)).encode(), "application/json")
             if path in ("/v1/sync-window", "/sync-window"):

@@ -2,7 +2,7 @@
 //! around duet (a bar along the bottom that opens into a full now-playing screen) and skips the
 //! ads the server has found.
 
-use duet_common::shows::{AdScan, Chart, GENRES, Outline, Show, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
+use duet_common::shows::{AdScan, Chart, GENRES, Outline, Show, Speaker, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::prelude::*;
@@ -1036,6 +1036,15 @@ fn EpisodeSummary(outline: RwSignal<Outline>) -> impl IntoView {
                 <div class="ep-summary">
                     <div class="ep-summary-head"><span>"Summary"</span><span class="ai-badge" title="Written by AI from the transcript">"AI"</span></div>
                     <p>{o.summary.clone()}</p>
+                    {(!o.speakers.is_empty()).then(|| view! {
+                        <div class="ep-voices">
+                            {o.speakers.iter().map(|x| view! {
+                                <span class="ep-voice" style:--who-hue=((x.n * 137 + 20) % 360).to_string()>
+                                    <b>{x.name.clone()}</b>{(!x.role.is_empty()).then(|| view! { <small>{x.role.clone()}</small> })}
+                                </span>
+                            }).collect_view()}
+                        </div>
+                    })}
                 </div>
             }
             .into_any(),
@@ -1586,6 +1595,8 @@ pub fn NowPlaying() -> impl IntoView {
     let transcript = RwSignal::new(Vec::<(f64, String)>::new());
     // Each line's words' times (when Whisper gave them), to light up the word being said.
     let words = RwSignal::new(Vec::<Vec<(f64, f64, String)>>::new());
+    // Whose voice each line is in.
+    let who = RwSignal::new(Vec::<Option<u32>>::new());
     Effect::new(move |_| {
         if tab.get() != "transcript" {
             return;
@@ -1600,8 +1611,11 @@ pub fn NowPlaying() -> impl IntoView {
                 text: String,
                 #[serde(default)]
                 words: Vec<(f64, f64, String)>,
+                #[serde(default)]
+                speaker: Option<u32>,
             }
             if let Ok(h) = api::get::<Vec<Heard>>(&format!("/api/shows/episodes/{id}/transcript")).await {
+                who.set(h.iter().map(|h| h.speaker).collect());
                 words.set(h.iter().map(|h| if h.words.is_empty() { spread_words(h.start, h.end, &h.text) } else { h.words.clone() }).collect());
                 transcript.set(h.into_iter().map(|h| (h.start, h.text)).collect());
             }
@@ -1759,7 +1773,7 @@ pub fn NowPlaying() -> impl IntoView {
                                     </div>
                                 }.into_any()
                             }
-                            "transcript" => view! { <Transcript lines=transcript words said outline/> }.into_any(),
+                            "transcript" => view! { <Transcript lines=transcript words who said outline/> }.into_any(),
                             _ => {
                                 let id = ep_id.get();
                                 view! { <Notes id ep=Signal::derive(move || p.ep.get().unwrap_or_default())/> }.into_any()
@@ -1848,7 +1862,7 @@ fn Discover(genre: Option<i64>) -> impl IntoView {
 /// in them, or whole. Follows along as it plays (or not, while you're reading back), marks the
 /// ads, searches, and jumps to any line you tap.
 #[component]
-fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64, f64, String)>>>, said: Memo<Option<usize>>, outline: RwSignal<Outline>) -> impl IntoView {
+fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64, f64, String)>>>, who: RwSignal<Vec<Option<u32>>>, said: Memo<Option<usize>>, outline: RwSignal<Outline>) -> impl IntoView {
     let p = player();
     let toast = toast();
     let query = RwSignal::new(String::new());
@@ -1984,7 +1998,7 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64,
                                 let mine: Vec<(usize, f64, String)> = all.iter().enumerate()
                                     .filter(|(_, (t, _))| *t >= sec.start - 0.5 && *t < sec.end - 0.5)
                                     .map(|(i, (t, x))| (i, *t, x.clone())).collect();
-                                view! { <div class="ptoc-body">{transcript_rows(mine, &all_ads, "", &sec.subsections.iter().map(|x| (x.start, x.title.clone(), true)).collect::<Vec<_>>(), said, follow, words)}</div> }
+                                view! { <div class="ptoc-body">{transcript_rows(mine, &all_ads, "", &sec.subsections.iter().map(|x| (x.start, x.title.clone(), true)).collect::<Vec<_>>(), said, follow, words, who, &o.speakers)}</div> }
                             });
                             view! {
                                 <section class="ptoc-sec" class:open=is_open class:now=move || now_section.get() == Some(k)>
@@ -2042,7 +2056,7 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64,
                     } else {
                         vec![]
                     };
-                    view! { {note}{count}{transcript_rows(shown, &all_ads, &q, &subs, said, follow, words)} }.into_any()
+                    view! { {note}{count}{transcript_rows(shown, &all_ads, &q, &subs, said, follow, words, who, &outline.with_untracked(|o| o.speakers.clone()))} }.into_any()
                 }}
             </div>
         </div>
@@ -2075,7 +2089,13 @@ fn transcript_rows(
     said: Memo<Option<usize>>,
     follow: RwSignal<bool>,
     words: RwSignal<Vec<Vec<(f64, f64, String)>>>,
+    who: RwSignal<Vec<Option<u32>>>,
+    names: &[Speaker],
 ) -> impl IntoView + use<> {
+    // Laid out like a script: the speaker's name over what they say, when it changes.
+    let voices = who.get_untracked();
+    let name_of = |n: u32| names.iter().find(|x| x.n == n).map(|x| x.name.clone()).unwrap_or_else(|| format!("Speaker {n}"));
+    let mut prev_who = None;
     let time = player().time;
     let ad_of = |t: f64| all_ads.iter().position(|a| t >= a.start - 0.5 && t < a.end - 0.5);
     let mut prev_ad = None;
@@ -2088,10 +2108,18 @@ fn transcript_rows(
                 here.push(heads[next_head].clone());
                 next_head += 1;
             }
+            let here_empty = here.is_empty();
             let head = here.into_iter().map(|(_, h, sub)| if sub { view! { <h4 class="tr-head sub">{h}</h4> }.into_any() } else { view! { <h3 class="tr-head top">{h}</h3> }.into_any() }).collect_view();
             let ad = ad_of(t);
             let starts = ad.is_some() && ad != prev_ad;
             prev_ad = ad;
+            let voice = if ad.is_some() { None } else { voices.get(i).copied().flatten() };
+            let headed = !here_empty;
+            let name = voice.filter(|v| headed || prev_who != Some(*v)).map(|v| {
+                let hue = (v * 137 + 20) % 360;
+                view! { <div class="tr-who" style:--who-hue=hue.to_string()>{name_of(v).to_uppercase()}</div> }
+            });
+            prev_who = if ad.is_some() { None } else { voice.or(prev_who) };
             let tag = ad.filter(|_| starts).map(|k| {
                 let a = &all_ads[k];
                 view! { <span class="tr-ad-tag">{format!("Ad · {} · {}", if a.label.is_empty() { "Ad" } else { &a.label }, format_time(a.end - a.start))}</span> }
@@ -2121,6 +2149,7 @@ fn transcript_rows(
             };
             view! {
                 {head}
+                {name}
                 <p data-i=i.to_string() class:now=move || said.get() == Some(i) class:ad=ad.is_some()
                     on:click=move |_| { sp_seek(t); sp_play(); follow.set(true) }>
                     {tag}

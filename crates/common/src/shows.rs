@@ -234,6 +234,22 @@ pub struct Outline {
     pub summary: String,
     pub sections: Vec<OutlineSection>,
     pub error: Option<String>,
+    /// Who's talking: the transcript's speaker numbers, named.
+    pub speakers: Vec<Speaker>,
+    /// How it was made (older outlines are made again).
+    pub version: u32,
+}
+
+/// One voice in an episode, told apart by its sound and named by the AI from what's said.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Speaker {
+    /// The transcript's number for this voice (1 speaks first).
+    pub n: u32,
+    /// Their name, or a description ("Caller", "Guest") when it isn't said.
+    pub name: String,
+    /// "host", "co-host", "guest", "caller", "clip"...
+    pub role: String,
 }
 
 /// A part of an episode, with its own parts.
