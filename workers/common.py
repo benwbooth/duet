@@ -122,6 +122,8 @@ class TorchWhisper:
         if len(samples) < 1600 or (vad_filter and float(np.sqrt(np.mean(samples ** 2))) < 0.004):
             return [], None
         kwargs = {"language": language} if language else {}
+        if not word_timestamps and len(samples) > 30 * 16000:
+            return self._by_speech(samples, kwargs), None
         # (Clips under 30 s, like the microphone's, go through in one piece.)
         chunked = {"chunk_length_s": 30, "ignore_warning": True} if len(samples) > 30 * 16000 else {}
         out = self.pipe(
@@ -152,6 +154,42 @@ class TorchWhisper:
         if cur:
             segs.append(_Segment(cur))
         return segs, None
+
+
+    def _by_speech(self, samples, kwargs):
+        """A long recording, heard a stretch of speech at a time: found first (Silero, as
+        faster-whisper's VAD does), each stretch up to ~28 s and given to Whisper whole. Cutting
+        it into even 30 s pieces and stitching the text back together wrote words twice where
+        the pieces met, and pieces of only music or quiet came back as a made-up "Thank you."."""
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+        limit = 28 * 16000
+        found = get_speech_timestamps(samples, VadOptions(threshold=0.25, min_silence_duration_ms=500, max_speech_duration_s=27, speech_pad_ms=500))
+        # Neighbouring stretches together, while they fit (fewer, fuller pieces: better context).
+        spans = []
+        for f in found:
+            if spans and f["end"] - spans[-1][0] <= limit and f["start"] - spans[-1][1] < 2 * 16000:
+                spans[-1][1] = f["end"]
+            else:
+                spans.append([f["start"], f["end"]])
+        if not spans:
+            return []
+        outs = self.pipe(
+            [{"raw": samples[a:b], "sampling_rate": 16000} for a, b in spans],
+            batch_size=8, return_timestamps=True, generate_kwargs=kwargs,
+        )
+        segs = []
+        for (a, b), out in zip(spans, outs):
+            at, end = a / 16000, b / 16000
+            chunks = out.get("chunks") or ([{"text": out.get("text", ""), "timestamp": (0.0, end - at)}] if out.get("text", "").strip() else [])
+            for c in chunks:
+                text = c["text"]
+                if not text.strip():
+                    continue
+                s0 = c["timestamp"][0] or 0.0
+                s1 = c["timestamp"][1] if c["timestamp"][1] is not None else end - at
+                segs.append(_Segment([_Word(text, at + s0, min(end, at + s1))]))
+        return segs
 
 
 _gpu_whisper = None
