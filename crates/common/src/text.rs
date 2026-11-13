@@ -62,7 +62,7 @@ fn trim_end(text: &str, start: usize, end: usize) -> usize {
 /// Whether the `.` right after `before` is an abbreviation's rather than the sentence's end,
 /// given the word that follows it. Case-insensitive, so signs and headings in capitals
 /// ("DERRY DEPT. OF PUBLIC WORKS") work too.
-fn is_abbreviation(before: &str, next: &str) -> bool {
+pub fn is_abbreviation(before: &str, next: &str) -> bool {
     // (A stop on its own, "marked D . From", follows no word.)
     if before.ends_with(char::is_whitespace) {
         return false;

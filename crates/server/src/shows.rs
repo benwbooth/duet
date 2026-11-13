@@ -2157,14 +2157,17 @@ async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<Vec
 fn snap_ads(ads: &mut [AdSpan], heard: &[Heard]) -> bool {
     // Every word: (start, end, whether it ends a sentence, who said it).
     let mut words: Vec<(f64, f64, bool, Option<u32>)> = Vec::new();
+    let mut all: Vec<((f64, f64, String), Option<u32>)> = Vec::new();
     for h in heard {
         let ws = if h.words.is_empty() { spread(h) } else { h.words.clone() };
-        for w in ws {
-            let bare = w.2.trim_end_matches(['"', '\'', ')', '\u{201d}']);
-            // ("Dr. Panico" doesn't end a sentence.)
-            let short = ["dr.", "mr.", "mrs.", "ms.", "st.", "jr.", "sr.", "vs.", "no.", "mt."].contains(&bare.to_lowercase().as_str());
-            words.push((w.0, w.1, bare.ends_with(['.', '?', '!']) && !short, h.speaker));
-        }
+        all.extend(ws.into_iter().map(|w| (w, h.speaker)));
+    }
+    for (k, (w, who)) in all.iter().enumerate() {
+        let bare = w.2.trim_end_matches(['"', '\'', ')', '\u{201d}']);
+        // ("Dr. Panico" doesn't end a sentence: the same check the books' sentences use.)
+        let next = all.get(k + 1).map(|n| n.0.2.as_str()).unwrap_or("");
+        let short = bare.ends_with('.') && duet_common::text::is_abbreviation(bare.trim_end_matches('.'), next);
+        words.push((w.0, w.1, bare.ends_with(['.', '?', '!']) && !short, *who));
     }
     // A different voice from the word before (the host coming back after an ad, say).
     let turn = |k: usize| matches!((words[k - 1].3, words[k].3), (Some(a), Some(b)) if a != b);
