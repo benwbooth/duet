@@ -759,6 +759,24 @@ async fn scanner(state: State) {
             }
             // Set aside for one being played: back in line after it.
             Ok(false) => QUEUE.lock().unwrap().push_back(id),
+            // The voice server not up yet (it starts alongside this server, and takes a few
+            // seconds longer): try again shortly, for a few minutes, rather than give up.
+            Err(e) if format!("{e:#}").contains("voice server isn't running") && {
+                let mut tries = RETRIES.lock().unwrap();
+                let n = tries.entry(id).or_insert(0);
+                *n += 1;
+                *n <= 20
+            } =>
+            {
+                tracing::info!("episode {id}: the voice server isn't up yet; trying again in 15 s");
+                set_scan(&state, id, |s| {
+                    s.state = "queued".into();
+                    s.doing = "Waiting for the voice server".into();
+                })
+                .await;
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                QUEUE.lock().unwrap().push_front(id);
+            }
             Err(e) => {
                 tracing::warn!("finding ads in episode {id}: {e:#}");
                 set_scan(&state, id, |s| {
@@ -1318,6 +1336,8 @@ const OUTLINE_VERSION: u32 = 6;
 
 /// Outlines being made right now.
 static OUTLINING: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
+/// Times each episode has waited for the voice server to come up.
+static RETRIES: LazyLock<Mutex<HashMap<i64, u32>>> = LazyLock::new(Default::default);
 static VOICES_RETRIED: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
 
 async fn outline_of(state: &State, id: i64) -> Outline {
