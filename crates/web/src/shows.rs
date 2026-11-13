@@ -1594,7 +1594,7 @@ pub fn NowPlaying() -> impl IntoView {
     let p = player();
     let toast = toast();
     let ep = move || p.ep.get().unwrap_or_default();
-    let tab = RwSignal::new("notes");
+    let tab = RwSignal::new("transcript");
     let back = move || p.prefs.with(|s| s.back_seconds);
     let fwd = move || p.prefs.with(|s| s.forward_seconds);
     let show_speed = RwSignal::new(false);
@@ -1819,13 +1819,19 @@ pub fn NowPlaying() -> impl IntoView {
                                 <button class="link" on:click=move |_| { sp_allow(i); p.skipped.set(None) }>"Undo"</button>
                             </div>
                         })}
+                        // The episode's notes (and the AI summary), under the controls.
+                        <div class="np-notes">
+                            {move || {
+                                let id = ep_id.get();
+                                view! { <Notes id ep=Signal::derive(move || p.ep.get().unwrap_or_default())/> }
+                            }}
+                        </div>
                     </div>
                     <div class="np-side">
                         <div class="seg np-tabs">
-                            <button class:on=move || tab.get() == "notes" on:click=move |_| tab.set("notes")>"Notes"</button>
-                            <button class:on=move || tab.get() == "ads" on:click=move |_| tab.set("ads")>{move || { let n = ep().ads.ads.len(); if n > 0 { format!("Ads ({n})") } else { "Ads".into() } }}</button>
                             <button class:on=move || tab.get() == "transcript" on:click=move |_| tab.set("transcript")>"Transcript"</button>
                             <button class:on=move || tab.get() == "next" on:click=move |_| tab.set("next")>{move || { let n = p.up_next.with(Vec::len); if n > 0 { format!("Up Next ({n})") } else { "Up Next".into() } }}</button>
+                            <button class:on=move || tab.get() == "ads" on:click=move |_| tab.set("ads")>{move || { let n = ep().ads.ads.len(); if n > 0 { format!("Ads ({n})") } else { "Ads".into() } }}</button>
                         </div>
                         {move || match tab.get() {
                             "ads" => {
@@ -1860,12 +1866,8 @@ pub fn NowPlaying() -> impl IntoView {
                                     </div>
                                 }.into_any()
                             }
-                            "transcript" => view! { <Transcript lines=transcript words who said outline/> }.into_any(),
                             "next" => view! { <UpNext/> }.into_any(),
-                            _ => {
-                                let id = ep_id.get();
-                                view! { <Notes id ep=Signal::derive(move || p.ep.get().unwrap_or_default())/> }.into_any()
-                            }
+                            _ => view! { <Transcript lines=transcript words who said outline/> }.into_any(),
                         }}
                     </div>
                 </div>

@@ -2557,3 +2557,6 @@ html.eink .np-backdrop { display: none; }
   .np-play { width: 76px; height: 76px; }
   .np-play svg { width: 48px; height: 48px; }
 }
+
+/* Now playing: the notes sit under the controls, the side has Transcript / Up Next / Ads. */
+.np-notes { margin-top: 0.8rem; padding-top: 1rem; border-top: 0.5px solid var(--pod-sep, var(--border)); }
