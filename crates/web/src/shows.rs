@@ -2,7 +2,7 @@
 //! around duet (a bar along the bottom that opens into a full now-playing screen) and skips the
 //! ads the server has found.
 
-use duet_common::shows::{AdScan, Chart, GENRES, Outline, OutlineSection, Show, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
+use duet_common::shows::{AdScan, Chart, GENRES, Outline, Show, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::prelude::*;
@@ -1988,7 +1988,7 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64,
                                 let mine: Vec<(usize, f64, String)> = all.iter().enumerate()
                                     .filter(|(_, (t, _))| *t >= sec.start - 0.5 && *t < sec.end - 0.5)
                                     .map(|(i, (t, x))| (i, *t, x.clone())).collect();
-                                view! { <div class="ptoc-body">{transcript_rows(mine, &all_ads, "", &sec.subsections, said, follow, words)}</div> }
+                                view! { <div class="ptoc-body">{transcript_rows(mine, &all_ads, "", &sec.subsections.iter().map(|x| (x.start, x.title.clone(), true)).collect::<Vec<_>>(), said, follow, words)}</div> }
                             });
                             view! {
                                 <section class="ptoc-sec" class:open=is_open class:now=move || now_section.get() == Some(k)>
@@ -2040,7 +2040,12 @@ fn Transcript(lines: RwSignal<Vec<(f64, String)>>, words: RwSignal<Vec<Vec<(f64,
                             }.into_any()
                         }
                     }));
-                    let subs: Vec<OutlineSection> = if q.is_empty() && has_outline() { outline.with(|o| o.sections.clone()) } else { vec![] };
+                    // (The whole text has the outline's headings and subheadings through it.)
+                    let subs: Vec<(f64, String, bool)> = if q.is_empty() && has_outline() {
+                        outline.with(|o| o.sections.iter().flat_map(|x| std::iter::once((x.start, x.title.clone(), false)).chain(x.subsections.iter().map(|y| (y.start, y.title.clone(), true)))).collect())
+                    } else {
+                        vec![]
+                    };
                     view! { {note}{count}{transcript_rows(shown, &all_ads, &q, &subs, said, follow, words)} }.into_any()
                 }}
             </div>
@@ -2070,7 +2075,7 @@ fn transcript_rows(
     shown: Vec<(usize, f64, String)>,
     all_ads: &[duet_common::shows::AdSpan],
     q: &str,
-    heads: &[OutlineSection],
+    heads: &[(f64, String, bool)],
     said: Memo<Option<usize>>,
     follow: RwSignal<bool>,
     words: RwSignal<Vec<Vec<(f64, f64, String)>>>,
@@ -2082,12 +2087,12 @@ fn transcript_rows(
     shown
         .into_iter()
         .map(|(i, t, text)| {
-            let mut head = None;
-            while next_head < heads.len() && heads[next_head].start <= t + 0.5 {
-                head = Some(heads[next_head].title.clone());
+            let mut here = Vec::new();
+            while next_head < heads.len() && heads[next_head].0 <= t + 0.5 {
+                here.push(heads[next_head].clone());
                 next_head += 1;
             }
-            let head = head.map(|h| view! { <h4 class="tr-head">{h}</h4> });
+            let head = here.into_iter().map(|(_, h, sub)| if sub { view! { <h4 class="tr-head sub">{h}</h4> }.into_any() } else { view! { <h3 class="tr-head top">{h}</h3> }.into_any() }).collect_view();
             let ad = ad_of(t);
             let starts = ad.is_some() && ad != prev_ad;
             prev_ad = ad;

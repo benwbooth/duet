@@ -2429,3 +2429,5 @@ html.eink .np-backdrop { display: none; }
 @media (max-width: 760px) { .tr-search { flex-basis: 100%; } }
 .ep-summary { flex: none; height: auto; }
 .ptoc-toggle, .ptoc-toggle:hover { background: none !important; box-shadow: none !important; border: 0 !important; }
+.tr-head.top { margin: 1.1rem 0.6rem 0.3rem; font-size: 1.05rem; font-weight: 700; text-transform: none; letter-spacing: 0; color: var(--text); font-family: var(--serif, inherit); padding-bottom: 0.2rem; border-bottom: 1px solid var(--line); }
+.tr-lines > .tr-head.top:first-of-type { margin-top: 0.2rem; }

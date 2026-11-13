@@ -1005,11 +1005,11 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
             // This stretch, with the end of the last for context.
             let from = (checked - OVERLAP).max(0.0);
             let lines: Vec<Heard> = heard.iter().filter(|h| h.end > from && h.start < end).cloned().collect();
-            let (st, show_title, title, notes) = (state.clone(), show_title.clone(), title.clone(), notes.clone());
+            let (st, show_title, title, notes, audio) = (state.clone(), show_title.clone(), title.clone(), notes.clone(), path.clone());
             let task = tokio::spawn(async move {
                 let started = std::time::Instant::now();
                 let refs: Vec<&Heard> = lines.iter().collect();
-                let found = find_ads(&st, &show_title, &title, &notes, &refs, skip_promos).await;
+                let found = find_ads(&st, &audio, &show_title, &title, &notes, &refs, skip_promos).await;
                 tracing::info!("episode {id}: read {} lines for ads in {:.0}s", refs.len(), started.elapsed().as_secs_f64());
                 found
             });
@@ -1050,7 +1050,7 @@ fn add_span(ads: &mut Vec<AdSpan>, mut a: AdSpan) {
 }
 
 /// The model reads a stretch of transcript and says which lines are ads.
-async fn find_ads(state: &State, show: &str, title: &str, notes: &str, lines: &[&Heard], promos: bool) -> anyhow::Result<Vec<AdSpan>> {
+async fn find_ads(state: &State, audio: &std::path::Path, show: &str, title: &str, notes: &str, lines: &[&Heard], promos: bool) -> anyhow::Result<Vec<AdSpan>> {
     if lines.is_empty() {
         return Ok(Vec::new());
     }
@@ -1067,8 +1067,12 @@ async fn find_ads(state: &State, show: &str, title: &str, notes: &str, lines: &[
          episode, even when it talks about products or companies. An ad starts at the line where the pitch begins \
          (include a lead-in like \"let's take a quick break\" or \"a word from our sponsors\") and ends at its last line, \
          before the show picks up again. Several ads back to back can be one entry. The transcript is speech recognition \
-         so expect small errors. Reply with only JSON, no prose: an array of {{\"from\": first line number, \"to\": last \
-         line number, \"label\": a few words saying who or what it's for}}, or [] if there are no ads."
+         so expect small errors, and one line can run the end of an ad into the show (\"...call 855-EXAMPLE. Hello again, \
+         it's me...\"): when the ad starts partway through its first line, add \"starts_with\": the ad's first few words \
+         exactly as written in that line; when it ends partway through its last line, add \"ends_with\": the ad's last few \
+         words exactly as written there. Reply with only JSON, no prose: an array of {{\"from\": first line number, \"to\": \
+         last line number, \"label\": a few words saying who or what it's for}} (plus starts_with / ends_with when \
+         needed), or [] if there are no ads."
     );
     let mut text = format!("Show: {show}\nEpisode: {title}\n");
     if !notes.is_empty() {
@@ -1091,6 +1095,10 @@ async fn find_ads(state: &State, show: &str, title: &str, notes: &str, lines: &[
         to: serde_json::Value,
         #[serde(default)]
         label: String,
+        #[serde(default)]
+        starts_with: String,
+        #[serde(default)]
+        ends_with: String,
     }
     let json = match (reply.find('['), reply.rfind(']')) {
         (Some(a), Some(b)) if b > a => &reply[a..=b],
@@ -1098,16 +1106,91 @@ async fn find_ads(state: &State, show: &str, title: &str, notes: &str, lines: &[
     };
     let found: Vec<Found> = serde_json::from_str(json).with_context(|| format!("the model's answer wasn't a list of ads: {}", clip(&reply, 200)))?;
     let num = |v: &serde_json::Value| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim_matches(['[', ']']).parse().ok())).map(|n| n as usize);
-    Ok(found
-        .into_iter()
-        .filter_map(|f| {
-            let (a, b) = (num(&f.from)?, num(&f.to)?);
-            let (a, b) = (a.min(b), a.max(b));
-            let (first, last) = (lines.get(a)?, lines.get(b.min(lines.len() - 1))?);
-            // (Very short "ads" are usually a mention, not a break: left alone.)
-            (last.end - first.start >= 8.0).then(|| AdSpan { start: first.start, end: last.end, label: f.label.trim().to_string() })
-        })
-        .collect())
+    let mut out = Vec::new();
+    for f in found {
+        let (Some(a), Some(b)) = (num(&f.from), num(&f.to)) else { continue };
+        let (a, b) = (a.min(b), a.max(b));
+        let (Some(first), Some(last)) = (lines.get(a), lines.get(b.min(lines.len().saturating_sub(1)))) else { continue };
+        // Where in a line an ad starts or ends, when the line runs the ad and the show together.
+        let start = if f.starts_with.trim().is_empty() { first.start } else { cut_point(state, audio, first, &f.starts_with, false).await };
+        let end = if f.ends_with.trim().is_empty() { last.end } else { cut_point(state, audio, last, &f.ends_with, true).await };
+        // (Very short "ads" are usually a mention, not a break: left alone.)
+        if end - start >= 8.0 {
+            out.push(AdSpan { start, end, label: f.label.trim().to_string() });
+        }
+    }
+    Ok(out)
+}
+
+/// Lowercase words without punctuation, for matching what the model quoted against what Whisper heard.
+fn plain_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// Where `words` (whole) best matches as a run in `hay`: the index of its first word.
+fn find_run(hay: &[String], words: &[String], near: Option<usize>) -> Option<usize> {
+    if words.is_empty() || words.len() > hay.len() {
+        return None;
+    }
+    (0..=hay.len() - words.len()).filter(|&i| hay[i..i + words.len()] == *words).min_by_key(|&i| near.map(|n| i.abs_diff(n)).unwrap_or(0))
+}
+
+/// The time in `line` where the ad starts (the first of `quote`'s words) or ends (`at_end`: just
+/// after the last of them). Whisper listens to the line again for its words' times; failing that,
+/// the line's time is shared out by the words' lengths.
+async fn cut_point(state: &State, audio: &std::path::Path, line: &Heard, quote: &str, at_end: bool) -> f64 {
+    let fallback = if at_end { line.end } else { line.start };
+    let said = plain_words(&line.text);
+    let quoted = plain_words(quote);
+    // (The model may misquote a word: try fewer words, from the edge that matters.)
+    let pick = |n: usize| -> Vec<String> {
+        if at_end { quoted[quoted.len().saturating_sub(n)..].to_vec() } else { quoted[..n.min(quoted.len())].to_vec() }
+    };
+    let Some((k, n)) = (1..=quoted.len().min(4)).rev().find_map(|n| find_run(&said, &pick(n), None).map(|k| (k, n))) else {
+        return fallback;
+    };
+    // The word the cut is at: the last of the quote (at the end) or the first.
+    let w = if at_end { k + n - 1 } else { k };
+    let weight: Vec<f64> = said.iter().map(|x| x.chars().count() as f64 + 1.0).collect();
+    let total: f64 = weight.iter().sum();
+    let before: f64 = weight[..w + usize::from(at_end)].iter().sum();
+    let estimate = line.start + (line.end - line.start) * before / total.max(1.0);
+    // Whisper's own word times for just this line.
+    let tts = state.settings.read().await.ai.tts_url.clone();
+    let from = (line.start - 0.5).max(0.0);
+    let resp = state
+        .http
+        .post(format!("{}/transcribe-window", tts.trim_end_matches('/')))
+        .json(&json!({ "audio": audio, "start": from, "duration": line.end - from + 1.0, "words": true }))
+        .timeout(Duration::from_secs(120))
+        .send()
+        .await;
+    #[derive(Deserialize)]
+    struct Reply {
+        segments: Vec<Heard>,
+    }
+    let timed: Vec<(f64, f64, String)> = match resp {
+        // (Only the line's own words: the stretch listened to starts a little before it.)
+        Ok(r) if r.status().is_success() => r
+            .json::<Reply>()
+            .await
+            .map(|r| r.segments.into_iter().flat_map(|s| s.words).filter(|(a, b, _)| *b > line.start + 0.1 && *a < line.end + 0.3).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let heard: Vec<String> = timed.iter().map(|(_, _, w)| plain_words(w).join("")).collect();
+    let target = pick(n);
+    // (Near where the estimate puts it, if the words come up more than once.)
+    let near = timed.iter().position(|(a, _, _)| *a >= estimate);
+    match find_run(&heard, &target, near) {
+        Some(i) if at_end => timed[i + target.len() - 1].1 + 0.15,
+        Some(i) => (timed[i].0 - 0.1).max(0.0),
+        None => estimate,
+    }
+    .clamp(line.start, line.end)
 }
 
 // ---- Outlines ----
@@ -1785,8 +1868,20 @@ async fn transcript(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<Vec
     Json(read_json(&episode_dir(&s, id).join("transcript.json")).await.unwrap_or_default())
 }
 
+/// The outline; one that was never made is started now, for an episode whose transcript is
+/// whole (one checked before outlines existed, say).
 async fn get_outline(AxState(s): AxState<State>, Path(id): Path<i64>) -> Json<Outline> {
-    Json(outline_of(&s, id).await)
+    let o = outline_of(&s, id).await;
+    if o.state.is_empty() && scan_of(&s, id).await.state == "done" && episode_dir(&s, id).join("transcript.json").exists() {
+        let st = s.clone();
+        OUTLINING.lock().unwrap().insert(id);
+        tokio::spawn(async move {
+            OUTLINING.lock().unwrap().remove(&id);
+            let _ = make_outline(&st, id).await;
+        });
+        return Json(Outline { state: "making".into(), ..Default::default() });
+    }
+    Json(o)
 }
 
 /// Makes (or remakes) the outline: now if the transcript's whole, otherwise once it is.
@@ -1867,6 +1962,14 @@ Line two</media:description></media:group></entry>
         assert!(e.published.is_some());
         assert_eq!(e.notes, "Line one<br>Line two");
         assert_eq!(f.image.as_deref(), Some("https://i.ytimg.com/vi/abc/hqdefault.jpg"));
+    }
+
+    #[test]
+    fn finds_quoted_words() {
+        let said = plain_words("That's Kesimpta. Call 855-KESEMTA. Hello again. It's me.");
+        let q = plain_words("call 855-KESEMTA.");
+        assert_eq!(find_run(&said, &q, None), Some(2));
+        assert_eq!(find_run(&said, &plain_words("nope"), None), None);
     }
 
     #[test]
