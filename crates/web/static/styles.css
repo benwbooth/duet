@@ -2338,3 +2338,50 @@ html.eink .np-backdrop { display: none; }
 .pods-settings label:not(.pods-check) { display: grid; gap: 0.3rem; font-weight: 500; min-width: 0; }
 .pods-settings select, .pods-settings input:not([type="checkbox"]), .pods-add input { width: 100%; min-width: 0; }
 .pods-settings .brief-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+
+/* Ads on the slider: green, with what and when on hover. */
+.pscrub-track { --ad: #2f9e5f; --ad-done: #8fceaa; }
+.pscrub-marks { position: absolute; left: 0; right: 0; top: 50%; height: 10px; margin-top: -5px; pointer-events: none; }
+.pscrub-ad { position: absolute; top: 0; bottom: 0; min-width: 4px; border-radius: 3px; background: var(--ad); box-shadow: 0 0 0 1.5px var(--bg); pointer-events: auto; cursor: pointer; }
+.pscrub-ad.done { background: var(--ad-done); }
+.pscrub-tip {
+  position: absolute; bottom: calc(100% + 12px); left: 50%; transform: translate(-50%, 4px); z-index: 3; display: grid; gap: 0.1rem;
+  min-width: 10rem; padding: 0.5rem 0.7rem; border-radius: 10px; background: var(--text); color: var(--bg); font-size: 0.8rem; line-height: 1.3;
+  white-space: nowrap; box-shadow: 0 8px 24px rgba(0,0,0,0.25); opacity: 0; pointer-events: none; transition: opacity 0.15s, transform 0.15s;
+}
+.pscrub-tip::after { content: ""; position: absolute; top: 100%; left: 50%; margin-left: -6px; border: 6px solid transparent; border-top-color: var(--text); }
+.pscrub-tip em { font-style: normal; color: #7fd9a5; font-weight: 600; }
+.pscrub-ad:hover .pscrub-tip { opacity: 1; transform: translate(-50%, 0); }
+.pscrub-thumb { z-index: 2; }
+.mini-bar { overflow: hidden; }
+.mini-bar > span { position: relative; z-index: 1; }
+.mini-bar .mini-ad { position: absolute; top: 0; bottom: 0; background: #2f9e5f; opacity: 0.85; }
+.np-ads-status { font-size: 0.85rem; color: var(--muted) !important; font-weight: 500; }
+.np-ads-status:hover { color: var(--text) !important; }
+.ad-dot { width: 10px; height: 10px; border-radius: 3px; background: #2f9e5f; flex: none; }
+.np-ads .ad-state { font-size: 0.78rem; font-weight: 600; padding: 0.1rem 0.5rem; border-radius: 99px; background: var(--bg-2); color: var(--muted); white-space: nowrap; }
+.np-ads .ad-state.done { background: color-mix(in srgb, #2f9e5f 18%, transparent); color: #2f9e5f; }
+.np-ads .ts { color: #2f9e5f; }
+
+/* The transcript viewer. */
+.np-transcript { display: flex; flex-direction: column; gap: 0.6rem; min-height: 0; overflow: hidden !important; }
+.tr-tools { display: flex; gap: 0.5rem; align-items: center; flex: none; }
+.tr-search { flex: 1; display: flex; align-items: center; gap: 0.4rem; padding: 0 0.7rem; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); min-width: 0; }
+.tr-search .icon { width: 16px; height: 16px; color: var(--muted); }
+.tr-search input { border: 0; background: none; box-shadow: none !important; flex: 1; min-height: 36px; padding: 0; }
+.tr-follow { white-space: nowrap; min-height: 36px; }
+.tr-lines { flex: 1; min-height: 0; overflow-y: auto; padding-right: 0.3rem; scroll-behavior: smooth; }
+.tr-lines p { margin: 0; padding: 0.45rem 0.6rem; border-radius: 10px; cursor: pointer; line-height: 1.55; border-left: 3px solid transparent; transition: background 0.2s; }
+.tr-lines p:hover { background: var(--surface); }
+.tr-lines p.now { background: var(--accent-soft); }
+.tr-lines p.ad { border-left-color: #2f9e5f; color: var(--muted); background: color-mix(in srgb, #2f9e5f 7%, transparent); border-radius: 0 10px 10px 0; }
+.tr-lines p.ad.now { background: color-mix(in srgb, #2f9e5f 18%, transparent); color: var(--text); }
+.tr-lines .ts { display: inline-block; min-width: 3.4rem; color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.tr-ad-tag { display: block; width: fit-content; margin-bottom: 0.25rem; padding: 0.05rem 0.5rem; border-radius: 6px; background: #2f9e5f; color: #fff; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; }
+.tr-lines mark { background: #ffe08a; color: inherit; border-radius: 3px; padding: 0 1px; }
+.tr-empty { display: grid; gap: 0.6rem; justify-items: start; }
+@media (max-width: 760px) {
+  .np-transcript { overflow: visible !important; }
+  .tr-lines { max-height: 65vh; }
+  .pscrub-tip { display: none; }
+}

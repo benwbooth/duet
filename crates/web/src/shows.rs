@@ -218,6 +218,8 @@ pub struct Player {
     pub skipped: RwSignal<Option<(usize, f64)>>,
     /// Seconds of ads skipped in this episode.
     pub saved: RwSignal<f64>,
+    /// Which of the episode's ads have been skipped so far (their indexes).
+    pub skipped_ads: RwSignal<Vec<usize>>,
     /// Sleep timer: minutes chosen, or -1 for "end of episode".
     pub sleep: RwSignal<i32>,
     pub rate: RwSignal<f64>,
@@ -282,6 +284,7 @@ impl Player {
         sp_pause();
         p.skipped.set(None);
         p.saved.set(0.0);
+        p.skipped_ads.set(Vec::new());
         p.preparing.set(None);
         p.time.set(ep.position);
         p.duration.set(ep.duration);
@@ -383,6 +386,7 @@ pub fn provide_player() -> Player {
         preparing: RwSignal::new(None),
         skipped: RwSignal::new(None),
         saved: RwSignal::new(0.0),
+        skipped_ads: RwSignal::new(Vec::new()),
         sleep: RwSignal::new(0),
         rate: RwSignal::new(1.0),
         changed: RwSignal::new(0),
@@ -424,6 +428,11 @@ pub fn provide_player() -> Player {
     let on_skip = Closure::<dyn Fn(f64, f64)>::new(move |i: f64, secs: f64| {
         p.skipped.set(Some((i as usize, secs)));
         p.saved.update(|s| *s += secs);
+        p.skipped_ads.update(|v| {
+            if !v.contains(&(i as usize)) {
+                v.push(i as usize);
+            }
+        });
         skip_note.update_value(|n| *n += 1);
         let n = skip_note.get_value();
         spawn_local(async move {
@@ -1330,7 +1339,15 @@ pub fn MiniPlayer(#[prop(into)] hidden: Signal<bool>) -> impl IntoView {
     view! {
         <Show when=move || p.active() && !hidden.get() && !p.open.get()>
             <div class="mini-player" role="region" aria-label="Now playing">
-                <div class="mini-bar"><span style:width=move || format!("{:.2}%", frac())></span></div>
+                <div class="mini-bar">
+                    <span style:width=move || format!("{:.2}%", frac())></span>
+                    {move || {
+                        let d = p.duration.get();
+                        p.ep.with(|e| e.as_ref().map(|e| e.ads.ads.clone()).unwrap_or_default()).into_iter().filter(|_| d > 0.0).map(|a| view! {
+                            <i class="mini-ad" style:left=format!("{:.2}%", a.start / d * 100.0) style:width=format!("{:.2}%", (a.end - a.start) / d * 100.0)></i>
+                        }).collect_view()
+                    }}
+                </div>
                 <button class="mini-open" on:click=move |_| p.open.set(true) aria-label="Open the player">
                     {move || { let e = ep(); art(e.image.clone(), &e.show_title, "mini-art") }}
                     <span class="mini-text">
@@ -1380,9 +1397,23 @@ fn Scrubber() -> impl IntoView {
                         <span class="pscrub-checked" style:width=move || format!("{:.2}%", pct(p.ep.with(|e| e.as_ref().map(|e| e.ads.checked).unwrap_or(0.0))))></span>
                     </Show>
                     <span class="pscrub-played" style:width=move || format!("{:.2}%", pct(shown()))></span>
-                    {move || p.ep.with(|e| e.as_ref().map(|e| e.ads.ads.clone()).unwrap_or_default()).into_iter().map(|a| view! {
-                        <span class="pscrub-ad" title=a.label.clone()
-                            style:left=move || format!("{:.2}%", pct(a.start)) style:width=move || format!("{:.2}%", pct(a.end) - pct(a.start))></span>
+                </div>
+                <div class="pscrub-marks">
+                    {move || p.ep.with(|e| e.as_ref().map(|e| e.ads.ads.clone()).unwrap_or_default()).into_iter().enumerate().map(|(i, a)| {
+                        let label = if a.label.is_empty() { "Ad".to_string() } else { a.label.clone() };
+                        let when = format!("{} – {}", format_time(a.start), format_time(a.end));
+                        let len = format_time(a.end - a.start);
+                        view! {
+                            <span class="pscrub-ad" class:done=move || p.skipped_ads.with(|v| v.contains(&i))
+                                aria-label=format!("Ad: {label}, {when}")
+                                style:left=move || format!("{:.2}%", pct(a.start)) style:width=move || format!("{:.2}%", (pct(a.end) - pct(a.start)).max(0.6))>
+                                <span class="pscrub-tip" role="tooltip">
+                                    <strong>{label.clone()}</strong>
+                                    <span>{format!("{when} · {len}")}</span>
+                                    <em>{move || if p.skipped_ads.with(|v| v.contains(&i)) { "Skipped" } else if !p.skipping() { "Will play" } else if p.time.get() > a.end { "Played" } else { "Will be skipped" }}</em>
+                                </span>
+                            </span>
+                        }
                     }).collect_view()}
                 </div>
                 <span class="pscrub-thumb" class:grab=move || dragging.get().is_some() style:left=move || format!("{:.2}%", pct(shown()))></span>
@@ -1449,6 +1480,14 @@ pub fn NowPlaying() -> impl IntoView {
                         }
                     });
                     p.send_ads();
+                    p.skipped_ads.update(|v| {
+                        v.retain(|x| *x != i);
+                        for x in v.iter_mut() {
+                            if *x > i {
+                                *x -= 1;
+                            }
+                        }
+                    });
                     toast.show("That part will play from now on");
                 }
                 Err(e) => toast.show(e.0),
@@ -1572,12 +1611,27 @@ pub fn NowPlaying() -> impl IntoView {
                                     return view! { <span class="muted">"Ad skipping is off for this show"</span> }.into_any();
                                 }
                                 let saved = p.saved.get();
+                                let n = e.ads.ads.len();
+                                let k = p.skipped_ads.with(Vec::len);
+                                let text = if n == 0 {
+                                    ad_summary(&e.ads).unwrap_or_else(|| "Ads not checked yet".into())
+                                } else {
+                                    let mut t = format!("{n} ad{} found", if n == 1 { "" } else { "s" });
+                                    if e.ads.busy() {
+                                        t.push_str(" so far");
+                                    }
+                                    t.push_str(&format!(" · {k} skipped"));
+                                    if saved > 1.0 {
+                                        t.push_str(&format!(" · {} saved", format_time(saved)));
+                                    }
+                                    t
+                                };
                                 view! {
-                                    <span class="np-ads-status" class:busy=e.ads.busy()>
-                                        {if e.ads.busy() { view! { <span class="spinner tiny"></span> }.into_any() } else { icon(icons::SCAN).into_any() }}
-                                        {ad_summary(&e.ads).unwrap_or_else(|| "Ads not checked yet".into())}
-                                        {(saved > 1.0).then(|| format!(" · {} saved", format_time(saved)))}
-                                    </span>
+                                    <button class="np-ads-status link" class:busy=e.ads.busy() title="See where the ads are" on:click=move |_| tab.set("ads")>
+                                        {if e.ads.busy() { view! { <span class="spinner tiny"></span> }.into_any() } else { view! { <span class="ad-dot"></span> }.into_any() }}
+                                        {text}
+                                        {e.ads.busy().then(|| view! { <small class="muted">{format!(" (checking {})", e.ads.doing.trim_start_matches("Listening for ads: "))}</small> })}
+                                    </button>
                                 }.into_any()
                             }}
                         </div>
@@ -1607,7 +1661,10 @@ pub fn NowPlaying() -> impl IntoView {
                                                     {e.ads.ads.iter().cloned().enumerate().map(|(i, a)| view! {
                                                         <li>
                                                             <button class="link ts" on:click=move |_| { sp_allow(i); sp_play() } title="Play this ad">{format!("{} – {}", format_time(a.start), format_time(a.end))}</button>
-                                                            <span class="ad-label">{if a.label.is_empty() { "Ad".to_string() } else { a.label.clone() }}</span>
+                                                            <span class="ad-label">{if a.label.is_empty() { "Ad".to_string() } else { a.label.clone() }}<small class="muted">{format!(" · {}", format_time(a.end - a.start))}</small></span>
+                                                            <span class="ad-state" class:done=move || p.skipped_ads.with(|v| v.contains(&i))>
+                                                                {move || if p.skipped_ads.with(|v| v.contains(&i)) { "Skipped" } else if p.time.get() > a.end { "Played" } else { "Coming up" }}
+                                                            </span>
                                                             <button class="link" on:click=move |_| not_ad(i) title="This isn't an ad: always play it">"Not an ad"</button>
                                                         </li>
                                                     }).collect_view()}
@@ -1615,21 +1672,11 @@ pub fn NowPlaying() -> impl IntoView {
                                             }.into_any()
                                         }}
                                         {(e.id != 0 && !e.ads.busy()).then(|| view! { <button class="ghost small" on:click=rescan>"Check again"</button> })}
-                                        <p class="muted small">"Ads are found by AI from a transcript, so now and then it'll miss one or catch a bit of the show. Tap a time to hear it."</p>
+                                        <p class="muted small">"Ads are found by AI from a transcript (or by SponsorBlock for YouTube), so now and then it'll miss one or catch a bit of the show. Tap a time to hear it."</p>
                                     </div>
                                 }.into_any()
                             }
-                            "transcript" => view! {
-                                <div class="np-transcript">
-                                    {move || if transcript.with(Vec::is_empty) {
-                                        view! { <p class="muted">"The transcript is written as the episode's checked for ads."</p> }.into_any()
-                                    } else {
-                                        transcript.get().into_iter().enumerate().map(|(i, (t, text))| {
-                                            view! { <p class:now=move || said.get() == Some(i) on:click=move |_| { sp_seek(t); sp_play() }><span class="ts">{format_time(t)}</span>{text}</p> }
-                                        }).collect_view().into_any()
-                                    }}
-                                </div>
-                            }.into_any(),
+                            "transcript" => view! { <Transcript lines=transcript said/> }.into_any(),
                             _ => {
                                 let id = ep_id.get();
                                 view! { <Notes id ep=Signal::derive(move || p.ep.get().unwrap_or_default())/> }.into_any()
@@ -1712,4 +1759,121 @@ fn Discover(genre: Option<i64>) -> impl IntoView {
             <p class="muted small discover-note">"Top charts are Apple Podcasts' rankings (country in Podcasts settings). Trending comes from Podcast Index when it's set up there."</p>
         </div>
     }
+}
+
+/// The episode's transcript: follows along as it plays (or not, while you're reading back),
+/// marks the ads, searches, and jumps to any line you tap.
+#[component]
+fn Transcript(lines: RwSignal<Vec<(f64, String)>>, said: Memo<Option<usize>>) -> impl IntoView {
+    let p = player();
+    let toast = toast();
+    let query = RwSignal::new(String::new());
+    let follow = RwSignal::new(true);
+    let list = NodeRef::<leptos::html::Div>::new();
+    let ads = move || p.ep.with(|e| e.as_ref().map(|e| e.ads.ads.clone()).unwrap_or_default());
+    // Which ad (if any) each line is in.
+    let ad_of = move |t: f64, all: &[duet_common::shows::AdSpan]| all.iter().position(|a| t >= a.start - 0.5 && t < a.end - 0.5);
+    Effect::new(move |_| {
+        let Some(i) = said.get() else { return };
+        if !follow.get() || !query.with(String::is_empty) {
+            return;
+        }
+        let Some(el) = list.get() else { return };
+        if let Ok(Some(line)) = el.query_selector(&format!("[data-i=\"{i}\"]")) {
+            let opts = web_sys::ScrollIntoViewOptions::new();
+            opts.set_block(web_sys::ScrollLogicalPosition::Center);
+            opts.set_behavior(web_sys::ScrollBehavior::Smooth);
+            line.scroll_into_view_with_scroll_into_view_options(&opts);
+        }
+    });
+    let prepare = move |_| {
+        let Some(id) = p.ep.with_untracked(|e| e.as_ref().map(|e| e.id)) else { return };
+        spawn_local(async move {
+            match api::post::<_, AdScan>(&format!("/api/shows/episodes/{id}/prepare"), &serde_json::json!({ "now": true })).await {
+                Ok(s) => p.ep.update(|e| {
+                    if let Some(e) = e {
+                        e.ads = s;
+                    }
+                }),
+                Err(e) => toast.show(e.0),
+            }
+        });
+    };
+    view! {
+        <div class="np-transcript">
+            <div class="tr-tools">
+                <label class="tr-search">
+                    {icon(icons::DISCOVER)}
+                    <input type="search" placeholder="Search the transcript" prop:value=move || query.get() on:input=move |ev| query.set(event_target_value(&ev))/>
+                </label>
+                <button class="ghost small tr-follow" class:selected=move || follow.get() on:click=move |_| follow.update(|f| *f = !*f)
+                    title="Keep the line being said in view">
+                    {move || if follow.get() { "Following along" } else { "Follow along" }}
+                </button>
+            </div>
+            <div class="tr-lines" node_ref=list
+                on:wheel=move |_| follow.set(false) on:touchmove=move |_| follow.set(false)>
+                {move || {
+                    if lines.with(Vec::is_empty) {
+                        let e = p.ep.get().unwrap_or_default();
+                        return if e.ads.busy() {
+                            view! { <p class="muted"><span class="spinner tiny"></span>" Writing the transcript… it appears here a few minutes at a time."</p> }.into_any()
+                        } else {
+                            view! {
+                                <div class="tr-empty">
+                                    <p class="muted">"No transcript yet. It's written when the episode's checked for ads."</p>
+                                    {(e.id != 0).then(|| view! { <button class="ghost" on:click=prepare>"Make the transcript"</button> })}
+                                </div>
+                            }.into_any()
+                        };
+                    }
+                    let q = query.get().trim().to_lowercase();
+                    let all_ads = ads();
+                    let all = lines.get();
+                    let shown: Vec<(usize, f64, String)> = all.into_iter().enumerate().filter(|(_, (_, t))| q.is_empty() || t.to_lowercase().contains(&q)).map(|(i, (t, x))| (i, t, x)).collect();
+                    if shown.is_empty() {
+                        return view! { <p class="muted">"No lines match."</p> }.into_any();
+                    }
+                    let count = (!q.is_empty()).then(|| view! { <p class="tr-count muted small">{format!("{} line{} match", shown.len(), if shown.len() == 1 { "" } else { "s" })}</p> });
+                    let mut prev_ad = None;
+                    let rows = shown.into_iter().map(|(i, t, text)| {
+                        let ad = ad_of(t, &all_ads);
+                        let starts = ad.is_some() && ad != prev_ad;
+                        prev_ad = ad;
+                        let tag = ad.filter(|_| starts).map(|k| {
+                            let a = &all_ads[k];
+                            view! { <span class="tr-ad-tag">{format!("Ad · {} · {}", if a.label.is_empty() { "Ad" } else { &a.label }, format_time(a.end - a.start))}</span> }
+                        });
+                        let text = if q.is_empty() { view! { <span>{text}</span> }.into_any() } else { highlight(&text, &q).into_any() };
+                        view! {
+                            <p data-i=i.to_string() class:now=move || said.get() == Some(i) class:ad=ad.is_some()
+                                on:click=move |_| { sp_seek(t); sp_play(); follow.set(true) }>
+                                {tag}
+                                <span class="ts">{format_time(t)}</span>{text}
+                            </p>
+                        }
+                    }).collect_view();
+                    view! { {count}{rows} }.into_any()
+                }}
+            </div>
+        </div>
+    }
+}
+
+/// `text` with each match of `q` (lowercase) marked.
+fn highlight(text: &str, q: &str) -> impl IntoView + use<> {
+    let lower = text.to_lowercase();
+    let mut parts = Vec::new();
+    let mut at = 0;
+    // (Lowercasing can change byte lengths for some scripts; fall back to unmarked then.)
+    if lower.len() == text.len() {
+        while let Some(k) = lower[at..].find(q) {
+            let start = at + k;
+            parts.push((text[at..start].to_string(), false));
+            parts.push((text[start..start + q.len()].to_string(), true));
+            at = start + q.len();
+        }
+    }
+    parts.push((text[at..].to_string(), false));
+    view! { <span>{parts.into_iter().map(|(t, m)| if m { view! { <mark>{t}</mark> }.into_any() } else { t.into_any() }).collect_view()}</span> }
 }
