@@ -1141,7 +1141,36 @@ def _speakers(body):
             groups[k] = max(cent, key=lambda c: float(x[k] @ cent[c]))
     for k, i in enumerate(idx):
         labels[i] = int(groups[k])
-    # Lines too short to tell: the nearest line's voice.
+    # Short lines ("Shapes?", "Yes, sir."): too short to start a voice of their own, but plenty
+    # to say which of the voices already heard they're in. The clip (trimmed of the gaps
+    # around it) is repeated out to 2 s, and put to the nearest voice.
+    if len(cent) > 1:
+        cmat0 = np.stack([cent[g] / np.linalg.norm(cent[g]) for g in cent])
+        keys0 = list(cent)
+        short, short_idx = [], []
+        for i, s in enumerate(segs):
+            if labels[i] is not None:
+                continue
+            a, b = float(s["start"]), float(s["end"])
+            clip = samples[int(a * 16000):int(b * 16000)]
+            if len(clip) == 0:
+                continue
+            loud = np.abs(clip) > max(0.02, 0.1 * float(np.abs(clip).max()))
+            if loud.any():
+                on = np.flatnonzero(loud)
+                clip = clip[max(0, on[0] - 1600):on[-1] + 1600]
+            if len(clip) < int(0.35 * 16000):
+                continue
+            n = 32000
+            short.append(np.ascontiguousarray(np.tile(clip, n // len(clip) + 1)[:n], dtype=np.float32))
+            short_idx.append(i)
+        for k in range(0, len(short), 64):
+            with torch.no_grad():
+                e = speaker_model.encode_batch(torch.from_numpy(np.stack(short[k:k + 64]))).squeeze(1).float().cpu().numpy()
+            for i, v in zip(short_idx[k:k + 64], e):
+                v = v / np.linalg.norm(v)
+                labels[i] = int(keys0[int(np.argmax(cmat0 @ v))])
+    # Lines too short to tell even so: the nearest line's voice.
     told = [i for i in range(len(segs)) if labels[i] is not None]
     for i in range(len(segs)):
         if labels[i] is None:

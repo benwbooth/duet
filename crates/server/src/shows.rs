@@ -1486,7 +1486,7 @@ async fn cut_point(state: &State, audio: &std::path::Path, line: &Heard, quote: 
 /// 4 times every word first, 5 times the lines the aligner failed on before.
 /// Older ones are made again when opened.
 // 6 tells voices apart more finely (callers on the phone sound alike).
-const OUTLINE_VERSION: u32 = 6;
+const OUTLINE_VERSION: u32 = 7;
 
 /// Outlines being made right now.
 static OUTLINING: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
@@ -1713,7 +1713,7 @@ async fn outline_inner(state: &State, id: i64) -> anyhow::Result<Outline> {
             set_scan(state, id, |s| s.ads = ads).await;
         }
     }
-    if (heard.iter().all(|h| h.speaker.is_none()) || before.version < 6)
+    if (heard.iter().all(|h| h.speaker.is_none()) || before.version < 7)
         && let Some(audio) = audio_file(state, id)
     {
         match tell_voices(state, &audio, &heard).await {
