@@ -15,6 +15,8 @@ pub struct Show {
     pub description: String,
     pub image: Option<String>,
     pub link: String,
+    /// "rss" (a podcast feed) or "youtube" (a channel or playlist, played as audio).
+    pub kind: String,
     /// Skip the ads found in this show's episodes (on unless you turn it off for a show).
     pub skip_ads: bool,
     /// Episodes not played to the end.
@@ -45,6 +47,8 @@ pub struct ShowEpisode {
     pub image: Option<String>,
     /// The recording on the show's own server (played from there when it isn't downloaded).
     pub audio_url: String,
+    /// Can only be played once downloaded (a YouTube video, whose sound duet pulls out).
+    pub needs_download: bool,
     /// Where you got to, in seconds.
     pub position: f64,
     pub finished: bool,
@@ -104,6 +108,42 @@ pub struct ShowHit {
     pub episodes: i64,
     /// Already followed: its id here.
     pub followed: Option<i64>,
+    /// Its place in the chart (1 is the top), for the charts.
+    pub rank: i64,
+    /// Where it was found: "apple" or "podcastindex".
+    pub source: String,
+}
+
+/// Apple's podcast categories: (id, name), for the charts.
+pub const GENRES: [(i64, &str); 19] = [
+    (1318, "Technology"),
+    (1303, "Comedy"),
+    (1489, "News"),
+    (1488, "True Crime"),
+    (1324, "Society & Culture"),
+    (1533, "Science"),
+    (1487, "History"),
+    (1309, "TV & Film"),
+    (1483, "Fiction"),
+    (1321, "Business"),
+    (1545, "Sports"),
+    (1512, "Health & Fitness"),
+    (1304, "Education"),
+    (1301, "Arts"),
+    (1310, "Music"),
+    (1502, "Leisure"),
+    (1305, "Kids & Family"),
+    (1314, "Religion & Spirituality"),
+    (1511, "Government"),
+];
+
+/// The Discover page: a chart (all shows, or one category).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Chart {
+    pub shows: Vec<ShowHit>,
+    /// What's rising on Podcast Index, when it's set up (the "all" chart only).
+    pub trending: Vec<ShowHit>,
 }
 
 /// A show's page: the show and its episodes, newest first.
@@ -144,6 +184,14 @@ pub struct ShowSettings {
     pub speed: f64,
     /// Downloaded episodes you've finished are deleted after this many days (0: kept).
     pub keep_days: u32,
+    /// Whose charts Discover shows (a two-letter country code).
+    pub country: String,
+    /// Podcast Index (podcastindex.org, free): more shows in search, and what's trending.
+    pub podcastindex_key: String,
+    pub podcastindex_secret: String,
+    /// For YouTube shows: skip the segments SponsorBlock's community has marked (sponsors,
+    /// and with promos on, self-promotion and "like and subscribe"), before asking the AI.
+    pub sponsorblock: bool,
 }
 
 impl Default for ShowSettings {
@@ -157,6 +205,10 @@ impl Default for ShowSettings {
             forward_seconds: 30,
             speed: 1.0,
             keep_days: 7,
+            country: "us".into(),
+            podcastindex_key: String::new(),
+            podcastindex_secret: String::new(),
+            sponsorblock: true,
         }
     }
 }

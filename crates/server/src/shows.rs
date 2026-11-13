@@ -31,7 +31,7 @@ use axum::{
     routing::{get, post, put},
 };
 use chrono::{DateTime, Utc};
-use duet_common::shows::{AdScan, AdSpan, Show, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
+use duet_common::shows::{AdScan, AdSpan, Chart, GENRES, Show, ShowEpisode, ShowHit, ShowPage, ShowPosition, ShowSettings, ShowsHome};
 use futures_util::StreamExt;
 use quick_xml::{Reader, events::Event};
 use serde::{Deserialize, Serialize};
@@ -58,6 +58,7 @@ pub fn routes() -> Router<State> {
         .route("/shows", get(home).post(follow))
         .route("/shows/search", get(search))
         .route("/shows/top", get(top))
+        .route("/shows/charts", get(charts))
         .route("/shows/preview", get(preview))
         .route("/shows/refresh", post(refresh_all))
         .route("/shows/settings", get(get_settings).put(put_settings))
@@ -121,6 +122,8 @@ struct FeedEpisode {
     duration: f64,
     audio_url: String,
     image: Option<String>,
+    /// (Atom: the entry's page.)
+    link: String,
 }
 
 /// "1:02:03", "62:03", "3723" or "3723.5" → seconds.
@@ -180,6 +183,14 @@ fn parse_feed(xml: &str) -> FeedShow {
             }
         }
         ("itunes:image", Some(i)) => i.image = attr(e, "href").or(i.image.take()),
+        // (Atom: a podcast's recording, or a YouTube video's page.)
+        ("link", Some(i)) => match attr(e, "rel").as_deref() {
+            Some("enclosure") if i.audio_url.is_empty() => i.audio_url = attr(e, "href").unwrap_or_default(),
+            None | Some("alternate") => i.link = attr(e, "href").unwrap_or_default(),
+            _ => {}
+        },
+        ("link", None) if show.link.is_empty() && attr(e, "rel").is_none_or(|r| r == "alternate") => show.link = attr(e, "href").unwrap_or_default(),
+        ("media:thumbnail", Some(i)) if i.image.is_none() => i.image = attr(e, "url"),
         ("itunes:image", None) => {
             if let Some(h) = attr(e, "href") {
                 show.image = Some(h);
@@ -191,7 +202,7 @@ fn parse_feed(xml: &str) -> FeedShow {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                if name == "item" {
+                if name == "item" || name == "entry" {
                     item = Some(FeedEpisode::default());
                     long_notes.clear();
                 }
@@ -211,8 +222,12 @@ fn parse_feed(xml: &str) -> FeedShow {
                 let parent = path.last().map(String::as_str).unwrap_or("");
                 let value = text.trim().to_string();
                 text.clear();
-                if name == "item" {
+                if name == "item" || name == "entry" {
                     if let Some(mut i) = item.take() {
+                        // (YouTube Shorts aren't episodes.)
+                        if i.link.contains("/shorts/") {
+                            continue;
+                        }
                         if long_notes.len() > i.notes.len() {
                             i.notes = std::mem::take(&mut long_notes);
                         }
@@ -226,10 +241,20 @@ fn parse_feed(xml: &str) -> FeedShow {
                     continue;
                 }
                 if let Some(i) = item.as_mut() {
-                    if parent != "item" {
+                    if name == "media:description" && i.notes.is_empty() {
+                        i.notes = value.replace('\n', "<br>");
+                        continue;
+                    }
+                    if parent != "item" && parent != "entry" {
                         continue;
                     }
                     match name.as_str() {
+                        "yt:videoId" => {
+                            i.guid = value.clone();
+                            i.audio_url = format!("https://www.youtube.com/watch?v={value}");
+                        }
+                        "published" | "updated" if i.published.is_none() => i.published = parse_date(&value),
+                        "summary" | "content" if value.len() > i.notes.len() => i.notes = value,
                         "title" => i.title = strip_html(&value),
                         "guid" => i.guid = value,
                         "pubDate" => i.published = parse_date(&value),
@@ -238,6 +263,10 @@ fn parse_feed(xml: &str) -> FeedShow {
                         "content:encoded" => long_notes = value,
                         _ => {}
                     }
+                } else if parent == "feed" && name == "title" {
+                    show.title = strip_html(&value);
+                } else if parent == "author" && name == "name" && show.author.is_empty() {
+                    show.author = strip_html(&value);
                 } else if parent == "channel" {
                     match name.as_str() {
                         "title" => show.title = strip_html(&value),
@@ -254,7 +283,15 @@ fn parse_feed(xml: &str) -> FeedShow {
             _ => {}
         }
     }
+    // (A YouTube channel's feed has no picture of its own: its newest video's stands in.)
+    if show.image.is_none() {
+        show.image = show.episodes.iter().find_map(|e| e.image.clone());
+    }
     show
+}
+
+pub fn is_youtube(url: &str) -> bool {
+    url.contains("youtube.com/") || url.contains("youtu.be/")
 }
 
 async fn fetch_feed(state: &State, url: &str) -> anyhow::Result<FeedShow> {
@@ -287,12 +324,20 @@ async fn feed_address(state: &State, input: &str) -> anyhow::Result<String> {
         let hits = lookup(state, &[id.to_string()]).await?;
         return hits.into_iter().next().map(|h| h.feed_url).context("Apple doesn't list a feed for that show");
     }
+    // A YouTube channel (link or @handle) or playlist.
+    if input.starts_with('@') || (is_youtube(input) && !input.contains("feeds/videos.xml")) {
+        if let Some(list) = input.split(['?', '&']).find_map(|p| p.strip_prefix("list=")) {
+            return Ok(format!("https://www.youtube.com/feeds/videos.xml?playlist_id={list}"));
+        }
+        anyhow::ensure!(!input.contains("watch?v="), "That's one video: paste the channel's or playlist's link");
+        return crate::podcast::feeds::youtube_feed(&state.http, input).await;
+    }
     if input.starts_with("http://") || input.starts_with("https://") {
         Ok(input.to_string())
     } else if input.contains('.') && !input.contains(' ') {
         Ok(format!("https://{input}"))
     } else {
-        bail!("Paste the show's feed address (or its Apple Podcasts link)")
+        bail!("Paste the show's feed address, its Apple Podcasts link, or a YouTube channel or playlist")
     }
 }
 
@@ -364,9 +409,10 @@ async fn follow_feed(state: &State, input: &str) -> anyhow::Result<Show> {
         return show(state, id).await?.context("show vanished");
     }
     let feed = fetch_feed(state, &url).await?;
-    let id: i64 = sqlx::query_scalar("INSERT INTO shows (feed_url, title) VALUES (?, ?) RETURNING id")
+    let id: i64 = sqlx::query_scalar("INSERT INTO shows (feed_url, title, kind) VALUES (?, ?, ?) RETURNING id")
         .bind(&url)
         .bind(&feed.title)
+        .bind(if is_youtube(&url) { "youtube" } else { "rss" })
         .fetch_one(&state.db)
         .await?;
     store_feed(state, id, &feed).await?;
@@ -476,7 +522,7 @@ fn plain(html: &str) -> String {
 
 // ---- Reading the database ----
 
-const SHOW_COLUMNS: &str = "s.id, s.feed_url, s.title, s.author, s.description, s.image, s.link, s.skip_ads,
+const SHOW_COLUMNS: &str = "s.id, s.feed_url, s.title, s.author, s.description, s.image, s.link, s.skip_ads, s.kind,
     (SELECT COUNT(*) FROM show_episodes e WHERE e.show_id = s.id AND e.finished = 0) AS unplayed,
     (SELECT MAX(published) FROM show_episodes e WHERE e.show_id = s.id) AS latest,
     (SELECT COUNT(*) FROM show_episodes e WHERE e.show_id = s.id) AS episodes";
@@ -490,6 +536,7 @@ fn show_from(r: &sqlx::sqlite::SqliteRow) -> Show {
         description: r.get("description"),
         image: r.get("image"),
         link: r.get("link"),
+        kind: r.get("kind"),
         skip_ads: r.get::<i64, _>("skip_ads") != 0,
         unplayed: r.get("unplayed"),
         latest: r.get("latest"),
@@ -523,6 +570,7 @@ fn episode_from(state: &State, r: &sqlx::sqlite::SqliteRow) -> ShowEpisode {
         published: r.get("published"),
         duration: r.get("duration"),
         image: r.get("image"),
+        needs_download: is_youtube(&r.get::<String, _>("audio_url")),
         audio_url: r.get("audio_url"),
         position: r.get("position"),
         finished: r.get::<i64, _>("finished") != 0,
@@ -672,6 +720,9 @@ async fn download_inner(state: &State, id: i64) -> anyhow::Result<PathBuf> {
         return Ok(p);
     }
     let url: String = sqlx::query_scalar("SELECT audio_url FROM show_episodes WHERE id = ?").bind(id).fetch_one(&state.db).await?;
+    if is_youtube(&url) {
+        return youtube_audio(state, id, &url).await;
+    }
     let ext = url
         .split(['?', '#'])
         .next()
@@ -716,6 +767,85 @@ async fn download_inner(state: &State, id: i64) -> anyhow::Result<PathBuf> {
     let path = dir.join(format!("audio.{ext}"));
     tokio::fs::rename(&part, &path).await?;
     Ok(path)
+}
+
+/// A YouTube video's sound, pulled out with yt-dlp (no re-encoding: the audio stream as it is).
+async fn youtube_audio(state: &State, id: i64, url: &str) -> anyhow::Result<PathBuf> {
+    use tokio::io::AsyncBufReadExt;
+    let dir = episode_dir(state, id);
+    tokio::fs::create_dir_all(&dir).await?;
+    let mut child = tokio::process::Command::new("yt-dlp")
+        .args(["-f", "bestaudio[ext=m4a]/bestaudio", "--no-playlist", "--newline", "--no-part", "-o"])
+        .arg(dir.join("yt.%(ext)s"))
+        .arg(url)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .context("yt-dlp isn't installed (it's needed for YouTube shows)")?;
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().context("yt-dlp output")?).lines();
+    let mut last = std::time::Instant::now();
+    while let Some(line) = lines.next_line().await? {
+        // "[download]  42.3% of   31.20MiB at ..."
+        let pct = line.strip_prefix("[download]").and_then(|r| r.trim().split('%').next()).and_then(|p| p.trim().parse::<f64>().ok());
+        if let Some(p) = pct.filter(|_| last.elapsed() > Duration::from_millis(500)) {
+            last = std::time::Instant::now();
+            set_scan(state, id, |s| {
+                s.state = "downloading".into();
+                s.progress = p / 100.0;
+                s.doing = format!("Getting the sound from YouTube {p:.0}%");
+            })
+            .await;
+        }
+    }
+    let out = child.wait_with_output().await?;
+    if !out.status.success() {
+        bail!("yt-dlp: {}", String::from_utf8_lossy(&out.stderr).lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("failed"));
+    }
+    let got = std::fs::read_dir(&dir)?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.file_stem().is_some_and(|s| s == "yt"))
+        .context("yt-dlp finished without a file")?;
+    let ext = got.extension().and_then(|x| x.to_str()).unwrap_or("m4a").to_string();
+    let path = dir.join(format!("audio.{ext}"));
+    tokio::fs::rename(&got, &path).await?;
+    Ok(path)
+}
+
+/// The sponsor segments SponsorBlock's community has marked in a YouTube video (none if it
+/// has none, or isn't reachable).
+async fn sponsorblock(state: &State, url: &str, promos: bool) -> Vec<AdSpan> {
+    let Some(video) = url.split(['?', '&']).find_map(|p| p.strip_prefix("v=")).or_else(|| url.split("youtu.be/").nth(1).map(|r| r.split(['?', '&']).next().unwrap_or(r))) else {
+        return Vec::new();
+    };
+    let cats = if promos { r#"["sponsor","selfpromo","interaction"]"# } else { r#"["sponsor"]"# };
+    let Ok(resp) = state
+        .http
+        .get("https://sponsor.ajay.app/api/skipSegments")
+        .query(&[("videoID", video), ("categories", cats)])
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+    else {
+        return Vec::new();
+    };
+    #[derive(Deserialize)]
+    struct Seg {
+        segment: (f64, f64),
+        category: String,
+    }
+    let segs: Vec<Seg> = if resp.status().is_success() { resp.json().await.unwrap_or_default() } else { Vec::new() };
+    let mut ads = Vec::new();
+    for s in segs {
+        let label = match s.category.as_str() {
+            "sponsor" => "Sponsor (SponsorBlock)",
+            "selfpromo" => "Self-promotion (SponsorBlock)",
+            _ => "Like and subscribe (SponsorBlock)",
+        };
+        add_span(&mut ads, AdSpan { start: s.segment.0, end: s.segment.1, label: label.into() });
+    }
+    ads
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -771,6 +901,24 @@ async fn scan(state: &State, id: i64) -> anyhow::Result<bool> {
             .await?;
         (r.get::<String, _>("show_title"), r.get::<String, _>("title"), clip(&plain(&r.get::<String, _>("notes")), 1500), settings(state).await.skip_promos)
     };
+    // A YouTube video SponsorBlock's community has already marked: no need to listen.
+    let audio_url: String = sqlx::query_scalar("SELECT audio_url FROM show_episodes WHERE id = ?").bind(id).fetch_one(&state.db).await?;
+    if is_youtube(&audio_url) && settings(state).await.sponsorblock && heard.is_empty() {
+        let found = sponsorblock(state, &audio_url, skip_promos).await;
+        if !found.is_empty() {
+            set_scan(state, id, |s| {
+                s.ads = found;
+                s.state = "done".into();
+                s.doing.clear();
+                s.progress = 1.0;
+                s.checked = duration;
+                s.duration = duration;
+            })
+            .await;
+            SCANS.lock().unwrap().remove(&id);
+            return Ok(true);
+        }
+    }
     let tts = state.settings.read().await.ai.tts_url.clone();
     let mut checked = scan_of(state, id).await.checked;
     loop {
@@ -928,6 +1076,7 @@ async fn find_ads(state: &State, show: &str, title: &str, notes: &str, lines: &[
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 struct ItunesHit {
+    collection_id: i64,
     collection_name: String,
     artist_name: String,
     artwork_url600: Option<String>,
@@ -938,10 +1087,16 @@ struct ItunesHit {
 }
 
 fn hits_from(results: Vec<ItunesHit>) -> Vec<ShowHit> {
+    hits_with_ids(results).into_iter().map(|(_, h)| h).collect()
+}
+
+/// Shows found in Apple's directory, each with Apple's id for it.
+fn hits_with_ids(results: Vec<ItunesHit>) -> Vec<(i64, ShowHit)> {
     results
         .into_iter()
         .filter_map(|r| {
-            Some(ShowHit {
+            let id = r.collection_id;
+            Some((id, ShowHit {
                 feed_url: r.feed_url.filter(|u| !u.is_empty())?,
                 title: r.collection_name,
                 author: r.artist_name,
@@ -949,12 +1104,18 @@ fn hits_from(results: Vec<ItunesHit>) -> Vec<ShowHit> {
                 genre: r.primary_genre_name,
                 episodes: r.track_count,
                 followed: None,
-            })
+                rank: 0,
+                source: "apple".into(),
+            }))
         })
         .collect()
 }
 
 async fn lookup(state: &State, ids: &[String]) -> anyhow::Result<Vec<ShowHit>> {
+    Ok(lookup_ids(state, ids).await?.into_iter().map(|(_, h)| h).collect())
+}
+
+async fn lookup_ids(state: &State, ids: &[String]) -> anyhow::Result<Vec<(i64, ShowHit)>> {
     #[derive(Deserialize)]
     struct Results {
         results: Vec<ItunesHit>,
@@ -970,8 +1131,7 @@ async fn lookup(state: &State, ids: &[String]) -> anyhow::Result<Vec<ShowHit>> {
         .json()
         .await?;
     // (Lookup answers in its own order; the charts' order is kept.)
-    let hits = hits_from(r.results);
-    Ok(hits)
+    Ok(hits_with_ids(r.results))
 }
 
 async fn mark_followed(state: &State, mut hits: Vec<ShowHit>) -> Vec<ShowHit> {
@@ -982,36 +1142,113 @@ async fn mark_followed(state: &State, mut hits: Vec<ShowHit>) -> Vec<ShowHit> {
     hits
 }
 
-static TOP: LazyLock<tokio::sync::Mutex<Option<(std::time::Instant, Vec<ShowHit>)>>> = LazyLock::new(Default::default);
+type ChartKey = (String, Option<i64>);
+static CHARTS: LazyLock<tokio::sync::Mutex<HashMap<ChartKey, (std::time::Instant, Vec<ShowHit>)>>> = LazyLock::new(Default::default);
 
-async fn top_shows(state: &State) -> anyhow::Result<Vec<ShowHit>> {
-    let mut cache = TOP.lock().await;
-    if let Some((at, hits)) = cache.as_ref() {
+/// Apple's top shows (all, or one category), ranked, for the country in settings.
+async fn chart(state: &State, genre: Option<i64>) -> anyhow::Result<Vec<ShowHit>> {
+    let country = { let c = settings(state).await.country; if c.len() == 2 { c.to_ascii_lowercase() } else { "us".into() } };
+    let key = (country.clone(), genre);
+    if let Some((at, hits)) = CHARTS.lock().await.get(&key) {
         if at.elapsed() < Duration::from_secs(6 * 3600) {
             return Ok(hits.clone());
         }
     }
+    let ids: Vec<String> = match genre {
+        None => {
+            let v: serde_json::Value = state
+                .http
+                .get(format!("https://rss.marketingtools.apple.com/api/v2/{country}/podcasts/top/50/podcasts.json"))
+                .timeout(Duration::from_secs(20))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            v["feed"]["results"].as_array().into_iter().flatten().filter_map(|r| r["id"].as_str().map(str::to_string)).collect()
+        }
+        Some(g) => {
+            // (The older chart feed is the one that has categories.)
+            let v: serde_json::Value = state
+                .http
+                .get(format!("https://itunes.apple.com/{country}/rss/toppodcasts/limit=50/genre={g}/json"))
+                .timeout(Duration::from_secs(20))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            v["feed"]["entry"].as_array().into_iter().flatten().filter_map(|e| e["id"]["attributes"]["im:id"].as_str().map(str::to_string)).collect()
+        }
+    };
+    let found = lookup_ids(state, &ids).await?;
+    let mut hits: Vec<ShowHit> = found
+        .into_iter()
+        .filter_map(|(id, mut h)| {
+            h.rank = ids.iter().position(|x| x.parse() == Ok(id))? as i64 + 1;
+            Some(h)
+        })
+        .collect();
+    hits.sort_by_key(|h| h.rank);
+    CHARTS.lock().await.insert(key, (std::time::Instant::now(), hits.clone()));
+    Ok(hits)
+}
+
+// ---- Podcast Index (podcastindex.org) ----
+
+async fn podcastindex(state: &State, path: &str, query: &[(&str, String)]) -> anyhow::Result<Vec<ShowHit>> {
+    let prefs = settings(state).await;
+    let (key, secret) = (prefs.podcastindex_key.trim().to_string(), prefs.podcastindex_secret.trim().to_string());
+    if key.is_empty() || secret.is_empty() {
+        return Ok(Vec::new());
+    }
+    let date = Utc::now().timestamp().to_string();
+    let hash = sha1_smol::Sha1::from(format!("{key}{secret}{date}")).digest().to_string();
     let v: serde_json::Value = state
         .http
-        .get("https://rss.marketingtools.apple.com/api/v2/us/podcasts/top/40/podcasts.json")
+        .get(format!("https://api.podcastindex.org/api/1.0/{path}"))
+        .query(query)
+        .header("X-Auth-Key", key)
+        .header("X-Auth-Date", date)
+        .header("Authorization", hash)
         .timeout(Duration::from_secs(20))
         .send()
-        .await?
-        .error_for_status()?
+        .await
+        .context("couldn't reach Podcast Index")?
+        .error_for_status()
+        .context("Podcast Index refused (check the key and secret in Podcasts settings)")?
         .json()
         .await?;
-    let ids: Vec<String> = v["feed"]["results"].as_array().into_iter().flatten().filter_map(|r| r["id"].as_str().map(str::to_string)).collect();
-    let mut hits = lookup(state, &ids).await?;
-    let order: HashMap<String, usize> = v["feed"]["results"]
+    Ok(v["feeds"]
         .as_array()
         .into_iter()
         .flatten()
-        .enumerate()
-        .filter_map(|(i, r)| Some((r["name"].as_str()?.to_string(), i)))
-        .collect();
-    hits.sort_by_key(|h| order.get(&h.title).copied().unwrap_or(usize::MAX));
-    *cache = Some((std::time::Instant::now(), hits.clone()));
-    Ok(hits)
+        .filter_map(|f| {
+            let url = f["url"].as_str().filter(|u| !u.is_empty())?.to_string();
+            let image = [&f["artwork"], &f["image"]].iter().find_map(|x| x.as_str().filter(|u| !u.is_empty()).map(str::to_string));
+            Some(ShowHit {
+                title: f["title"].as_str().unwrap_or_default().trim().to_string(),
+                author: f["author"].as_str().unwrap_or_default().trim().to_string(),
+                image,
+                feed_url: url,
+                genre: f["categories"].as_object().and_then(|c| c.values().next()).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                episodes: f["episodeCount"].as_i64().unwrap_or(0),
+                source: "podcastindex".into(),
+                ..Default::default()
+            })
+        })
+        .collect())
+}
+
+/// Podcast Index's category names for an Apple category ("Society & Culture" → "Society,Culture").
+fn pi_categories(genre: i64) -> Option<String> {
+    GENRES.iter().find(|(id, _)| *id == genre).map(|(_, name)| name.split(" & ").collect::<Vec<_>>().join(","))
+}
+
+/// The same show listed twice (http vs https, a trailing slash) counts once.
+fn same_feed(a: &str, b: &str) -> bool {
+    let norm = |u: &str| u.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_ascii_lowercase();
+    norm(a) == norm(b)
 }
 
 // ---- OPML ----
@@ -1076,22 +1313,73 @@ async fn search(AxState(s): AxState<State>, Query(q): Query<SearchQ>) -> ApiResu
     struct Results {
         results: Vec<ItunesHit>,
     }
-    let r: Results = s
-        .http
-        .get("https://itunes.apple.com/search")
-        .query(&[("media", "podcast"), ("entity", "podcast"), ("limit", "30"), ("term", q.q.trim())])
-        .timeout(Duration::from_secs(20))
-        .send()
-        .await
-        .map_err(|e| bad_gateway(e.into()))?
-        .json()
-        .await
-        .map_err(|e| bad_gateway(e.into()))?;
-    Ok(Json(mark_followed(&s, hits_from(r.results)).await))
+    let term = q.q.trim().to_string();
+    let apple = async {
+        let r: Results = s
+            .http
+            .get("https://itunes.apple.com/search")
+            .query(&[("media", "podcast"), ("entity", "podcast"), ("limit", "30"), ("term", term.as_str())])
+            .timeout(Duration::from_secs(20))
+            .send()
+            .await?
+            .json()
+            .await?;
+        anyhow::Ok(hits_from(r.results))
+    };
+    let pi_query = [("q", term.clone()), ("max", "30".into())];
+    let index = podcastindex(&s, "search/byterm", &pi_query);
+    let (apple, index) = tokio::join!(apple, index);
+    if let Err(e) = &index {
+        tracing::warn!("Podcast Index search: {e:#}");
+    }
+    let mut hits = match (apple, index.unwrap_or_default()) {
+        (Ok(a), more) => {
+            let mut a = a;
+            for h in more {
+                if !a.iter().any(|x| same_feed(&x.feed_url, &h.feed_url)) {
+                    a.push(h);
+                }
+            }
+            a
+        }
+        (Err(e), more) if more.is_empty() => return Err(bad_gateway(e)),
+        (Err(_), more) => more,
+    };
+    hits.truncate(50);
+    Ok(Json(mark_followed(&s, hits).await))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ChartQ {
+    genre: Option<i64>,
+}
+
+/// Discover: Apple's chart (all, or a category), and what's trending on Podcast Index.
+async fn charts(AxState(s): AxState<State>, Query(q): Query<ChartQ>) -> ApiResult<Json<Chart>> {
+    let mut query = vec![("max", "40".to_string()), ("lang", "en".to_string())];
+    if let Some(cat) = q.genre.and_then(pi_categories) {
+        query.push(("cat", cat));
+    }
+    let (apple, trending) = tokio::join!(chart(&s, q.genre), podcastindex(&s, "podcasts/trending", &query));
+    let trending = trending.unwrap_or_else(|e| {
+        tracing::warn!("Podcast Index trending: {e:#}");
+        Vec::new()
+    });
+    let shows = match apple {
+        Ok(a) => a,
+        Err(e) if trending.is_empty() => return Err(bad_gateway(e)),
+        Err(_) => Vec::new(),
+    };
+    let mut trending = mark_followed(&s, trending).await;
+    for (i, h) in trending.iter_mut().enumerate() {
+        h.rank = i as i64 + 1;
+    }
+    Ok(Json(Chart { shows: mark_followed(&s, shows).await, trending }))
 }
 
 async fn top(AxState(s): AxState<State>) -> ApiResult<Json<Vec<ShowHit>>> {
-    let hits = top_shows(&s).await.map_err(bad_gateway)?;
+    let hits = chart(&s, None).await.map_err(bad_gateway)?;
     Ok(Json(mark_followed(&s, hits).await))
 }
 
@@ -1120,12 +1408,14 @@ async fn preview(AxState(s): AxState<State>, Query(q): Query<PreviewQ>) -> ApiRe
             duration: e.duration,
             image: e.image.clone().or(feed.image.clone()),
             audio_url: e.audio_url.clone(),
+            needs_download: is_youtube(&e.audio_url),
             ..Default::default()
         })
         .collect();
     episodes.sort_by(|a, b| b.published.cmp(&a.published));
     Ok(Json(ShowPage {
         show: Show {
+            kind: if is_youtube(&url) { "youtube".into() } else { "rss".into() },
             feed_url: url,
             title: feed.title.clone(),
             author: feed.author.clone(),
@@ -1133,6 +1423,7 @@ async fn preview(AxState(s): AxState<State>, Query(q): Query<PreviewQ>) -> ApiRe
             image: feed.image.clone(),
             link: feed.link.clone(),
             skip_ads: true,
+
             episodes: feed.episodes.len() as i64,
             ..Default::default()
         },
@@ -1333,6 +1624,31 @@ mod tests {
         assert_eq!(f.episodes[1].guid, "https://example.com/1.m4a");
         assert_eq!(f.episodes[1].image.as_deref(), Some("https://example.com/1.jpg"));
         assert!(f.episodes[1].published.is_some());
+    }
+
+    #[test]
+    fn reads_a_youtube_channel_feed() {
+        let xml = r#"<?xml version="1.0"?><feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/" xmlns="http://www.w3.org/2005/Atom">
+            <link rel="self" href="https://www.youtube.com/feeds/videos.xml?channel_id=UC1"/><title>Retro Tech</title>
+            <link rel="alternate" href="https://www.youtube.com/channel/UC1"/><author><name>Retro Tech</name><uri>x</uri></author>
+            <entry><id>yt:video:abc</id><yt:videoId>abc</yt:videoId><title>Restoring a Jaguar</title>
+              <link rel="alternate" href="https://www.youtube.com/watch?v=abc"/><published>2026-11-10T15:00:00+00:00</published>
+              <media:group><media:title>Restoring a Jaguar</media:title><media:thumbnail url="https://i.ytimg.com/vi/abc/hqdefault.jpg" width="480" height="360"/>
+              <media:description>Line one
+Line two</media:description></media:group></entry>
+            <entry><yt:videoId>s1</yt:videoId><title>A short</title><link rel="alternate" href="https://www.youtube.com/shorts/s1"/></entry>
+        </feed>"#;
+        let f = parse_feed(xml);
+        assert_eq!(f.title, "Retro Tech");
+        assert_eq!(f.author, "Retro Tech");
+        assert_eq!(f.link, "https://www.youtube.com/channel/UC1");
+        assert_eq!(f.episodes.len(), 1);
+        let e = &f.episodes[0];
+        assert_eq!(e.audio_url, "https://www.youtube.com/watch?v=abc");
+        assert_eq!(e.guid, "abc");
+        assert!(e.published.is_some());
+        assert_eq!(e.notes, "Line one<br>Line two");
+        assert_eq!(f.image.as_deref(), Some("https://i.ytimg.com/vi/abc/hqdefault.jpg"));
     }
 
     #[test]

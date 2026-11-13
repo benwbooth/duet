@@ -241,7 +241,7 @@ async fn reddit(client: &reqwest::Client, sub: &str) -> anyhow::Result<Vec<Item>
 }
 
 /// A YouTube channel's feed address, from its id, address or @handle.
-async fn youtube_feed(client: &reqwest::Client, v: &str) -> anyhow::Result<String> {
+pub async fn youtube_feed(client: &reqwest::Client, v: &str) -> anyhow::Result<String> {
     if v.contains("feeds/videos.xml") {
         return Ok(v.to_string());
     }

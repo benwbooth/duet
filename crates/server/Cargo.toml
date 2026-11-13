@@ -38,3 +38,4 @@ libc = "0.2"
 tower = { version = "0.5", features = ["util"] }
 imagesize = "0.13"
 dom_smoothie = "0.19"
+sha1_smol = "1"
