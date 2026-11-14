@@ -1154,10 +1154,15 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     // The word of the line to start from (a line begun on the page before starts at the first
     // word on this one), applied once its words are timed.
     let cast_word = StoredValue::new(0usize);
+    // (Only the latest move counts: a line ending while you jumped elsewhere mustn't carry the
+    // cast on from where it was once the jump has found its place.)
+    let cast_seq = StoredValue::new(0u32);
     let cast_go = move |c: usize, s: usize, play: bool| {
+        let seq = cast_seq.get_value().wrapping_add(1);
+        cast_seq.set_value(seq);
         spawn_local(async move {
             let found = settle(c, s).await;
-            if mode.try_get_untracked().is_none() {
+            if mode.try_get_untracked().is_none() || cast_seq.try_get_value() != Some(seq) {
                 return;
             }
             if let Some(at) = found {
@@ -1966,12 +1971,25 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         // Reading along with the audiobook: the recording goes there too (where the sync has the
         // chapter's start, or the track named after it). Left where it was, it pulled the page
         // straight back to the chapter it was reading.
-        if mode.get_untracked() == Mode::ReadAudiobook {
+        let m = mode.get_untracked();
+        if m == Mode::ReadAudiobook {
             if let Some((tr, secs)) = guess(c, 0, 0) {
                 live_near.set(None);
                 crate::stop_browsing(book.get_untracked().map(|b| (*b).clone().into()));
                 go_play(tr, secs, playing.get_untracked());
             }
+        } else if m.cast() && !comic() {
+            // The full cast likewise: on from the chapter's first line, still playing if it was.
+            let play = playing.get_untracked();
+            if play {
+                // (Stopped at once: the line it was on ending meanwhile would carry it on there.)
+                if let Some(a) = audio_el() {
+                    let _ = a.pause();
+                }
+            }
+            cast_word.set_value(0);
+            crate::stop_browsing(book.get_untracked().map(|b| (*b).clone().into()));
+            cast_go(c, 0, play);
         }
     };
 
