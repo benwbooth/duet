@@ -2091,7 +2091,12 @@ class Pager {
   animate(t, from, to, ms, arc) {
     return new Promise((resolve) => {
       const start = performance.now();
-      const ease = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+      // A turn from rest (a tap) gathers speed and settles; a page let go of mid-turn (a drag or
+      // a swipe) is already moving, so it carries straight on and settles, rather than stalling
+      // while an ease-in builds the speed back up.
+      const ease = arc
+        ? (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2)
+        : (x) => 1 - Math.pow(1 - x, 3);
       const step = (now) => {
         // (A frame's timestamp can be a little before the animation started: never run it backwards.)
         const x = Math.max(0, Math.min(1, (now - start) / ms));
@@ -2348,19 +2353,33 @@ class Pager {
       drag = null;
       this.book.classList.remove("grab-edge");
     };
-    // A sideways two-finger swipe on a trackpad moves the page with your fingers, like a drag;
-    // the turn finishes (or falls back) only once the fingers stop.
+    // A sideways two-finger swipe on a trackpad moves the page with your fingers, like a drag.
+    // A slow swipe finishes (or falls back) once the fingers stop; a flick finishes the moment
+    // it starts to slow down, rather than creeping along through the trackpad's coasting events
+    // and then sitting still until the events stop.
     let swipe = null;
-    const endSwipe = () => {
+    const endSwipe = (flick) => {
       const sw = swipe;
-      swipe = null;
-      if (!sw) return;
+      if (!sw || sw.done) {
+        swipe = null;
+        return;
+      }
+      if (flick) {
+        // The rest of the flick (the coasting events) belongs to this turn: they're swallowed
+        // until they stop, so they don't start another one.
+        swipe = { done: true, timer: setTimeout(() => (swipe = null), 120) };
+      } else {
+        swipe = null;
+      }
       if (sw.cross) {
-        if (Math.abs(sw.total) > 90) sw.cross > 0 ? this.next() : this.prev();
+        if (Math.abs(sw.total) > 90 || (flick && sw.total * sw.cross > 0)) sw.cross > 0 ? this.next() : this.prev();
         return;
       }
       const p = sw.t.progress || 0;
-      this.finish(sw.t, sw.t.at || sw.t.from, (sw.t.reverse ? 1 - p : p) > 0.3);
+      const moved = sw.t.reverse ? 1 - p : p;
+      // A flick goes the way the fingers were heading (a flick back is a change of mind).
+      const forward = flick ? sw.peak * sw.t.dir > 0 && moved > 0.02 : moved > 0.3;
+      this.finish(sw.t, sw.t.at || sw.t.from, forward);
     };
     on("wheel", (e) => {
       if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
@@ -2376,6 +2395,11 @@ class Pager {
         e.deltaX > 0 ? this.next() : this.prev();
         return;
       }
+      if (swipe && swipe.done) {
+        clearTimeout(swipe.timer);
+        swipe.timer = setTimeout(() => (swipe = null), 120);
+        return;
+      }
       if (!swipe) {
         if (this.busy || !this.curl) return;
         const dir = e.deltaX > 0 ? 1 : -1;
@@ -2383,7 +2407,7 @@ class Pager {
         // (Over the end of the chapter, the page beyond is the neighbouring chapter's, when it's
         // ready; otherwise the swipe turns into that chapter once the fingers stop.)
         if (atEdge && !((dir > 0 ? this.h.onNext : this.h.onPrev) && this.neighbourPic(dir))) {
-          swipe = { cross: dir, total: 0 };
+          swipe = { cross: dir, total: 0, peak: 0, last: e.timeStamp - 16 };
         } else {
           if (!this.noGL && (!this.snap(this.page * this.width) || (!atEdge && !this.snap((this.page + dir) * this.width)))) {
             this.pictures(atEdge ? [this.page * this.width] : [this.page * this.width, (this.page + dir) * this.width]);
@@ -2394,7 +2418,7 @@ class Pager {
           this.book.__userTurn = performance.now();
           t.C = { x: t.C0x, y: t.H * 0.75 };
           [t.from] = this.ends(t, t.C.y);
-          swipe = { t, total: 0 };
+          swipe = { t, total: 0, peak: 0, last: e.timeStamp - 16 };
         }
       }
       swipe.total += e.deltaX;
@@ -2402,10 +2426,23 @@ class Pager {
         swipe.t.at = { x: swipe.t.from.x - swipe.total * 1.4, y: swipe.t.from.y };
         this.pose(swipe.t, swipe.t.at);
       }
+      // How fast the fingers are going (px/ms), against the fastest they've gone in this swipe.
+      const dt = Math.min(50, Math.max(8, e.timeStamp - swipe.last));
+      swipe.last = e.timeStamp;
+      // (Smoothed: events arrive unevenly, some carrying two frames' worth.)
+      const v = (swipe.v = swipe.v === undefined ? e.deltaX / dt : (swipe.v + e.deltaX / dt) / 2);
+      if (Math.abs(v) > Math.abs(swipe.peak)) swipe.peak = v;
       clearTimeout(swipe.timer);
+      const brisk = Math.abs(swipe.peak) > 1;
+      // A flick: fast, and now slowing (the fingers lifting, or the coasting that follows).
+      if (brisk && Math.abs(swipe.total) > 12 && (Math.abs(v) < Math.abs(swipe.peak) * 0.5 || v * swipe.peak < 0)) {
+        endSwipe(true);
+        return;
+      }
       // (The fingers have stopped, or lifted: a pause in the events a little longer than a
-      // trackpad leaves between them.)
-      swipe.timer = setTimeout(endSwipe, 300);
+      // trackpad leaves between them.) A swipe that was going briskly when it stopped is a
+      // flick whose last events slowed too little to tell.
+      swipe.timer = setTimeout(() => endSwipe(brisk), brisk ? 80 : 300);
     }, { passive: false });
     on("pointerleave", () => {
       if (!drag) this.book.classList.remove("grab-edge");
