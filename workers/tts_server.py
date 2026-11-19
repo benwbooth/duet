@@ -45,6 +45,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import threading
 import errno
 import time
@@ -180,6 +181,31 @@ def reaper():
 
                 release_gpu_whisper()
                 free_gpu()
+        # Unloading isn't enough: once torch has used the GPU, ROCm keeps the card open
+        # (/dev/kfd) and the card reads fully busy, at high clocks, for as long as this process
+        # lives (19 hours on 2026-11-18). With everything unloaded and idle, start this server
+        # afresh in place (same pid, same port); the new one touches the GPU only when asked to.
+        with lock, listen_lock:
+            if holds_gpu() and all_idle(time.monotonic(), limit):
+                print("letting go of the GPU: starting afresh (idle)", flush=True)
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+def holds_gpu():
+    """Whether this process has the GPU's compute device open."""
+    try:
+        return any(os.readlink(f"/proc/self/fd/{fd}") == "/dev/kfd" for fd in os.listdir("/proc/self/fd"))
+    except OSError:
+        return False
+
+
+def all_idle(now, limit):
+    """Nothing loaded or running, and nothing used for `limit` seconds."""
+    if models or speaker_model is not None or whisper or fish.proc or drawing_now():
+        return False
+    if any(c.running() for c in cloners.values()):
+        return False
+    return all(now - t > limit for t in last_used.values())
 
 
 def qwen(kind):
