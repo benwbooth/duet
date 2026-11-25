@@ -1097,7 +1097,39 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
     };
     let cast_url = move |e: i64, (c, s): (usize, usize)| format!("/api/assets/{e}/cast/{c}/{s}?v=2");
     // In full cast mode the performer is loaded straight away (it takes a couple of minutes); and
-    // once loaded it stays loaded as long as you're reading (in any mode), not unloaded as idle.
+    // once loaded it stays loaded while you're reading (in any mode), not unloaded as idle.
+    // "Reading" means audio playing, or the page in view and touched in the last 10 minutes: a
+    // reader left open in a background tab or on a phone kept the voice server, and the GPU it
+    // holds, busy for days (2026-11-24). Back after a pause, the voices are asked for at once.
+    const READING_MS: f64 = 10.0 * 60_000.0;
+    let last_active = StoredValue::new(js_sys::Date::now());
+    let reading = move || {
+        playing.get_untracked()
+            || (!document().hidden() && js_sys::Date::now() - last_active.get_value() < READING_MS)
+    };
+    {
+        let on_activity = Closure::<dyn Fn()>::new(move || {
+            let away = js_sys::Date::now() - last_active.get_value() >= READING_MS;
+            last_active.set_value(js_sys::Date::now());
+            if away {
+                if let Some(m) = mode.try_get_untracked() {
+                    let asset = ebook.try_get_untracked().flatten().map(|e| e.id);
+                    spawn_local(async move {
+                        let _ = api::post::<_, serde_json::Value>("/api/cast/warm", &serde_json::json!({ "start": m.cast(), "asset": asset })).await;
+                    });
+                }
+            }
+        });
+        for ev in ["pointerdown", "keydown", "wheel", "touchstart", "visibilitychange"] {
+            let _ = document().add_event_listener_with_callback_and_bool(ev, on_activity.as_ref().unchecked_ref(), true);
+        }
+        let on_activity = on_activity.into_js_value();
+        on_cleanup(move || {
+            for ev in ["pointerdown", "keydown", "wheel", "touchstart", "visibilitychange"] {
+                let _ = document().remove_event_listener_with_callback_and_bool(ev, on_activity.unchecked_ref(), true);
+            }
+        });
+    }
     let warming = StoredValue::new(false);
     Effect::new(move |_| {
         let cast = mode.get().cast();
@@ -1114,9 +1146,12 @@ pub fn Reader(id: i64, #[prop(optional)] start_mode: Option<Mode>) -> impl IntoV
         }
         warming.set_value(true);
         spawn_local(async move {
-            // (Every two minutes while the reader is open; the loop ends with it.)
+            // (Every two minutes while you're reading; the loop ends with the reader.)
             while let Some(m) = mode.try_get_untracked() {
                 gloo_timers::future::TimeoutFuture::new(120_000).await;
+                if !reading() {
+                    continue;
+                }
                 let asset = ebook.try_get_untracked().flatten().map(|e| e.id);
                 let _ = api::post::<_, serde_json::Value>("/api/cast/warm", &serde_json::json!({ "start": m.cast(), "asset": asset })).await;
             }
